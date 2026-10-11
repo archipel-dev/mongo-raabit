@@ -1,13 +1,20 @@
-//! Result views of a collection tab: Table (with nested drill-down), Tree and JSON.
+//! Result views of a collection tab, on the kit: Table (with nested drill-down), Tree and
+//! JSON. A cell is edited in place through the kit's cell editor; a commit becomes the
+//! `$set` update of `MongoRaabit::commit_cell_edit`.
 
 use crate::app::{CellEdit, CollectionTab};
-use crate::egui::{Align2, CornerRadius, FontId, RichText, Sense, Ui, pos2, vec2};
-use crate::icons::{self, Icon};
-use crate::style::Palette;
+use crate::egui::{Id, Rect, Ui};
+use crate::icons::Icon;
 use crate::values;
-use egui_extras::{Column, TableBuilder};
+use archipel_sdk::kit::components::code::JavaScript;
+use archipel_sdk::kit::components::{
+    Cell, CodeView, Column, EmptyState, Link, SortOrder, Table, TreeRow as KitRow, TreeTable,
+};
+use archipel_sdk::kit::tokens::size;
+use archipel_sdk::kit::{Glyph, Tone};
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::shell;
+use std::sync::Arc;
 
 /// Rows shown by the table for the current drill path: (source document index, row).
 pub fn table_rows(docs: &[Document], drill: &[String]) -> Vec<(usize, Bson)> {
@@ -57,62 +64,6 @@ pub fn table_columns(rows: &[(usize, Bson)]) -> Vec<String> {
     columns
 }
 
-fn cell(ui: &mut Ui, p: &Palette, value: Option<&Bson>) -> crate::egui::Response {
-    match value {
-        None => ui.add(
-            crate::egui::Label::new(RichText::new("—").color(p.text_info.gamma_multiply(0.6)))
-                .sense(Sense::click()),
-        ),
-        Some(value @ (Bson::Document(_) | Bson::Array(_))) => {
-            // Nested values render as a pill that drills down on click.
-            let text = values::preview(value);
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(text, FontId::proportional(12.0), p.text_secondary);
-            let (rect, response) =
-                ui.allocate_exact_size(galley.size() + vec2(22.0, 4.0), Sense::click());
-            let fill = if response.hovered() {
-                p.selection
-            } else {
-                p.selection_inactive
-            };
-            ui.painter().rect_filled(rect, CornerRadius::same(5), fill);
-            icons::paint(
-                ui.painter(),
-                crate::egui::Rect::from_center_size(
-                    pos2(rect.left() + 9.0, rect.center().y),
-                    vec2(11.0, 11.0),
-                ),
-                if matches!(value, Bson::Array(_)) {
-                    Icon::Table
-                } else {
-                    Icon::Tree
-                },
-                p.text_secondary,
-            );
-            ui.painter().galley(
-                pos2(rect.left() + 18.0, rect.top() + 2.0),
-                galley,
-                p.text_secondary,
-            );
-            if response.hovered() {
-                ui.ctx()
-                    .set_cursor_icon(crate::egui::CursorIcon::PointingHand);
-            }
-            response.on_hover_text("Drill down")
-        }
-        Some(value) => ui.add(
-            crate::egui::Label::new(
-                RichText::new(values::preview(value))
-                    .font(FontId::monospace(12.5))
-                    .color(values::color(value, p)),
-            )
-            .truncate()
-            .sense(Sense::click()),
-        ),
-    }
-}
-
 /// Initial column width from the header and the first rows' previews.
 fn column_width(rows: &[(usize, Bson)], name: &str) -> f32 {
     let header = name.chars().count() as f32 * 7.5 + 70.0;
@@ -135,7 +86,7 @@ fn column_width(rows: &[(usize, Bson)], name: &str) -> f32 {
     header.max(content).clamp(64.0, 340.0)
 }
 
-/// Commands on one document, from context menus and the toolbar.
+/// Commands on one document, from the toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocCommand {
     Edit,
@@ -149,8 +100,13 @@ pub enum TableEvent {
     Drill(String),
     Select(usize),
     Open(usize),
-    Command(DocCommand, usize),
-    CommitEdit,
+    /// A cell edit to store with `$set`.
+    Edit(CellEdit),
+    /// A header was clicked: sort the query by this field.
+    Sort {
+        field: String,
+        descending: bool,
+    },
 }
 
 /// Dotted path of the drill position when it only crosses embedded documents (inline
@@ -171,77 +127,171 @@ fn join_path(prefix: &str, name: &str) -> String {
     }
 }
 
-/// Context menu shared by table and tree rows.
-pub fn document_menu(
-    ui: &mut Ui,
-    doc_index: usize,
-    value: Option<&Bson>,
-    event: &mut Option<TableEvent>,
-) {
-    if ui.button("Edit Document…").clicked() {
-        *event = Some(TableEvent::Command(DocCommand::Edit, doc_index));
-        ui.close();
+/// Fields that `$set` can reach by a dotted path.
+fn settable(segment: &str) -> bool {
+    !segment.is_empty() && !segment.contains('.') && !segment.starts_with('$')
+}
+
+/// The text an inline edit starts from. Only scalars whose cell shows exactly that text
+/// are edited in place (dates and the like go through the document editor).
+fn inline_text(value: &Bson) -> Option<String> {
+    match value {
+        Bson::String(s) if values::preview(value) == *s => Some(s.clone()),
+        Bson::Int32(_) | Bson::Int64(_) | Bson::Double(_) | Bson::Boolean(_) | Bson::Null => {
+            Some(values::preview(value))
+        }
+        _ => None,
     }
-    if ui.button("Clone Document…").clicked() {
-        *event = Some(TableEvent::Command(DocCommand::Clone, doc_index));
-        ui.close();
-    }
-    ui.separator();
-    if let Some(value) = value
-        && ui.button("Copy Value").clicked()
-    {
-        ui.ctx()
-            .copy_text(shell::to_shell_string(value, shell::ShellStyle::Compact));
-        ui.close();
-    }
-    if ui.button("Copy Document").clicked() {
-        *event = Some(TableEvent::Command(DocCommand::CopyJson, doc_index));
-        ui.close();
-    }
-    if ui.button("Copy _id").clicked() {
-        *event = Some(TableEvent::Command(DocCommand::CopyId, doc_index));
-        ui.close();
-    }
-    ui.separator();
-    if ui.button("Delete Document…").clicked() {
-        *event = Some(TableEvent::Command(DocCommand::Delete, doc_index));
-        ui.close();
+}
+
+fn edit_of(doc_index: usize, path: String, text: String, original: &Bson) -> CellEdit {
+    CellEdit {
+        doc_index,
+        path,
+        text,
+        original: Some(original.clone()),
+        focus: false,
     }
 }
 
 /// Breadcrumb for the drill path; returns the new depth when a crumb was clicked.
-pub fn breadcrumb(ui: &mut Ui, p: &Palette, drill: &[String]) -> Option<usize> {
+pub fn breadcrumb(ui: &mut Ui, drill: &[String]) -> Option<usize> {
     let mut target = None;
+    let muted = Tone::Muted.resolve(ui.ctx());
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        let root = ui.add(
-            crate::egui::Label::new(RichText::new("documents").color(if drill.is_empty() {
-                p.text
-            } else {
-                p.accent_text
-            }))
-            .sense(Sense::click()),
-        );
-        if root.clicked() {
+        if drill.is_empty() {
+            ui.label("documents");
+        } else if ui.add(Link::new("documents")).clicked() {
             target = Some(0);
         }
         for (i, segment) in drill.iter().enumerate() {
-            icons::icon(ui, Icon::ChevronRight, p.text_info);
-            let last = i + 1 == drill.len();
-            let r = ui.add(
-                crate::egui::Label::new(RichText::new(segment).color(if last {
-                    p.text
-                } else {
-                    p.accent_text
-                }))
-                .sense(Sense::click()),
-            );
-            if r.clicked() && !last {
+            archipel_sdk::kit::icons::show(ui, Icon::ChevronRight.kit(), size::ICON, muted);
+            if i + 1 == drill.len() {
+                ui.label(segment);
+            } else if ui.add(Link::new(segment)).clicked() {
                 target = Some(i + 1);
             }
         }
     });
     target
+}
+
+fn container_icon(value: &Bson) -> Icon {
+    if matches!(value, Bson::Array(_)) {
+        Icon::Table
+    } else {
+        Icon::Tree
+    }
+}
+
+/// A value cell: typed colour, a summary for nested values.
+fn value_cell(value: Option<&Bson>, editable: bool) -> Cell {
+    match value {
+        None => Cell::new("—").muted(),
+        Some(v @ (Bson::Document(_) | Bson::Array(_))) => Cell::new(values::preview(v))
+            .icon(container_icon(v).kit())
+            .value_kind(values::kind(v)),
+        Some(v) => Cell::new(values::preview(v))
+            .value_kind(values::kind(v))
+            .editable(editable),
+    }
+}
+
+const INDEX: &str = "#";
+
+/// Column order and widths of one table, kept between frames (the caller owns them).
+#[derive(Clone, Default)]
+struct TableState {
+    /// The data column at each position (`#` is the row number).
+    names: Vec<String>,
+    columns: Vec<Column>,
+    /// The selected row, to tell the rows an array expands into apart.
+    row: Option<usize>,
+}
+
+impl TableState {
+    /// Follow the columns of the current rows: keep order and widths of the known ones.
+    fn reconcile(&mut self, fresh: &[String], rows: &[(usize, Bson)], available: f32) {
+        let same = self.names.len() == fresh.len() && fresh.iter().all(|n| self.names.contains(n));
+        if same {
+            return;
+        }
+        let first = self.names.is_empty();
+        let (mut names, mut columns) = (Vec::new(), Vec::new());
+        for (name, column) in self.names.iter().zip(&self.columns) {
+            if fresh.contains(name) {
+                names.push(name.clone());
+                columns.push(column.clone());
+            }
+        }
+        for name in fresh {
+            if !names.contains(name) {
+                let column = if name == INDEX {
+                    Column::new(INDEX, 52.0).mono()
+                } else {
+                    Column::new(name, column_width(rows, name)).mono()
+                };
+                names.push(name.clone());
+                columns.push(column);
+            }
+        }
+        if first {
+            fit(&mut columns, available);
+        }
+        self.names = names;
+        self.columns = columns;
+    }
+}
+
+/// Shrink the data columns so they fit `available` (the kit table does not scroll sideways).
+fn fit(columns: &mut [Column], available: f32) {
+    let total: f32 = columns.iter().map(|c| c.width).sum();
+    let fixed = columns.first().map_or(0.0, |c| c.width);
+    if total <= available || total <= fixed {
+        return;
+    }
+    let scale = ((available - fixed - 16.0) / (total - fixed)).clamp(0.2, 1.0);
+    for column in columns.iter_mut().skip(1) {
+        column.width = (column.width * scale).max(64.0);
+    }
+}
+
+/// The column under a primary click inside the table body, when the click hit a row.
+fn clicked_column(ui: &Ui, body: Rect, columns: &[Column], rows: usize) -> Option<usize> {
+    let pos = ui.input(|i| {
+        i.pointer
+            .primary_clicked()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    })?;
+    let content = rows as f32 * size::ROW_HEIGHT;
+    let on_row = pos.y < body.top() + content || content > body.height();
+    // The scroll bar sits at the right edge.
+    if !body.contains(pos) || !on_row || pos.x > body.right() - 12.0 {
+        return None;
+    }
+    let mut x = body.left() + size::ROW_PILL_INSET;
+    for (index, column) in columns.iter().enumerate() {
+        if pos.x < x + column.width {
+            return Some(index);
+        }
+        x += column.width;
+    }
+    None
+}
+
+/// `{ name: 1 }` for the query's sort box.
+pub fn sort_text(field: &str, descending: bool) -> String {
+    let key = if !field.is_empty()
+        && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !field.starts_with(|c: char| c.is_ascii_digit())
+    {
+        field.to_owned()
+    } else {
+        format!("\"{}\"", field.replace('"', "\\\""))
+    };
+    format!("{{ {key}: {} }}", if descending { -1 } else { 1 })
 }
 
 pub fn table(
@@ -250,173 +300,140 @@ pub fn table(
     docs: &[Document],
     first_index: u64,
 ) -> Option<TableEvent> {
-    let p = Palette::of(ui);
     let rows = table_rows(docs, &tab.drill);
-    let columns = table_columns(&rows);
-    let mut event = None;
     if rows.is_empty() {
-        ui.add_space(30.0);
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new("No values at this path").color(p.text_secondary))
-        });
+        EmptyState::new("No values at this path")
+            .icon(Glyph::Filter)
+            .hint("Go back with the breadcrumb above.")
+            .show(ui);
         return None;
     }
-    let header_bg = p.raised;
-    let mut start_edit: Option<CellEdit> = None;
-    let mut cancel_edit = false;
-    crate::egui::ScrollArea::horizontal()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            let mut builder = TableBuilder::new(ui)
-                .id_salt(("raabit-table", &tab.db, &tab.collection, tab.drill.len()))
-                .striped(true)
-                .resizable(true)
-                .sense(Sense::click())
-                .cell_layout(crate::egui::Layout::left_to_right(
-                    crate::egui::Align::Center,
-                ))
-                .column(Column::exact(52.0));
-            for name in &columns {
-                builder = builder.column(
-                    Column::initial(column_width(&rows, name))
-                        .at_least(48.0)
-                        .clip(true),
-                );
-            }
-            builder
-                .header(26.0, |mut header| {
-                    header.col(|ui| {
-                        ui.painter().rect_filled(
-                            ui.max_rect().expand2(vec2(4.0, 0.0)),
-                            0.0,
-                            header_bg,
-                        );
-                        ui.label(RichText::new("#").color(p.text_info));
-                    });
-                    for name in &columns {
-                        header.col(|ui| {
-                            ui.painter().rect_filled(
-                                ui.max_rect().expand2(vec2(4.0, 0.0)),
-                                0.0,
-                                header_bg,
-                            );
-                            // Dominant type of the column, shown as a dimmed suffix.
-                            let ty = rows.iter().find_map(|(_, r)| match r {
-                                Bson::Document(d) => d.get(name).map(shell::type_name),
-                                other if name == "value" => Some(shell::type_name(other)),
-                                _ => None,
-                            });
-                            ui.label(RichText::new(name).strong().color(p.text));
-                            if let Some(ty) = ty {
-                                ui.label(RichText::new(ty).size(10.5).color(p.text_info));
-                            }
-                        });
-                    }
-                })
-                .body(|body| {
-                    body.rows(24.0, rows.len(), |mut row| {
-                        let (doc_index, value) = &rows[row.index()];
-                        row.set_selected(tab.selected == Some(*doc_index));
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new((first_index + *doc_index as u64).to_string())
-                                    .font(FontId::monospace(11.5))
-                                    .color(p.text_info),
-                            );
-                        });
-                        let prefix = docs
-                            .get(*doc_index)
-                            .and_then(|doc| editable_prefix(doc, &tab.drill))
-                            .filter(|_| matches!(value, Bson::Document(_)));
-                        for name in &columns {
-                            row.col(|ui| {
-                                let v = match value {
-                                    Bson::Document(d) => d.get(name),
-                                    other if name == "value" => Some(other),
-                                    _ => None,
-                                };
-                                let path = prefix.as_ref().map(|prefix| join_path(prefix, name));
-                                if let Some(edit) = &mut tab.editing
-                                    && edit.doc_index == *doc_index
-                                    && Some(&edit.path) == path.as_ref()
-                                {
-                                    let r = ui.add(
-                                        crate::egui::TextEdit::singleline(&mut edit.text)
-                                            .font(FontId::monospace(12.5))
-                                            .desired_width(f32::INFINITY),
-                                    );
-                                    if edit.focus {
-                                        r.request_focus();
-                                        edit.focus = false;
-                                    } else if ui.input(|i| i.key_pressed(crate::egui::Key::Escape))
-                                    {
-                                        cancel_edit = true;
-                                    } else if r.lost_focus() {
-                                        event = Some(TableEvent::CommitEdit);
-                                    }
-                                    return;
-                                }
-                                let response = cell(ui, &p, v);
-                                if response.clicked() {
-                                    event = Some(
-                                        if matches!(v, Some(Bson::Document(_) | Bson::Array(_))) {
-                                            TableEvent::Drill(name.clone())
-                                        } else {
-                                            TableEvent::Select(*doc_index)
-                                        },
-                                    );
-                                }
-                                if response.double_clicked() {
-                                    match (&path, v) {
-                                        (Some(path), None | Some(_))
-                                            if name != "_id"
-                                                && !matches!(
-                                                    v,
-                                                    Some(Bson::Document(_) | Bson::Array(_))
-                                                ) =>
-                                        {
-                                            start_edit = Some(CellEdit {
-                                                doc_index: *doc_index,
-                                                path: path.clone(),
-                                                text: match v {
-                                                    Some(Bson::String(s)) => s.clone(),
-                                                    Some(other) => shell::to_shell_string(
-                                                        other,
-                                                        shell::ShellStyle::Compact,
-                                                    ),
-                                                    None => String::new(),
-                                                },
-                                                original: v.cloned(),
-                                                focus: true,
-                                            });
-                                        }
-                                        _ => event = Some(TableEvent::Open(*doc_index)),
-                                    }
-                                }
-                                response.context_menu(|ui| {
-                                    document_menu(ui, *doc_index, v, &mut event)
-                                });
-                            });
-                        }
-                        let response = row.response();
-                        if response.double_clicked()
-                            && start_edit.is_none()
-                            && tab.editing.is_none()
-                        {
-                            event = Some(TableEvent::Open(*doc_index));
-                        } else if response.clicked() && event.is_none() {
-                            event = Some(TableEvent::Select(*doc_index));
-                        }
-                    });
-                });
+    let id = Id::new((
+        "raabit-table",
+        &tab.db,
+        &tab.collection,
+        tab.drill.join("/"),
+    ));
+    let sort_id = Id::new(("raabit-sort", &tab.db, &tab.collection));
+    let mut state: TableState = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
+    let fresh: Vec<String> = std::iter::once(INDEX.to_owned())
+        .chain(table_columns(&rows))
+        .collect();
+    state.reconcile(&fresh, &rows, ui.available_width());
+    // The arrow follows the query's own sort box: it shows only while the box still holds
+    // the text a header click wrote.
+    let sorted: Option<(String, bool, String)> = ui.data(|d| d.get_temp(sort_id));
+    let sort = sorted
+        .as_ref()
+        .filter(|(_, _, text)| *text == tab.query.sort && tab.drill.is_empty())
+        .and_then(|(field, descending, _)| {
+            let position = state.names.iter().position(|n| n == field)?;
+            let order = if *descending {
+                SortOrder::Descending
+            } else {
+                SortOrder::Ascending
+            };
+            Some((position, order))
         });
-    if cancel_edit {
-        tab.editing = None;
+    let mut selected = state
+        .row
+        .filter(|r| rows.get(*r).map(|(d, _)| *d) == tab.selected)
+        .or_else(|| {
+            tab.selected
+                .and_then(|d| rows.iter().position(|(i, _)| *i == d))
+        });
+    let drill = tab.drill.clone();
+    let value_of = |row: usize, name: &str| -> Option<&Bson> {
+        match &rows[row].1 {
+            Bson::Document(d) => d.get(name),
+            other if name == "value" => Some(other),
+            _ => None,
+        }
+    };
+    // The field path of an editable cell, `None` for cells that are read-only.
+    let path_of = |row: usize, name: &str| -> Option<String> {
+        let (doc_index, value) = &rows[row];
+        if !matches!(value, Bson::Document(_)) || name == "_id" || !settable(name) {
+            return None;
+        }
+        let prefix = editable_prefix(docs.get(*doc_index)?, &drill)?;
+        Some(join_path(&prefix, name))
+    };
+    let TableState {
+        names,
+        columns,
+        row: _,
+    } = &mut state;
+    let out = Table::new(id, columns, rows.len(), &mut selected)
+        .name("Documents")
+        .sort(sort)
+        .reorderable(true)
+        .height(ui.available_height())
+        .show(ui, |row, position| {
+            let name = names[position].as_str();
+            if name == INDEX {
+                return Cell::new((first_index + rows[row].0 as u64).to_string()).muted();
+            }
+            let value = value_of(row, name);
+            let editable =
+                value.is_some_and(|v| inline_text(v).is_some()) && path_of(row, name).is_some();
+            value_cell(value, editable)
+        });
+    let mut event = None;
+    if let Some(edit) = out.edited
+        && let Some(name) = names.get(edit.column)
+        && let Some(value) = value_of(edit.row, name)
+        && let Some(path) = path_of(edit.row, name)
+    {
+        event = Some(TableEvent::Edit(edit_of(
+            rows[edit.row].0,
+            path,
+            edit.text,
+            value,
+        )));
     }
-    if let Some(edit) = start_edit {
-        tab.selected = Some(edit.doc_index);
-        tab.editing = Some(edit);
+    if let Some(order) = out.column_order {
+        *columns = order.iter().map(|&i| columns[i].clone()).collect();
+        *names = order.iter().map(|&i| names[i].clone()).collect();
     }
+    if event.is_none()
+        && let Some(position) = out.sort_clicked
+        && tab.drill.is_empty()
+        && let Some(field) = names.get(position)
+        && field != INDEX
+    {
+        let descending = matches!(sort, Some((p, SortOrder::Ascending)) if p == position);
+        let text = sort_text(field, descending);
+        ui.data_mut(|d| d.insert_temp(sort_id, (field.clone(), descending, text)));
+        event = Some(TableEvent::Sort {
+            field: field.clone(),
+            descending,
+        });
+    }
+    // A click on a nested value drills into it; the kit reports the row, not the column.
+    if event.is_none()
+        && let Some(row) = selected
+        && let Some(position) = clicked_column(ui, out.response.rect, columns, rows.len())
+        && let Some(name) = names.get(position)
+        && name != INDEX
+        && matches!(
+            value_of(row, name),
+            Some(Bson::Document(_) | Bson::Array(_))
+        )
+    {
+        event = Some(TableEvent::Drill(name.clone()));
+    }
+    if event.is_none() {
+        if let Some(row) = out.activated {
+            event = Some(TableEvent::Open(rows[row].0));
+        } else if out.selection_changed
+            && let Some(row) = selected
+        {
+            event = Some(TableEvent::Select(rows[row].0));
+        }
+    }
+    state.row = selected;
+    ui.data_mut(|d| d.insert_temp(id, state));
     event
 }
 
@@ -428,6 +445,8 @@ pub struct TreeRow {
     pub value: Bson,
     pub expandable: bool,
     pub doc_index: usize,
+    /// Field names from the document down to this row (array positions included).
+    pub path: Vec<String>,
 }
 
 /// Flatten the open part of the tree.
@@ -436,60 +455,58 @@ pub fn tree_rows(
     open: &std::collections::HashSet<String>,
     first_index: u64,
 ) -> Vec<TreeRow> {
-    fn walk(
-        out: &mut Vec<TreeRow>,
-        open: &std::collections::HashSet<String>,
-        key: String,
-        depth: usize,
-        label: String,
-        value: &Bson,
-        doc_index: usize,
-    ) {
-        let expandable = matches!(value, Bson::Document(d) if !d.is_empty())
-            || matches!(value, Bson::Array(a) if !a.is_empty());
-        let is_open = expandable && open.contains(&key);
-        out.push(TreeRow {
-            key: key.clone(),
-            depth,
-            label,
-            value: value.clone(),
-            expandable,
-            doc_index,
-        });
-        if !is_open {
-            return;
-        }
-        match value {
-            Bson::Document(d) => {
-                for (k, v) in d {
-                    walk(
-                        out,
-                        open,
-                        format!("{key}/{k}"),
-                        depth + 1,
-                        k.clone(),
-                        v,
-                        doc_index,
-                    );
-                }
+    struct Walk<'a> {
+        out: Vec<TreeRow>,
+        open: &'a std::collections::HashSet<String>,
+    }
+    impl Walk<'_> {
+        fn visit(
+            &mut self,
+            key: String,
+            label: String,
+            value: &Bson,
+            doc_index: usize,
+            path: Vec<String>,
+        ) {
+            let expandable = matches!(value, Bson::Document(d) if !d.is_empty())
+                || matches!(value, Bson::Array(a) if !a.is_empty());
+            let is_open = expandable && self.open.contains(&key);
+            self.out.push(TreeRow {
+                key: key.clone(),
+                depth: path.len(),
+                label,
+                value: value.clone(),
+                expandable,
+                doc_index,
+                path: path.clone(),
+            });
+            if !is_open {
+                return;
             }
-            Bson::Array(items) => {
-                for (i, v) in items.iter().enumerate() {
-                    walk(
-                        out,
-                        open,
-                        format!("{key}/{i}"),
-                        depth + 1,
-                        format!("[{i}]"),
-                        v,
-                        doc_index,
-                    );
+            let mut child = |name: String, label: String, v: &Bson| {
+                let mut path = path.clone();
+                path.push(name.clone());
+                self.visit(format!("{key}/{name}"), label, v, doc_index, path);
+            };
+            match value {
+                Bson::Document(d) => {
+                    for (k, v) in d {
+                        child(k.clone(), k.clone(), v);
+                    }
                 }
+                Bson::Array(items) => {
+                    for (i, v) in items.iter().enumerate() {
+                        child(i.to_string(), format!("[{i}]"), v);
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
-    let mut out = Vec::new();
+    let mut walk = Walk {
+        out: Vec::new(),
+        open,
+    };
     for (i, doc) in docs.iter().enumerate() {
         // Label by `_id`, or by the first field when the projection dropped it.
         let id = match doc.get("_id") {
@@ -501,24 +518,23 @@ pub fn tree_rows(
                 .unwrap_or_default(),
         };
         let label = format!("({}) {}", first_index + i as u64, id);
-        walk(
-            &mut out,
-            open,
+        walk.visit(
             i.to_string(),
-            0,
             label,
             &Bson::Document(doc.clone()),
             i,
+            Vec::new(),
         );
     }
-    out
+    walk.out
 }
 
 pub enum TreeEvent {
     Toggle(String),
     Select(usize),
     Open(usize),
-    Command(DocCommand, usize),
+    /// A leaf edit to store with `$set`.
+    Edit(CellEdit),
 }
 
 /// Tree view state shared by collection, aggregation and SQL result panes.
@@ -528,133 +544,168 @@ pub struct TreeState<'a> {
     pub selected: Option<usize>,
 }
 
+/// Column widths and the selected row of one tree, kept between frames.
+#[derive(Clone, Default)]
+struct TreeMem {
+    columns: Vec<Column>,
+    key: Option<String>,
+}
+
+/// Read-only tree (aggregation and shell results).
 pub fn tree(
     ui: &mut Ui,
-    tab: TreeState<'_>,
+    state: TreeState<'_>,
     docs: &[Document],
     first_index: u64,
 ) -> Option<TreeEvent> {
-    let p = Palette::of(ui);
-    let rows = tree_rows(docs, tab.open, first_index);
-    let mut event = None;
-    let header_bg = p.raised;
-    TableBuilder::new(ui)
-        .id_salt(tab.id)
-        .striped(true)
-        .resizable(true)
-        .sense(Sense::click())
-        .cell_layout(crate::egui::Layout::left_to_right(
-            crate::egui::Align::Center,
-        ))
-        .column(Column::initial(300.0).at_least(120.0).clip(true))
-        .column(Column::remainder().at_least(160.0).clip(true))
-        .column(Column::initial(110.0).at_least(70.0))
-        .header(26.0, |mut header| {
-            for title in ["Key", "Value", "Type"] {
-                header.col(|ui| {
-                    ui.painter()
-                        .rect_filled(ui.max_rect().expand2(vec2(4.0, 0.0)), 0.0, header_bg);
-                    ui.label(RichText::new(title).strong());
-                });
+    tree_view(ui, state, docs, first_index, false)
+}
+
+/// The tree as a kit `TreeTable` (key | value | type); `editable` lets leaf values be
+/// edited in place.
+pub fn tree_view(
+    ui: &mut Ui,
+    state: TreeState<'_>,
+    docs: &[Document],
+    first_index: u64,
+    editable: bool,
+) -> Option<TreeEvent> {
+    let rows = tree_rows(docs, state.open, first_index);
+    let mem_id = state.id.with("mem");
+    let mut mem: TreeMem = ui.data_mut(|d| d.get_temp(mem_id)).unwrap_or_default();
+    if mem.columns.is_empty() {
+        let width = (ui.available_width() - 24.0).max(300.0);
+        mem.columns = vec![
+            Column::new("Key", (width * 0.34).round()).mono(),
+            Column::new("Value", (width * 0.46).round()).mono(),
+            Column::new("Type", (width * 0.20).round()),
+        ];
+    }
+    let kit_rows: Vec<KitRow> = rows
+        .iter()
+        .map(|r| {
+            let row = KitRow::new(r.label.as_str(), r.depth);
+            if r.expandable {
+                row.parent(state.open.contains(&r.key))
+                    .icon(container_icon(&r.value).kit())
+            } else {
+                row
             }
         })
-        .body(|body| {
-            body.rows(24.0, rows.len(), |mut row| {
-                let r = &rows[row.index()];
-                row.set_selected(r.depth == 0 && tab.selected == Some(r.doc_index));
-                row.col(|ui| {
-                    ui.add_space(r.depth as f32 * 16.0);
-                    let (rect, response) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::click());
-                    if r.expandable {
-                        icons::paint(
-                            ui.painter(),
-                            rect,
-                            if tab.open.contains(&r.key) {
-                                Icon::ChevronDown
-                            } else {
-                                Icon::ChevronRight
-                            },
-                            p.text_info,
-                        );
-                        if response.clicked() {
-                            event = Some(TreeEvent::Toggle(r.key.clone()));
-                        }
-                    }
-                    let icon = match &r.value {
-                        Bson::Document(_) => Icon::Tree,
-                        Bson::Array(_) => Icon::Table,
-                        _ => Icon::Json,
-                    };
-                    icons::icon(ui, icon, if r.depth == 0 { p.accent } else { p.text_info });
-                    let color = if r.depth == 0 {
-                        p.text_strong
-                    } else if r.label.starts_with('[') {
-                        p.text_secondary
-                    } else {
-                        p.key
-                    };
-                    ui.label(
-                        RichText::new(&r.label)
-                            .font(FontId::monospace(12.5))
-                            .color(color),
-                    );
-                });
-                row.col(|ui| {
-                    ui.label(
-                        RichText::new(values::preview(&r.value))
-                            .font(FontId::monospace(12.5))
-                            .color(values::color(&r.value, &p)),
-                    );
-                });
-                row.col(|ui| {
-                    ui.label(RichText::new(shell::type_name(&r.value)).color(p.text_info));
-                });
-                let response = row.response();
-                response.context_menu(|ui| {
-                    let mut menu_event = None;
-                    document_menu(ui, r.doc_index, Some(&r.value), &mut menu_event);
-                    if let Some(TableEvent::Command(command, index)) = menu_event {
-                        event = Some(TreeEvent::Command(command, index));
-                    }
-                });
-                if response.double_clicked() {
-                    event = Some(if r.expandable {
-                        TreeEvent::Toggle(r.key.clone())
-                    } else {
-                        TreeEvent::Open(r.doc_index)
-                    });
-                } else if response.clicked() && event.is_none() {
-                    event = Some(TreeEvent::Select(r.doc_index));
-                }
-            });
+        .collect();
+    let mut selected = mem
+        .key
+        .as_ref()
+        .and_then(|key| rows.iter().position(|r| &r.key == key))
+        .filter(|i| Some(rows[*i].doc_index) == state.selected)
+        .or_else(|| {
+            state
+                .selected
+                .and_then(|d| rows.iter().position(|r| r.doc_index == d && r.depth == 0))
         });
+    let path_of = |r: &TreeRow| -> Option<String> {
+        (editable
+            && r.path.first().is_some_and(|first| first != "_id")
+            && r.path.iter().all(|s| settable(s)))
+        .then(|| r.path.join("."))
+    };
+    let height = ui.available_height();
+    let out = TreeTable::new(state.id, &mut mem.columns, &kit_rows, &mut selected)
+        .name("Documents tree")
+        .height(height)
+        .show(ui, |row, column| {
+            let r = &rows[row];
+            match column {
+                1 => {
+                    let leaf_editable =
+                        !r.expandable && inline_text(&r.value).is_some() && path_of(r).is_some();
+                    let cell =
+                        Cell::new(values::preview(&r.value)).value_kind(values::kind(&r.value));
+                    if r.expandable || matches!(r.value, Bson::Document(_) | Bson::Array(_)) {
+                        cell
+                    } else {
+                        cell.editable(leaf_editable)
+                    }
+                }
+                _ => Cell::new(shell::type_name(&r.value)).muted(),
+            }
+        });
+    let mut event = None;
+    if let Some(edit) = out.edited
+        && let Some(r) = rows.get(edit.row)
+        && let Some(path) = path_of(r)
+    {
+        event = Some(TreeEvent::Edit(edit_of(
+            r.doc_index,
+            path,
+            edit.text,
+            &r.value,
+        )));
+    } else if let Some(row) = out.toggled {
+        event = Some(TreeEvent::Toggle(rows[row].key.clone()));
+    } else if let Some(row) = out.activated {
+        let r = &rows[row];
+        event = Some(if r.expandable {
+            TreeEvent::Toggle(r.key.clone())
+        } else {
+            TreeEvent::Open(r.doc_index)
+        });
+    } else if out.selection_changed
+        && let Some(row) = selected
+    {
+        event = Some(TreeEvent::Select(rows[row].doc_index));
+    }
+    mem.key = selected.and_then(|i| rows.get(i)).map(|r| r.key.clone());
+    ui.data_mut(|d| d.insert_temp(mem_id, mem));
     event
 }
 
+/// The documents as shell text, one `/* n */` marker per document.
+fn json_text(docs: &[Document], first_index: u64) -> String {
+    let mut text = String::new();
+    for (i, doc) in docs.iter().enumerate() {
+        text.push_str(&format!("/* {} */\n", first_index + i as u64));
+        text.push_str(&shell::document_to_shell(doc, shell::ShellStyle::Pretty(2)));
+        text.push_str("\n\n");
+    }
+    text
+}
+
+/// Fold arrows in the JSON view. Off until the kit's fold buttons stop overlapping the
+/// document's accessible bounds (the audit reports it; see "Kit gaps" in the PR).
+const FOLDING: bool = false;
+
+/// Read-only code view of the documents with highlighting and folding.
 pub fn json(ui: &mut Ui, docs: &[Document], first_index: u64) {
-    let p = Palette::of(ui);
-    crate::egui::ScrollArea::both()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            crate::egui::Frame::new()
-                .inner_margin(crate::egui::Margin::symmetric(14, 10))
-                .show(ui, |ui| {
-                    for (i, doc) in docs.iter().enumerate() {
-                        let (rect, _) = ui
-                            .allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
-                        ui.painter().text(
-                            pos2(rect.left(), rect.center().y),
-                            Align2::LEFT_CENTER,
-                            format!("/* {} */", first_index + i as u64),
-                            FontId::monospace(11.5),
-                            p.text_info,
-                        );
-                        let job = values::document_job(doc, &p, FontId::monospace(12.5));
-                        ui.add(crate::egui::Label::new(job).selectable(true));
-                        ui.add_space(8.0);
-                    }
-                });
-        });
+    json_cached(ui, Id::new("raabit-json"), docs, first_index, None);
+}
+
+/// Like [`json`]; with a `version` (bumped when the documents change) the text is built
+/// once and reused between frames.
+pub fn json_cached(ui: &mut Ui, id: Id, docs: &[Document], first_index: u64, version: Option<u64>) {
+    let text: Arc<String> = match version {
+        Some(version) => {
+            let cached: Option<(u64, u64, Arc<String>)> = ui.data(|d| d.get_temp(id));
+            match cached {
+                Some((v, f, text)) if v == version && f == first_index => text,
+                _ => {
+                    let text = Arc::new(json_text(docs, first_index));
+                    ui.data_mut(|d| d.insert_temp(id, (version, first_index, text.clone())));
+                    text
+                }
+            }
+        }
+        None => Arc::new(json_text(docs, first_index)),
+    };
+    CodeView::new(text.as_str())
+        .id(id.with("view"))
+        .label("Documents as JSON")
+        .highlighter(&JavaScript)
+        .line_numbers(true)
+        .folding(FOLDING)
+        .revision(version.unwrap_or(0))
+        .height(ui.available_height())
+        .show(ui);
 }
 
 #[cfg(test)]

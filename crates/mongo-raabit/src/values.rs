@@ -3,21 +3,26 @@
 use crate::egui::text::LayoutJob;
 use crate::egui::{Color32, FontId, TextFormat};
 use crate::style::Palette;
+use archipel_sdk::kit::ValueKind;
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::shell::{self, ShellStyle};
 
 const MAX_PREVIEW: usize = 160;
 
-/// Color of a value by BSON type.
-pub fn color(value: &Bson, p: &Palette) -> Color32 {
+/// The kit value kind of a BSON value: it picks the color in tables, trees and code views.
+pub fn kind(value: &Bson) -> ValueKind {
     match value {
-        Bson::String(_) | Bson::Symbol(_) => p.string,
-        Bson::Int32(_) | Bson::Int64(_) | Bson::Double(_) | Bson::Decimal128(_) => p.number,
-        Bson::Boolean(_) | Bson::Null | Bson::Undefined | Bson::MinKey | Bson::MaxKey => p.keyword,
-        Bson::ObjectId(_) | Bson::Binary(_) => p.object_id,
-        Bson::DateTime(_) | Bson::Timestamp(_) => p.date,
-        Bson::Document(_) | Bson::Array(_) => p.text_secondary,
-        _ => p.text,
+        Bson::String(_) | Bson::Symbol(_) => ValueKind::String,
+        Bson::Int32(_) | Bson::Int64(_) | Bson::Double(_) | Bson::Decimal128(_) => {
+            ValueKind::Number
+        }
+        Bson::Boolean(_) => ValueKind::Boolean,
+        Bson::Null | Bson::Undefined | Bson::MinKey | Bson::MaxKey => ValueKind::Null,
+        Bson::ObjectId(_) => ValueKind::Id,
+        Bson::Binary(_) => ValueKind::Binary,
+        Bson::DateTime(_) | Bson::Timestamp(_) => ValueKind::Date,
+        Bson::Document(_) | Bson::Array(_) => ValueKind::Punctuation,
+        _ => ValueKind::String,
     }
 }
 
@@ -29,10 +34,7 @@ pub fn preview(value: &Bson) -> String {
             1 => "{ 1 field }".into(),
             n => format!("{{ {n} fields }}"),
         },
-        Bson::Array(a) => match a.len() {
-            1 => "[ 1 element ]".into(),
-            n => format!("[ {n} elements ]"),
-        },
+        Bson::Array(a) => format!("[ {} ]", a.len()),
         Bson::ObjectId(o) => o.to_hex(),
         Bson::DateTime(d) => d
             .try_to_rfc3339_string()
@@ -268,7 +270,7 @@ mod tests {
             preview(&Bson::Document(doc! {"a": 1, "b": 2})),
             "{ 2 fields }"
         );
-        assert_eq!(preview(&Bson::Array(vec![Bson::Int32(1)])), "[ 1 element ]");
+        assert_eq!(preview(&Bson::Array(vec![Bson::Int32(1)])), "[ 1 ]");
         assert_eq!(
             preview(&Bson::DateTime(DateTime::from_millis(0))),
             "1970-01-01 00:00:00"
