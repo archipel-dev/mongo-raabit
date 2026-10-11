@@ -15,7 +15,6 @@ path = "src/main.rs"
 [dependencies]
 mongo-raabit.workspace = true
 archipel-sdk.workspace = true
-eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "accesskit"] }
 
 [dev-dependencies]
 archipel-sdk = { workspace = true, features = ["testing"] }

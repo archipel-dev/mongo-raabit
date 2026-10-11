@@ -94,6 +94,9 @@ jobs:
         with:
           key: perf
       - name: Check the budgets
+        env:
+          # No Vulkan driver on the runner: measure the host's OpenGL (glow) renderer.
+          ARCHIPEL_RENDERER: glow
         run: |
           set -o pipefail
           cargo xtask perf --runs 7 --json perf-report.json 2>&1 | tee perf.txt

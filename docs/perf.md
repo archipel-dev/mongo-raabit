@@ -6,7 +6,7 @@ A PR that breaks one turns CI red. The numbers live in [`perf-budgets.toml`](../
 | Check | Budget | Measured as |
 |---|---|---|
 | `cold_start` | **400 ms** | process start to the first interactive frame (the first frame that renders the plugin view) |
-| `frame.welcome` / `dialog` / `tree` / `table` | **16 ms** | 95th percentile of the `update()`/ui CPU time per frame while the screen is driven with the mouse |
+| `frame.welcome` / `dialog` / `tree` / `table` | **16 ms** | 95th percentile of the plugin's CPU time per frame (`poll` + `render_view`) while the screen is driven with the mouse |
 | `idle.cpu` | **1 %** of one core | whole-process CPU over 5 s with nothing moving, on the documents table |
 | `idle.repaints` | 2 frames | `update()` calls during that window (egui must not repaint when nothing changes) |
 | `memory.rss` | 200 MB | resident set after connecting and showing 50 documents; Compass idles around 300–500 MB |
@@ -16,16 +16,18 @@ budget is ours: measured ~137 MB, plus ~45 % headroom.
 
 ## How it is measured
 
-`raabit --perf-report <file>` (or `RAABIT_PERF=<file>`) turns the hook in
-`crates/raabit/src/perf.rs` on; off, it costs one `Option` check per frame. The app records the
-time of the first interactive frame (from the top of `main`) and, for every frame, a wall-clock
-stamp and the duration of `update()`. It writes JSON when the window closes. The driver asks it
-to close by creating `<file>.stop` and moving the mouse.
+`raabit` runs on `archipel-app`, the Archipel standalone host. `raabit --perf-report <file>` (or
+`RAABIT_PERF=<file>`) wraps the plugin in `PerfPlugin` (`crates/raabit/src/perf.rs`); off, the
+plugin runs unwrapped and nothing is measured. The wrapper records the time of the first
+interactive frame (from the top of `main` to the end of the first `render_view`) and, for every
+host frame, a wall-clock stamp and the time spent in the plugin's `poll` and `render_view`. It writes JSON when the window closes. The driver asks it
+to close by creating `<file>.stop`; the next `poll` dispatches the host's quit command.
 
 `cargo xtask perf` (`xtask/src/perf.rs`) does the rest:
 
 1. Seeds `raabit_perf.customers` (240 documents) through the driver, so CI needs no `mongosh`.
-2. Starts Xvfb (1280x800) and runs `raabit --dark` with a throwaway `HOME`.
+2. Starts Xvfb (1280x800) and runs `raabit --dark` with a throwaway `HOME`. The renderer is the
+   host's (`ARCHIPEL_RENDERER`, wgpu by default); CI sets `glow` because the runner has no Vulkan.
 3. Drives it with xdotool, mouse only: hover the welcome screen, open and close the connection
    dialog, "Connect to localhost", expand `raabit_perf`, open `customers` (50 rows per page),
    hover and scroll the table, then sit idle for 5 s.
@@ -43,15 +45,18 @@ table and the run fails instead of reporting numbers for the wrong screen.
 - CI runners are shared and noisy; a single cold start varies 100–400 ms on a busy machine. The
   median over several runs and the 95th percentile (not the max) per screen absorb that. The
   worst frame is printed next to each frame check for information.
-- Frame time is the CPU time of `update()` (building the UI), which is what the app controls.
-  Tessellation and GPU upload are not included; under Xvfb they run in software (llvmpipe).
+- Frame time is the plugin's CPU time per frame. The host's own chrome (tabs, status bar),
+  tessellation and GPU upload are not included (the plugin API has no hook for them); idle CPU,
+  cold start and RSS are whole-process, so they do include the host. Under Xvfb rendering is
+  software (llvmpipe).
 - Current numbers sit one to two orders of magnitude under the frame and idle budgets, and at
   about half of the cold-start budget, so the margins absorb runner noise without loosening.
 
 ## Run it locally
 
 Needs Linux, `Xvfb`, `xdotool`, a `mongod` on `localhost:27017` (the address behind "Connect to
-localhost") and Mesa's software GL (`libgl1-mesa-dri`). Use a throwaway server: it drops
+localhost") and Mesa's software GL (`libgl1-mesa-dri`). Without a Vulkan driver, export
+`ARCHIPEL_RENDERER=glow`. Use a throwaway server: it drops
 `raabit_perf`.
 
 ```bash
@@ -78,15 +83,15 @@ layout change moves them, the `find` check fails the run; update the coordinates
 
 ## Current numbers
 
-Median of 7 runs, release build (after the kit port of the chrome, connection manager and tree), shared 2-core VM, MongoDB 7.0.14 (`cargo xtask perf --runs 7`):
+Median of 7 runs, release build on `archipel-app` (glow renderer), shared 2-core VM, MongoDB 7.0.14 (`cargo xtask perf --runs 7`):
 
 | Check | Measured | Budget |
 |---|---|---|
-| cold start | ~160 ms (105–310 ms per run) | 400 ms |
-| frame p95: welcome / dialog / tree / table | 0.3 / 0.3 / 0.2 / 0.7 ms | 16 ms |
-| worst single frame | ~8 ms (table, first open) | – |
+| cold start | ~155 ms (105–250 ms per run) | 400 ms |
+| frame p95: welcome / dialog / tree / table | 0.1 / 0.3 / 0.2 / 0.6 ms | 16 ms |
+| worst single frame | ~3.5 ms (welcome, first frame) | – |
 | idle CPU | 0.00 % | 1 % |
 | idle repaints in 5 s | 0 | 2 |
-| RSS, 50 documents | 137 MB | 200 MB |
+| RSS, 50 documents | 138 MB | 200 MB |
 
 No check breaks today, so `perf-budgets.toml` has no known breaches.

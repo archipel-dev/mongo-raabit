@@ -8,7 +8,12 @@
 //! when the window closes. The driver asks for that by creating `<report>.stop` and moving
 //! the mouse: the next frame sees the file and closes the window.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use archipel_sdk::api::{
+    CommandResult, Contributions, Plugin, PluginError, PluginHost, PluginManifest, Value,
+    ViewContext, ViewFrame,
+};
+use archipel_sdk::app::CMD_QUIT;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const ENV: &str = "RAABIT_PERF";
 
@@ -17,9 +22,10 @@ pub struct Perf {
     start: Instant,
     start_unix_ms: u128,
     first_frame_ms: Option<f64>,
-    /// `(unix ms at the end of the frame, update() duration in µs)`.
+    /// `(unix ms at the start of the frame, plugin time of the frame in µs)`.
     frames: Vec<(u128, u64)>,
-    frame_start: Option<Instant>,
+    /// Plugin time accumulated in the frame in progress.
+    current: Option<(u128, Duration)>,
 }
 
 impl Perf {
@@ -32,23 +38,30 @@ impl Perf {
             start_unix_ms,
             first_frame_ms: None,
             frames: Vec::with_capacity(4096),
-            frame_start: None,
+            current: None,
         }
     }
 
+    /// `poll` runs once per host frame: it closes the previous frame and opens the next.
     pub fn begin_frame(&mut self) {
-        self.frame_start = Some(Instant::now());
+        self.flush();
+        self.current = Some((unix_ms(), Duration::ZERO));
     }
 
-    /// `interactive`: this frame rendered the plugin view, so the user can act on it.
-    pub fn end_frame(&mut self, interactive: bool) {
-        let Some(began) = self.frame_start.take() else {
-            return;
-        };
-        self.frames
-            .push((unix_ms(), began.elapsed().as_micros() as u64));
+    /// Adds plugin time to the frame in progress. `interactive`: a view was rendered, so the
+    /// user can act on the window.
+    pub fn add(&mut self, spent: Duration, interactive: bool) {
+        if let Some((_, total)) = &mut self.current {
+            *total += spent;
+        }
         if interactive && self.first_frame_ms.is_none() {
             self.first_frame_ms = Some(self.start.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some((at, total)) = self.current.take() {
+            self.frames.push((at, total.as_micros() as u64));
         }
     }
 
@@ -74,9 +87,69 @@ impl Perf {
         std::path::Path::new(&stop).exists()
     }
 
-    pub fn write(&self) {
+    pub fn write(&mut self) {
+        self.flush();
         if let Err(err) = std::fs::write(&self.path, self.report()) {
             eprintln!("raabit: cannot write {}: {err}", self.path.display());
+        }
+    }
+}
+
+/// Runs `P` unchanged, timing it for [`Perf`].
+pub struct PerfPlugin<P> {
+    pub inner: P,
+    pub perf: Perf,
+}
+
+impl<P: Plugin> Plugin for PerfPlugin<P> {
+    fn manifest(&self) -> &PluginManifest {
+        self.inner.manifest()
+    }
+
+    fn contributions(&self) -> Contributions {
+        self.inner.contributions()
+    }
+
+    fn activate(&mut self, host: &mut dyn PluginHost) -> Result<(), PluginError> {
+        self.inner.activate(host)
+    }
+
+    fn deactivate(&mut self, host: &mut dyn PluginHost) {
+        self.inner.deactivate(host);
+        self.perf.write();
+    }
+
+    fn execute(
+        &mut self,
+        command: &str,
+        params: Value,
+        host: &mut dyn PluginHost,
+    ) -> CommandResult {
+        self.inner.execute(command, params, host)
+    }
+
+    fn render_view(
+        &mut self,
+        view: &ViewContext,
+        frame: &mut ViewFrame<'_>,
+        host: &mut dyn PluginHost,
+    ) {
+        let began = Instant::now();
+        self.inner.render_view(view, frame, host);
+        self.perf.add(began.elapsed(), true);
+    }
+
+    fn status_widget(&self, id: &str) -> Option<archipel_sdk::api::StatusWidgetState> {
+        self.inner.status_widget(id)
+    }
+
+    fn poll(&mut self, host: &mut dyn PluginHost) {
+        self.perf.begin_frame();
+        let began = Instant::now();
+        self.inner.poll(host);
+        self.perf.add(began.elapsed(), false);
+        if self.perf.stop_requested() {
+            host.dispatch(CMD_QUIT, Value::Null);
         }
     }
 }
@@ -93,14 +166,17 @@ mod tests {
 
     #[test]
     fn report_has_first_frame_and_frames() {
-        let mut perf = Perf::new("unused".into(), Instant::now());
+        let path = std::env::temp_dir().join(format!("raabit-perf-test-{}", std::process::id()));
+        let mut perf = Perf::new(path.clone(), Instant::now());
         perf.begin_frame();
-        perf.end_frame(false);
+        perf.add(Duration::from_micros(5), false);
+        perf.begin_frame();
         assert!(perf.report().contains("\"first_frame_ms\":null"));
-        perf.begin_frame();
-        perf.end_frame(true);
+        perf.add(Duration::from_micros(7), true);
+        perf.write();
         let report = perf.report();
         assert!(!report.contains("null"));
-        assert_eq!(report.matches('[').count(), 3);
+        assert!(report.contains(",5]") && report.contains(",7]"));
+        let _ = std::fs::remove_file(path);
     }
 }
