@@ -2,14 +2,18 @@
 //! as SQL or as a mongosh script, the paging toolbar and the Table / Tree / JSON result views.
 
 use crate::app::{CollectionTab, Load, MongoRaabit, QueryMode, ResultView, TabId};
-use crate::egui::{CornerRadius, RichText, Stroke, Ui};
+use crate::egui::{RichText, Ui};
 use crate::icons::{self, Icon};
 use crate::results::{self, DocCommand, TableEvent, TreeEvent};
-use crate::style::{self, Palette};
+use crate::style;
 use crate::tree::ToolKind;
 use crate::widgets;
-use archipel_sdk::kit::Tone;
-use archipel_sdk::kit::components::{Button, IconButton, SegmentedControl, Separator, Tag};
+use archipel_sdk::kit::components::{
+    Banner, Button, Dropdown, EmptyState, IconButton, SegmentedControl, Separator, Severity,
+    Spinner, Tag,
+};
+use archipel_sdk::kit::tokens::size;
+use archipel_sdk::kit::{Glyph, Tone};
 use mongo_raabit_core::connection::CollectionKind;
 
 pub const PAGE_SIZES: [u64; 5] = [20, 50, 100, 250, 1000];
@@ -26,7 +30,6 @@ enum Action {
 }
 
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
-    let p = Palette::of(ui);
     let server = {
         let Some(tab) = app.collection_tab_mut(tab_id) else {
             return;
@@ -51,7 +54,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             bottom: 6,
         })
         .show(ui, |ui| {
-            header(ui, &p, tab, &server_name, &mut tool);
+            header(ui, tab, &server_name, &mut tool);
             ui.add_space(8.0);
             mode_switch(ui, tab);
             if matches!(tab.mode, QueryMode::Sql | QueryMode::Shell) {
@@ -66,7 +69,12 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         .ready()
                         .map(|page| crate::query_builder::field_names(&page.documents))
                         .unwrap_or_default();
-                    match crate::query_builder::show(ui, &p, &mut tab.builder, &fields) {
+                    match crate::query_builder::show(
+                        ui,
+                        &crate::style::Palette::of(ui),
+                        &mut tab.builder,
+                        &fields,
+                    ) {
                         crate::query_builder::Event::None => {}
                         crate::query_builder::Event::Changed => {
                             tab.query = tab.builder.to_query_text();
@@ -77,17 +85,17 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         }
                     }
                 }
-                _ => query_bar(ui, &p, tab, &mut actions),
+                _ => query_bar(ui, tab, &mut actions),
             }
-            if let Some(err) = &tab.query_error {
+            if let Some(err) = tab.query_error.clone() {
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    icons::icon(ui, Icon::Warning, p.error);
-                    ui.label(RichText::new(err).color(p.error));
-                });
+                let banner = Banner::new(Severity::Error, err).dismissible(true).show(ui);
+                if banner.dismissed {
+                    tab.query_error = None;
+                }
             }
             ui.add_space(8.0);
-            result_toolbar(ui, &p, tab, &mut actions);
+            result_toolbar(ui, tab, &mut actions);
         });
     if sql {
         ui.add(Separator);
@@ -106,7 +114,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     }
     ui.add(Separator);
-    result_area(ui, &p, tab, &mut actions);
+    result_area(ui, tab, &mut actions);
     if let Some(kind) = tool
         && let Some(tab) = app.collection_tab_mut(tab_id)
     {
@@ -178,13 +186,11 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     }
 }
 
-fn header(
-    ui: &mut Ui,
-    p: &Palette,
-    tab: &CollectionTab,
-    server: &str,
-    tool: &mut Option<ToolKind>,
-) {
+fn tone_text(ui: &Ui, tone: Tone, text: impl Into<String>) -> RichText {
+    RichText::new(text).color(tone.resolve(ui.ctx()))
+}
+
+fn header(ui: &mut Ui, tab: &CollectionTab, server: &str, tool: &mut Option<ToolKind>) {
     ui.horizontal(|ui| {
         let icon = match tab.kind {
             CollectionKind::View => Icon::View,
@@ -192,16 +198,17 @@ fn header(
             CollectionKind::GridFsBucket => Icon::Bucket,
             _ => Icon::Collection,
         };
-        icons::icon(ui, icon, p.accent);
-        ui.label(RichText::new(server).color(p.text_info));
-        icons::icon(ui, Icon::ChevronRight, p.text_info);
-        ui.label(RichText::new(&tab.db).color(p.text_secondary));
-        icons::icon(ui, Icon::ChevronRight, p.text_info);
+        let accent = Tone::Accent.resolve(ui.ctx());
+        let muted = Tone::Muted.resolve(ui.ctx());
+        icons::icon(ui, icon, accent);
+        ui.label(tone_text(ui, Tone::Muted, server));
+        icons::icon(ui, Icon::ChevronRight, muted);
+        ui.label(tone_text(ui, Tone::Secondary, &tab.db));
+        icons::icon(ui, Icon::ChevronRight, muted);
         ui.label(
-            RichText::new(&tab.collection)
+            tone_text(ui, Tone::Strong, &tab.collection)
                 .size(15.0)
-                .strong()
-                .color(p.text_strong),
+                .strong(),
         );
         if tab.kind == CollectionKind::View {
             ui.add(Tag::new("view").tone(Tone::Accent));
@@ -229,7 +236,7 @@ fn header(
                         ui.add(Tag::new(format!("{} documents", group(*n))).tone(Tone::Accent));
                     }
                     Load::Loading => {
-                        ui.spinner();
+                        ui.add(Spinner::new().label("Counting documents"));
                     }
                     Load::Failed(err) => {
                         ui.add(Tag::new("count failed").tone(Tone::Error))
@@ -262,67 +269,54 @@ fn mode_switch(ui: &mut Ui, tab: &mut CollectionTab) {
     }
 }
 
-fn query_bar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
-    crate::egui::Frame::new()
-        .fill(p.raised)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(crate::egui::Margin::same(8))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = crate::egui::vec2(6.0, 6.0);
-            let mut enter = false;
-            ui.horizontal(|ui| {
-                let width = ui.available_width() - 110.0;
-                let r = widgets::query_field(
-                    ui,
-                    "Filter",
-                    &mut tab.query.filter,
-                    "{ field: \"value\" }",
-                    width,
-                );
-                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-                if ui
-                    .add(Button::primary("Run").icon(Icon::Play))
-                    .on_hover_text("Run query (Enter)")
-                    .clicked()
-                {
-                    actions.push(Action::Run { recount: true });
-                }
-            });
-            ui.horizontal(|ui| {
-                let total = ui.available_width() - 6.0 * 5.0;
-                let r = widgets::query_field(
-                    ui,
-                    "Projection",
-                    &mut tab.query.projection,
-                    "{ name: 1 }",
-                    total * 0.34,
-                );
-                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-                let r = widgets::query_field(
-                    ui,
-                    "Sort",
-                    &mut tab.query.sort,
-                    "{ _id: -1 }",
-                    total * 0.30,
-                );
-                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-                let r = widgets::query_field(ui, "Skip", &mut tab.query.skip, "0", total * 0.11);
-                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-                let r = widgets::query_field(ui, "Limit", &mut tab.query.limit, "0", total * 0.11);
-                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-                if ui
-                    .add(IconButton::new(Icon::Close, "Reset query"))
-                    .clicked()
-                {
-                    tab.query = Default::default();
-                    actions.push(Action::Run { recount: true });
-                }
-            });
-            if enter {
-                actions.push(Action::Run { recount: true });
-            }
-        });
+fn query_bar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
+    ui.spacing_mut().item_spacing = crate::egui::vec2(6.0, 6.0);
+    let mut enter = false;
+    ui.horizontal(|ui| {
+        let width = ui.available_width() - 110.0;
+        let r = widgets::query_field(
+            ui,
+            "Filter",
+            &mut tab.query.filter,
+            "{ field: \"value\" }",
+            width,
+        );
+        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
+        if ui
+            .add(Button::primary("Run").icon(Icon::Play))
+            .on_hover_text("Run query (Enter)")
+            .clicked()
+        {
+            actions.push(Action::Run { recount: true });
+        }
+    });
+    ui.horizontal(|ui| {
+        let total = ui.available_width() - 6.0 * 5.0;
+        let r = widgets::query_field(
+            ui,
+            "Projection",
+            &mut tab.query.projection,
+            "{ name: 1 }",
+            total * 0.34,
+        );
+        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
+        let r = widgets::query_field(ui, "Sort", &mut tab.query.sort, "{ _id: -1 }", total * 0.30);
+        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
+        let r = widgets::query_field(ui, "Skip", &mut tab.query.skip, "0", total * 0.11);
+        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
+        let r = widgets::query_field(ui, "Limit", &mut tab.query.limit, "0", total * 0.11);
+        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
+        if ui
+            .add(IconButton::new(Icon::Close, "Reset query"))
+            .clicked()
+        {
+            tab.query = Default::default();
+            actions.push(Action::Run { recount: true });
+        }
+    });
+    if enter {
+        actions.push(Action::Run { recount: true });
+    }
 }
 
 /// `1234567` → `1,234,567`.
@@ -338,7 +332,17 @@ pub fn group(n: u64) -> String {
     out
 }
 
-fn result_toolbar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
+/// A page size as the dropdown shows it.
+#[derive(Clone, Copy, PartialEq)]
+struct PageSize(u64);
+
+impl std::fmt::Display for PageSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} / page", self.0)
+    }
+}
+
+fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
         ui.add(SegmentedControl::new(
             &mut tab.view,
@@ -350,7 +354,7 @@ fn result_toolbar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &m
         ));
         ui.add_space(6.0);
         let has_selection = tab.selected.is_some();
-        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
         if ui
             .add(IconButton::new(Icon::Plus, "Add document"))
             .clicked()
@@ -371,6 +375,12 @@ fn result_toolbar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &m
             .clicked()
         {
             actions.push(Action::Doc(DocCommand::Clone, None));
+        }
+        if ui
+            .add(IconButton::new(Icon::Json, "Copy document").enabled(has_selection))
+            .clicked()
+        {
+            actions.push(Action::Doc(DocCommand::CopyJson, None));
         }
         if ui
             .add(
@@ -401,136 +411,194 @@ fn result_toolbar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &m
         ui.spacing_mut().item_spacing.x = 6.0;
         if tab.view == ResultView::Table && !tab.drill.is_empty() {
             ui.add_space(8.0);
-            if let Some(depth) = results::breadcrumb(ui, p, &tab.drill) {
+            if let Some(depth) = results::breadcrumb(ui, &tab.drill) {
                 tab.drill.truncate(depth);
             }
         }
         ui.with_layout(
             crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-            |ui| {
-                let page = tab.result.ready();
-                let has_more = page.is_some_and(|pg| pg.has_more);
-                if ui
-                    .add(IconButton::new(Icon::ChevronRight, "Next page").enabled(has_more))
-                    .clicked()
-                {
-                    actions.push(Action::Page(tab.page + 1));
-                }
-                let first = page.map(|pg| pg.first_index()).unwrap_or(0);
-                let last = page
-                    .map(|pg| first + pg.documents.len() as u64)
-                    .unwrap_or(0)
-                    .saturating_sub(1);
-                let total = match &tab.count {
-                    Load::Ready(n) => format!(" of {}", group(*n)),
-                    _ => String::new(),
-                };
-                let range = if first == 0 {
-                    "No documents".to_owned()
-                } else {
-                    format!("{} – {}{}", group(first), group(last), total)
-                };
-                ui.label(RichText::new(range).color(p.text_secondary));
-                if ui
-                    .add(IconButton::new(Icon::ChevronLeft, "Previous page").enabled(tab.page > 0))
-                    .clicked()
-                {
-                    actions.push(Action::Page(tab.page.saturating_sub(1)));
-                }
-                let mut size = tab.page_size;
-                crate::egui::ComboBox::from_id_salt(("raabit-page-size", &tab.db, &tab.collection))
-                    .selected_text(format!("{size} / page"))
-                    .width(96.0)
-                    .show_ui(ui, |ui| {
-                        for option in PAGE_SIZES {
-                            ui.selectable_value(&mut size, option, format!("{option} / page"));
-                        }
-                    });
-                if size != tab.page_size {
-                    actions.push(Action::PageSize(size));
-                }
-                if let Some(page) = page {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(style::duration(page.elapsed)).color(p.text_info))
-                        .on_hover_text("Query time of this page");
-                    icons::icon(ui, Icon::TimeSeries, p.text_info);
-                }
-            },
+            |ui| paging(ui, tab, actions),
         );
     });
 }
 
-fn result_area(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
-    match &tab.result {
+/// The paging bar, right to left: next, range, previous, page size, query time.
+fn paging(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
+    ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
+    let page = tab.result.ready();
+    let has_more = page.is_some_and(|pg| pg.has_more);
+    if ui
+        .add(IconButton::new(Icon::ChevronRight, "Next page").enabled(has_more))
+        .clicked()
+    {
+        actions.push(Action::Page(tab.page + 1));
+    }
+    let first = page.map(|pg| pg.first_index()).unwrap_or(0);
+    let last = page
+        .map(|pg| first + pg.documents.len() as u64)
+        .unwrap_or(0)
+        .saturating_sub(1);
+    let total = match &tab.count {
+        Load::Ready(n) => format!(" of {}", group(*n)),
+        _ => String::new(),
+    };
+    let range = if first == 0 {
+        "No documents".to_owned()
+    } else {
+        format!("{}–{}{}", group(first), group(last), total)
+    };
+    ui.label(tone_text(ui, Tone::Secondary, range));
+    if ui
+        .add(IconButton::new(Icon::ChevronLeft, "Previous page").enabled(tab.page > 0))
+        .clicked()
+    {
+        actions.push(Action::Page(tab.page.saturating_sub(1)));
+    }
+    let mut chosen = PageSize(tab.page_size);
+    ui.add(
+        Dropdown::new(
+            ("raabit-page-size", &tab.db, &tab.collection),
+            &mut chosen,
+            PAGE_SIZES.map(PageSize),
+        )
+        .label("Page size")
+        .width(110.0),
+    );
+    if chosen.0 != tab.page_size {
+        actions.push(Action::PageSize(chosen.0));
+    }
+    if tab.result.is_loading() {
+        ui.add(Spinner::new().label("Loading page"));
+    }
+    if let Some(page) = page {
+        ui.add_space(6.0);
+        ui.label(tone_text(ui, Tone::Muted, style::duration(page.elapsed)))
+            .on_hover_text("Query time of this page");
+        icons::icon(ui, Icon::TimeSeries, Tone::Muted.resolve(ui.ctx()));
+    }
+}
+
+/// The last page that was shown, kept while the next one loads so the view (and its
+/// keyboard focus) does not flicker away on a refresh after an edit, a sort or paging.
+#[derive(Clone)]
+struct Snapshot {
+    seq: u64,
+    first: u64,
+    docs: std::sync::Arc<Vec<mongo_raabit_core::bson::Document>>,
+}
+
+fn result_area(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
+    let snapshot_id = crate::egui::Id::new(("raabit-page", &tab.db, &tab.collection));
+    // The page is lent to the view for this frame; background jobs only apply their
+    // results between frames.
+    let result = std::mem::replace(&mut tab.result, Load::Idle);
+    match &result {
         Load::Idle => {}
         Load::Loading => {
-            ui.add_space(40.0);
-            ui.vertical_centered(|ui| {
-                ui.spinner();
-                ui.label(RichText::new("Running query…").color(p.text_secondary));
-            });
+            let stale: Option<Snapshot> = ui.data(|d| d.get_temp(snapshot_id));
+            match stale {
+                Some(snapshot) => documents(
+                    ui,
+                    tab,
+                    &snapshot.docs,
+                    snapshot.first,
+                    snapshot.seq,
+                    actions,
+                ),
+                None => {
+                    ui.add_space(40.0);
+                    ui.vertical_centered(|ui| {
+                        ui.add(Spinner::new().label("Running query"));
+                        ui.label(tone_text(ui, Tone::Secondary, "Running query…"));
+                    });
+                }
+            }
         }
         Load::Failed(err) => {
+            ui.data_mut(|d| d.remove::<Snapshot>(snapshot_id));
+            ui.add_space(8.0);
+            Banner::new(Severity::Error, err.clone()).show(ui);
+        }
+        Load::Ready(page) if page.documents.is_empty() => {
+            ui.data_mut(|d| d.remove::<Snapshot>(snapshot_id));
             ui.add_space(24.0);
-            ui.vertical_centered(|ui| {
-                icons::icon(ui, Icon::Warning, p.error);
-                ui.add(crate::egui::Label::new(RichText::new(err).color(p.error)).wrap());
-            });
+            EmptyState::new("No documents match the query")
+                .icon(Glyph::Filter)
+                .hint("Change the filter or reset the query.")
+                .show(ui);
         }
         Load::Ready(page) => {
-            if page.documents.is_empty() {
-                ui.add_space(40.0);
-                ui.vertical_centered(|ui| {
-                    icons::icon(ui, Icon::Filter, p.text_info);
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("No documents match the query").color(p.text_secondary));
-                });
-                return;
-            }
-            let docs = page.documents.clone();
             let first = page.first_index();
-            match tab.view {
-                ResultView::Table => match results::table(ui, tab, &docs, first) {
-                    Some(TableEvent::Drill(field)) => {
-                        tab.drill.push(field);
-                    }
-                    Some(TableEvent::Select(i)) => tab.selected = Some(i),
-                    Some(TableEvent::Open(i)) => {
-                        actions.push(Action::Doc(DocCommand::Edit, Some(i)))
-                    }
-                    Some(TableEvent::Command(command, i)) => {
-                        actions.push(Action::Doc(command, Some(i)))
-                    }
-                    Some(TableEvent::CommitEdit) => actions.push(Action::CommitEdit),
-                    None => {}
-                },
-                ResultView::Tree => match results::tree(
-                    ui,
-                    results::TreeState {
-                        id: crate::egui::Id::new(("raabit-tree", &tab.db, &tab.collection)),
-                        open: &tab.open,
-                        selected: tab.selected,
-                    },
-                    &docs,
+            let stored: Option<Snapshot> = ui.data(|d| d.get_temp(snapshot_id));
+            if stored.is_none_or(|s| s.seq != tab.seq) {
+                let snapshot = Snapshot {
+                    seq: tab.seq,
                     first,
-                ) {
-                    Some(TreeEvent::Toggle(key)) => {
-                        if !tab.open.remove(&key) {
-                            tab.open.insert(key);
-                        }
-                    }
-                    Some(TreeEvent::Select(i)) => tab.selected = Some(i),
-                    Some(TreeEvent::Open(i)) => {
-                        actions.push(Action::Doc(DocCommand::Edit, Some(i)))
-                    }
-                    Some(TreeEvent::Command(command, i)) => {
-                        actions.push(Action::Doc(command, Some(i)))
-                    }
-                    None => {}
-                },
-                ResultView::Json => results::json(ui, &docs, first),
+                    docs: std::sync::Arc::new(page.documents.clone()),
+                };
+                ui.data_mut(|d| d.insert_temp(snapshot_id, snapshot));
             }
+            documents(ui, tab, &page.documents, first, tab.seq, actions);
         }
+    }
+    tab.result = result;
+}
+
+/// The documents of one page in the chosen view; what the user did becomes `actions`.
+fn documents(
+    ui: &mut Ui,
+    tab: &mut CollectionTab,
+    docs: &[mongo_raabit_core::bson::Document],
+    first: u64,
+    version: u64,
+    actions: &mut Vec<Action>,
+) {
+    match tab.view {
+        ResultView::Table => match results::table(ui, tab, docs, first) {
+            Some(TableEvent::Drill(field)) => tab.drill.push(field),
+            Some(TableEvent::Select(i)) => tab.selected = Some(i),
+            Some(TableEvent::Open(i)) => actions.push(Action::Doc(DocCommand::Edit, Some(i))),
+            Some(TableEvent::Edit(edit)) => {
+                tab.editing = Some(edit);
+                actions.push(Action::CommitEdit);
+            }
+            Some(TableEvent::Sort { field, descending }) => {
+                tab.query.sort = results::sort_text(&field, descending);
+                actions.push(Action::Run { recount: false });
+            }
+            None => {}
+        },
+        ResultView::Tree => match results::tree_view(
+            ui,
+            results::TreeState {
+                id: crate::egui::Id::new(("raabit-tree", &tab.db, &tab.collection)),
+                open: &tab.open,
+                selected: tab.selected,
+            },
+            docs,
+            first,
+            true,
+        ) {
+            Some(TreeEvent::Toggle(key)) => {
+                if !tab.open.remove(&key) {
+                    tab.open.insert(key);
+                }
+            }
+            Some(TreeEvent::Select(i)) => tab.selected = Some(i),
+            Some(TreeEvent::Open(i)) => actions.push(Action::Doc(DocCommand::Edit, Some(i))),
+            Some(TreeEvent::Edit(edit)) => {
+                tab.editing = Some(edit);
+                actions.push(Action::CommitEdit);
+            }
+            None => {}
+        },
+        ResultView::Json => results::json_cached(
+            ui,
+            crate::egui::Id::new(("raabit-json", &tab.db, &tab.collection)),
+            docs,
+            first,
+            Some(version),
+        ),
     }
 }
 
