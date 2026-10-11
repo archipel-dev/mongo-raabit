@@ -585,7 +585,7 @@ pub fn tree(
                         Bson::Array(_) => Icon::Table,
                         _ => Icon::Json,
                     };
-                    icons::icon(ui, icon, if r.depth == 0 { p.leaf } else { p.text_info });
+                    icons::icon(ui, icon, if r.depth == 0 { p.accent } else { p.text_info });
                     let color = if r.depth == 0 {
                         p.text_strong
                     } else if r.label.starts_with('[') {

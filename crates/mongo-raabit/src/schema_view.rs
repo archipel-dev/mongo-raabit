@@ -4,8 +4,10 @@
 use crate::app::{Load, MongoRaabit, TabId};
 use crate::egui::{Align2, CornerRadius, FontId, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use crate::icons::{self, Icon};
-use crate::style::{self, Palette};
+use crate::style::Palette;
 use crate::widgets;
+use archipel_sdk::kit::Tone;
+use archipel_sdk::kit::components::{Button, SegmentedControl, Separator, Tag};
 use egui_extras::{Column, TableBuilder};
 use mongo_raabit_core::schema::{FieldStats, HISTOGRAM_BUCKETS, SampleMethod};
 
@@ -30,7 +32,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         })
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                icons::icon(ui, Icon::Schema, p.leaf);
+                icons::icon(ui, Icon::Schema, p.accent);
                 ui.label(RichText::new(&server).color(p.text_info));
                 icons::icon(ui, Icon::ChevronRight, p.text_info);
                 ui.label(RichText::new(&tab.db).color(p.text_secondary));
@@ -41,22 +43,24 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         .strong()
                         .color(p.text_strong),
                 );
-                widgets::badge(ui, "Schema", p.leaf);
+                ui.add(Tag::new("Schema").tone(Tone::Accent));
                 ui.with_layout(
                     crate::egui::Layout::right_to_left(crate::egui::Align::Center),
                     |ui| {
-                        if widgets::primary_button(ui, Some(Icon::Refresh), "Analyze").clicked() {
+                        if ui
+                            .add(Button::primary("Analyze").icon(Icon::Refresh))
+                            .clicked()
+                        {
                             analyze = true;
                         }
-                        widgets::segmented(
-                            ui,
+                        ui.add(SegmentedControl::new(
                             &mut tab.method,
-                            &[
-                                (SampleMethod::Last, Icon::ChevronDown, "Last"),
-                                (SampleMethod::First, Icon::ChevronUp, "First"),
-                                (SampleMethod::Random, Icon::Refresh, "Random"),
+                            [
+                                (SampleMethod::Last, "Last"),
+                                (SampleMethod::First, "First"),
+                                (SampleMethod::Random, "Random"),
                             ],
-                        );
+                        ));
                         let mut size = tab.size.to_string();
                         if ui
                             .add(crate::egui::TextEdit::singleline(&mut size).desired_width(56.0))
@@ -70,7 +74,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 );
             });
         });
-    widgets::separator(ui);
+    ui.add(Separator);
     match &tab.report {
         Load::Idle => {}
         Load::Loading => {
@@ -548,5 +552,4 @@ fn top_values(ui: &mut Ui, p: &Palette, values: &[(String, u64)]) {
         );
         response.on_hover_text(format!("{value}: {count}"));
     }
-    let _ = style::RADIUS;
 }

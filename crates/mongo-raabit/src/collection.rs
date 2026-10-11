@@ -8,6 +8,8 @@ use crate::results::{self, DocCommand, TableEvent, TreeEvent};
 use crate::style::{self, Palette};
 use crate::tree::ToolKind;
 use crate::widgets;
+use archipel_sdk::kit::Tone;
+use archipel_sdk::kit::components::{Button, IconButton, SegmentedControl, Separator, Tag};
 use mongo_raabit_core::connection::CollectionKind;
 
 pub const PAGE_SIZES: [u64; 5] = [20, 50, 100, 250, 1000];
@@ -88,7 +90,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             result_toolbar(ui, &p, tab, &mut actions);
         });
     if sql {
-        widgets::separator(ui);
+        ui.add(Separator);
         if app.collection_tab_mut(tab_id).map(|t| t.mode) == Some(QueryMode::Shell) {
             app.init_shell(tab_id);
             crate::shell_view::show(app, tab_id, ui);
@@ -103,7 +105,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         }
         return;
     }
-    widgets::separator(ui);
+    ui.add(Separator);
     result_area(ui, &p, tab, &mut actions);
     if let Some(kind) = tool
         && let Some(tab) = app.collection_tab_mut(tab_id)
@@ -190,7 +192,7 @@ fn header(
             CollectionKind::GridFsBucket => Icon::Bucket,
             _ => Icon::Collection,
         };
-        icons::icon(ui, icon, p.leaf);
+        icons::icon(ui, icon, p.accent);
         ui.label(RichText::new(server).color(p.text_info));
         icons::icon(ui, Icon::ChevronRight, p.text_info);
         ui.label(RichText::new(&tab.db).color(p.text_secondary));
@@ -202,7 +204,7 @@ fn header(
                 .color(p.text_strong),
         );
         if tab.kind == CollectionKind::View {
-            widgets::badge(ui, "view", p.keyword);
+            ui.add(Tag::new("view").tone(Tone::Accent));
         }
         ui.with_layout(
             crate::egui::Layout::right_to_left(crate::egui::Align::Center),
@@ -216,7 +218,7 @@ fn header(
                     ),
                     (Icon::Pipeline, "Aggregation", ToolKind::Aggregation),
                 ] {
-                    if widgets::icon_button(ui, icon, tip).clicked() {
+                    if ui.add(IconButton::new(icon, tip)).clicked() {
                         *tool = Some(kind);
                     }
                 }
@@ -224,13 +226,14 @@ fn header(
                 ui.spacing_mut().item_spacing.x = 6.0;
                 match &tab.count {
                     Load::Ready(n) => {
-                        widgets::badge(ui, &format!("{} documents", group(*n)), p.accent_text);
+                        ui.add(Tag::new(format!("{} documents", group(*n))).tone(Tone::Accent));
                     }
                     Load::Loading => {
                         ui.spinner();
                     }
                     Load::Failed(err) => {
-                        widgets::badge(ui, "count failed", p.error).on_hover_text(err);
+                        ui.add(Tag::new("count failed").tone(Tone::Error))
+                            .on_hover_text(err);
                     }
                     Load::Idle => {}
                 }
@@ -244,16 +247,15 @@ fn header(
 fn mode_switch(ui: &mut Ui, tab: &mut CollectionTab) {
     let before = tab.mode;
     ui.horizontal(|ui| {
-        widgets::segmented(
-            ui,
+        ui.add(SegmentedControl::new(
             &mut tab.mode,
-            &[
-                (QueryMode::Builder, Icon::Filter, "Builder"),
-                (QueryMode::Code, Icon::Code, "Code"),
-                (QueryMode::Sql, Icon::Sql, "SQL"),
-                (QueryMode::Shell, Icon::Shell, "Shell"),
+            [
+                (QueryMode::Builder, "Builder"),
+                (QueryMode::Code, "Code"),
+                (QueryMode::Sql, "SQL"),
+                (QueryMode::Shell, "Shell"),
             ],
-        );
+        ));
     });
     if before != QueryMode::Builder && tab.mode == QueryMode::Builder {
         tab.builder.take_over(&tab.query);
@@ -279,7 +281,8 @@ fn query_bar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut Ve
                     width,
                 );
                 enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-                if widgets::primary_button(ui, Some(Icon::Play), "Run")
+                if ui
+                    .add(Button::primary("Run").icon(Icon::Play))
                     .on_hover_text("Run query (Enter)")
                     .clicked()
                 {
@@ -308,7 +311,10 @@ fn query_bar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut Ve
                 enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
                 let r = widgets::query_field(ui, "Limit", &mut tab.query.limit, "0", total * 0.11);
                 enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-                if widgets::icon_button(ui, Icon::Close, "Reset query").clicked() {
+                if ui
+                    .add(IconButton::new(Icon::Close, "Reset query"))
+                    .clicked()
+                {
                     tab.query = Default::default();
                     actions.push(Action::Run { recount: true });
                 }
@@ -334,58 +340,61 @@ pub fn group(n: u64) -> String {
 
 fn result_toolbar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        widgets::segmented(
-            ui,
+        ui.add(SegmentedControl::new(
             &mut tab.view,
-            &[
-                (ResultView::Table, Icon::Table, "Table"),
-                (ResultView::Tree, Icon::Tree, "Tree"),
-                (ResultView::Json, Icon::Json, "JSON"),
+            [
+                (ResultView::Table, "Table"),
+                (ResultView::Tree, "Tree"),
+                (ResultView::Json, "JSON"),
             ],
-        );
+        ));
         ui.add_space(6.0);
         let has_selection = tab.selected.is_some();
         ui.spacing_mut().item_spacing.x = 0.0;
-        if widgets::icon_button(ui, Icon::Plus, "Add document").clicked() {
+        if ui
+            .add(IconButton::new(Icon::Plus, "Add document"))
+            .clicked()
+        {
             actions.push(Action::Add);
         }
-        if widgets::icon_button_tinted(
-            ui,
-            Icon::Edit,
-            "Edit document (double-click a row)",
-            None,
-            has_selection,
-        )
-        .clicked()
+        if ui
+            .add(
+                IconButton::new(Icon::Edit, "Edit document (double-click a row)")
+                    .enabled(has_selection),
+            )
+            .clicked()
         {
             actions.push(Action::Doc(DocCommand::Edit, None));
         }
-        if widgets::icon_button_tinted(ui, Icon::Copy, "Clone document", None, has_selection)
+        if ui
+            .add(IconButton::new(Icon::Copy, "Clone document").enabled(has_selection))
             .clicked()
         {
             actions.push(Action::Doc(DocCommand::Clone, None));
         }
-        if widgets::icon_button_tinted(
-            ui,
-            Icon::Trash,
-            "Delete document",
-            Some(p.error),
-            has_selection,
-        )
-        .clicked()
+        if ui
+            .add(
+                IconButton::new(Icon::Trash, "Delete document")
+                    .enabled(has_selection)
+                    .tone(Tone::Error),
+            )
+            .clicked()
         {
             actions.push(Action::Doc(DocCommand::Delete, None));
         }
         ui.add_space(6.0);
-        if widgets::icon_button(ui, Icon::Explain, "Explain query plan").clicked() {
+        if ui
+            .add(IconButton::new(Icon::Explain, "Explain query plan"))
+            .clicked()
+        {
             actions.push(Action::Explain);
         }
-        if widgets::icon_button(
-            ui,
-            Icon::Code,
-            "Query code (JS, Python, Java, C#, Go, Rust, PHP, Ruby)",
-        )
-        .clicked()
+        if ui
+            .add(IconButton::new(
+                Icon::Code,
+                "Query code (JS, Python, Java, C#, Go, Rust, PHP, Ruby)",
+            ))
+            .clicked()
         {
             actions.push(Action::Code);
         }
@@ -401,7 +410,8 @@ fn result_toolbar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &m
             |ui| {
                 let page = tab.result.ready();
                 let has_more = page.is_some_and(|pg| pg.has_more);
-                if widgets::icon_button_tinted(ui, Icon::ChevronRight, "Next page", None, has_more)
+                if ui
+                    .add(IconButton::new(Icon::ChevronRight, "Next page").enabled(has_more))
                     .clicked()
                 {
                     actions.push(Action::Page(tab.page + 1));
@@ -421,14 +431,9 @@ fn result_toolbar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &m
                     format!("{} – {}{}", group(first), group(last), total)
                 };
                 ui.label(RichText::new(range).color(p.text_secondary));
-                if widgets::icon_button_tinted(
-                    ui,
-                    Icon::ChevronLeft,
-                    "Previous page",
-                    None,
-                    tab.page > 0,
-                )
-                .clicked()
+                if ui
+                    .add(IconButton::new(Icon::ChevronLeft, "Previous page").enabled(tab.page > 0))
+                    .clicked()
                 {
                     actions.push(Action::Page(tab.page.saturating_sub(1)));
                 }

@@ -2,10 +2,16 @@
 //! SSH and advanced settings, URI import and Test Connection.
 
 use crate::app::{Load, MongoRaabit};
-use crate::egui::{Align2, Color32, CornerRadius, FontId, RichText, Stroke, Ui, vec2};
+use crate::egui::{ScrollArea, Ui};
 use crate::icons::Icon;
-use crate::style::{self, Palette};
+use crate::style;
 use crate::widgets;
+use archipel_sdk::kit::components::{
+    Banner, Button, Checkbox, Dialog, DialogAction, Dropdown, IconButton, ListRow, Severity,
+    Spinner, Tab, TabBar, TextField,
+};
+use archipel_sdk::kit::tokens::size;
+use archipel_sdk::kit::{Glyph, Tone};
 use mongo_raabit_core::Connection;
 use mongo_raabit_core::connection::ServerInfo;
 use mongo_raabit_core::profile::{
@@ -23,7 +29,7 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [(Self, &'static str); 5] = [
+    pub const ALL: [(Self, &'static str); 5] = [
         (Self::Server, "Server"),
         (Self::Authentication, "Authentication"),
         (Self::Tls, "TLS / SSL"),
@@ -252,137 +258,120 @@ impl ConnectionManager {
     }
 }
 
+/// Dialog width, and the share of the window height the form area may use.
+const WIDTH: f32 = 880.0;
+const LIST_WIDTH: f32 = 250.0;
+
 /// Render the dialog while `app.manager` is set; closing clears it.
 pub fn show(app: &mut MongoRaabit, ctx: &crate::egui::Context) {
     let Some(mut manager) = app.manager.take() else {
         return;
     };
-    let p = Palette::of_ctx(ctx);
-    let mut open = true;
-    let screen = ctx.content_rect();
-    let size = vec2(
-        880.0_f32.min(screen.width() - 40.0),
-        600.0_f32.min(screen.height() - 40.0),
-    );
-    let frame = crate::egui::Frame::new()
-        .fill(p.island)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(12))
-        .shadow(crate::egui::Shadow {
-            offset: [0, 8],
-            blur: 28,
-            spread: 0,
-            color: Color32::from_black_alpha(if p.dark { 120 } else { 40 }),
-        });
-    let response = crate::egui::Modal::new(crate::egui::Id::new("raabit-manager"))
-        .frame(frame)
-        .backdrop_color(Color32::from_black_alpha(if p.dark { 110 } else { 60 }))
-        .show(ctx, |ui| {
-            ui.set_width(size.x);
-            ui.set_height(size.y);
-            dialog(app, &mut manager, ui, &p, size, &mut open);
-        });
-    if response.should_close() {
-        open = false;
+    let width = WIDTH.min(ctx.content_rect().width() - 40.0);
+    // What is left of the window once the title, the result banner and the buttons are in.
+    let body_height = (ctx.content_rect().height() - 300.0).clamp(240.0, 440.0);
+    let valid = manager.profile().is_ok();
+    let action = Dialog::new("Connection Manager")
+        .icon(Glyph::Database)
+        .width(width)
+        .primary("Connect")
+        .primary_enabled(valid)
+        .secondary("Save")
+        .content(|ui| content(app, &mut manager, ui, width, body_height))
+        .show(ctx);
+    let mut open = !manager.close;
+    match action {
+        Some(DialogAction::Primary) => {
+            if save(app, &mut manager)
+                && let Some(profile) = app.store.get(&manager.draft.id).cloned()
+            {
+                app.connect(profile);
+                open = false;
+            }
+        }
+        Some(DialogAction::Secondary) => {
+            save(app, &mut manager);
+        }
+        Some(DialogAction::Dismissed) => open = false,
+        None => {}
     }
-    if ctx.input(|i| i.key_pressed(crate::egui::Key::Escape)) {
-        open = false;
-    }
-    if open {
+    // The dialog may have been replaced while its content ran (e.g. by `connect`).
+    if open && app.manager.is_none() {
         app.manager = Some(manager);
     }
 }
 
-fn dialog(
-    app: &mut MongoRaabit,
-    m: &mut ConnectionManager,
-    ui: &mut Ui,
-    p: &Palette,
-    size: crate::egui::Vec2,
-    open: &mut bool,
-) {
-    // Title bar.
-    crate::egui::Frame::new()
-        .inner_margin(crate::egui::Margin {
-            left: 16,
-            right: 10,
-            top: 12,
-            bottom: 10,
-        })
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                crate::icons::icon(ui, Icon::Leaf, p.leaf);
-                ui.label(
-                    RichText::new("Connection Manager")
-                        .size(15.0)
-                        .strong()
-                        .color(p.text_strong),
-                );
-                ui.with_layout(
-                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                    |ui| {
-                        if widgets::icon_button(ui, Icon::Close, "Close (Esc)").clicked() {
-                            *open = false;
-                        }
-                    },
-                );
-            });
-        });
-    widgets::separator(ui);
-    let body_height = size.y - 44.0 - 58.0;
-    ui.allocate_ui_with_layout(
-        vec2(size.x, body_height),
-        crate::egui::Layout::left_to_right(crate::egui::Align::Min),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            // ---- left: saved connections
-            crate::egui::Frame::new()
-                .fill(p.raised)
-                .inner_margin(crate::egui::Margin::same(10))
-                .show(ui, |ui| {
-                    ui.set_width(250.0);
-                    ui.set_height(body_height - 20.0);
-                    ui.vertical(|ui| connection_list(app, m, ui, p));
-                });
-            let (sep, _) =
-                ui.allocate_exact_size(vec2(1.0, body_height), crate::egui::Sense::hover());
-            ui.painter().rect_filled(sep, 0.0, p.separator);
-            // ---- right: editor
-            crate::egui::Frame::new()
-                .inner_margin(crate::egui::Margin {
-                    left: 18,
-                    right: 18,
-                    top: 12,
-                    bottom: 8,
-                })
-                .show(ui, |ui| {
-                    let width = size.x - 271.0 - 36.0;
-                    ui.set_width(width);
-                    ui.set_height(body_height - 20.0);
-                    ui.vertical(|ui| {
-                        ui.set_width(width);
-                        editor(app, m, ui, p, body_height - 20.0);
-                    });
-                });
-        },
-    );
-    widgets::separator(ui);
-    footer(app, m, ui, p, open);
+/// Store the form's profile (and its secrets); reports whether it was valid.
+fn save(app: &mut MongoRaabit, m: &mut ConnectionManager) -> bool {
+    match m.profile() {
+        Ok(profile) => {
+            store_secrets(app, m, &profile);
+            app.store.upsert(profile.clone());
+            app.save_store();
+            m.selected = Some(profile.id.clone());
+            m.draft = profile;
+            m.error = None;
+            true
+        }
+        Err(err) => {
+            m.error = Some(err);
+            false
+        }
+    }
 }
 
-fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui, p: &Palette) {
+fn content(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui, width: f32, height: f32) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = size::CONTENT_INSET;
+        ui.vertical(|ui| {
+            ui.set_width(LIST_WIDTH);
+            connection_list(app, m, ui, height);
+        });
+        ui.add(archipel_sdk::kit::components::Separator);
+        ui.vertical(|ui| {
+            let form_width = width - LIST_WIDTH - 3.0 * size::CONTENT_INSET - 40.0;
+            ui.set_width(form_width);
+            editor(m, ui, height);
+        });
+    });
+    ui.add(archipel_sdk::kit::components::Separator);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        if widgets::icon_button(ui, Icon::Plus, "New connection").clicked() {
+        if ui
+            .add(Button::secondary("Test Connection").icon(Icon::Pulse))
+            .clicked()
+        {
+            test_connection(app, m);
+        }
+        if ui.add(Button::ghost("Close")).clicked() {
+            m.close = true;
+        }
+    });
+}
+
+fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
+        if ui
+            .add(IconButton::new(Icon::Plus, "New connection"))
+            .clicked()
+        {
             let mut fresh = ConnectionManager::from_profile(ConnectionProfile::default());
             fresh.filter = std::mem::take(&mut m.filter);
             *m = fresh;
         }
-        if widgets::icon_button(ui, Icon::Import, "Import from connection string").clicked() {
+        if ui
+            .add(IconButton::new(
+                Icon::Import,
+                "Import from connection string",
+            ))
+            .clicked()
+        {
             m.uri_import = Some(String::new());
         }
         let has_selection = m.selected.is_some();
-        if widgets::icon_button_tinted(ui, Icon::Copy, "Duplicate", None, has_selection).clicked()
+        if ui
+            .add(IconButton::new(Icon::Copy, "Duplicate").enabled(has_selection))
+            .clicked()
             && let Some(id) = m.selected.clone()
             && let Some(new_id) = app.store.duplicate(&id)
         {
@@ -391,7 +380,12 @@ fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui
                 m.select(&profile, app.secrets.as_ref());
             }
         }
-        if widgets::icon_button_tinted(ui, Icon::Trash, "Delete", Some(p.error), has_selection)
+        if ui
+            .add(
+                IconButton::new(Icon::Trash, "Delete")
+                    .tone(Tone::Error)
+                    .enabled(has_selection),
+            )
             .clicked()
             && let Some(id) = m.selected.clone()
         {
@@ -403,30 +397,16 @@ fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui
             *m = ConnectionManager::new(&app.store);
         }
     });
-    ui.add_space(6.0);
-    crate::egui::Frame::new()
-        .fill(p.field)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(7))
-        .inner_margin(crate::egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                crate::icons::icon(ui, Icon::Search, p.text_info);
-                ui.add(
-                    crate::egui::TextEdit::singleline(&mut m.filter)
-                        .hint_text(widgets::hint(ui, "Filter connections"))
-                        .frame(false)
-                        .desired_width(f32::INFINITY),
-                );
-            });
-        });
-    ui.add_space(8.0);
+    ui.add(TextField::search(&mut m.filter).placeholder("Filter connections"));
     let filter = m.filter.to_lowercase();
     let mut clicked: Option<ConnectionProfile> = None;
     let mut connect: Option<ConnectionProfile> = None;
-    crate::egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
+    ScrollArea::vertical()
+        .id_salt("raabit-manager-list")
+        .max_height(height - 70.0)
+        .auto_shrink([false, true])
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             let mut folders = vec![String::new()];
             folders.extend(app.store.folder_paths());
             for folder in folders {
@@ -449,69 +429,29 @@ fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui
                     folder.matches('/').count() + 1
                 };
                 if !folder.is_empty() {
-                    ui.horizontal(|ui| {
-                        ui.add_space(4.0 + 12.0 * (depth as f32 - 1.0));
-                        crate::icons::icon(ui, Icon::Folder, p.text_secondary);
-                        ui.label(
-                            RichText::new(folder.rsplit('/').next().unwrap_or(&folder))
-                                .color(p.text_secondary),
-                        );
-                    });
+                    ListRow::new(folder.rsplit('/').next().unwrap_or(&folder))
+                        .icon(Icon::Folder)
+                        .depth(depth - 1)
+                        .enabled(false)
+                        .show(ui);
                 }
                 for profile in profiles {
-                    let selected = m.selected.as_deref() == Some(profile.id.as_str());
-                    let (rect, response) = ui.allocate_exact_size(
-                        vec2(ui.available_width(), 40.0),
-                        crate::egui::Sense::click(),
-                    );
-                    if selected {
-                        ui.painter()
-                            .rect_filled(rect, CornerRadius::same(7), p.selection);
-                    } else if response.hovered() {
-                        ui.painter()
-                            .rect_filled(rect, CornerRadius::same(7), p.hover);
-                    }
-                    let x = rect.left() + 10.0 + 12.0 * depth as f32;
-                    crate::icons::paint(
-                        ui.painter(),
-                        crate::egui::Rect::from_center_size(
-                            crate::egui::pos2(x + 8.0, rect.center().y),
-                            vec2(16.0, 16.0),
-                        ),
-                        Icon::Leaf,
-                        p.leaf,
-                    );
-                    ui.painter().text(
-                        crate::egui::pos2(x + 24.0, rect.top() + 12.0),
-                        Align2::LEFT_CENTER,
-                        &profile.name,
-                        FontId::proportional(13.0),
-                        p.text_strong,
-                    );
-                    ui.painter().text(
-                        crate::egui::pos2(x + 24.0, rect.top() + 28.0),
-                        Align2::LEFT_CENTER,
-                        crate::values::truncate(&profile.summary(), 30),
-                        FontId::proportional(11.0),
-                        p.text_info,
-                    );
-                    if response.double_clicked() {
+                    let row = ListRow::new(profile.name.as_str())
+                        .icon(Icon::Database)
+                        .secondary(crate::values::truncate(&profile.summary(), 30))
+                        .depth(depth)
+                        .selected(m.selected.as_deref() == Some(profile.id.as_str()))
+                        .show(ui);
+                    if row.response.double_clicked() {
                         connect = Some(profile.clone());
-                    } else if response.clicked() {
+                    } else if row.response.clicked() {
                         clicked = Some(profile.clone());
                     }
                 }
             }
             if app.store.profiles.is_empty() {
-                ui.add_space(30.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("No saved connections").color(p.text_secondary));
-                    ui.label(
-                        RichText::new("Create one with + or import a URI")
-                            .size(11.5)
-                            .color(p.text_info),
-                    );
-                });
+                widgets::caption(ui, "No saved connections");
+                widgets::caption(ui, "Create one with + or import a URI");
             }
         });
     if let Some(profile) = clicked {
@@ -524,324 +464,367 @@ fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui
     }
 }
 
-fn tab_strip(ui: &mut Ui, m: &mut ConnectionManager, p: &Palette) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 18.0;
-        for (page, label) in Page::ALL {
-            let selected = m.page == page;
-            let color = if selected {
-                p.text_strong
-            } else {
-                p.text_secondary
-            };
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(label.to_owned(), FontId::proportional(13.0), color);
-            let (rect, response) = ui
-                .allocate_exact_size(galley.size() + vec2(0.0, 12.0), crate::egui::Sense::click());
-            ui.painter().galley(rect.min, galley, color);
-            if selected {
-                ui.painter().rect_filled(
-                    crate::egui::Rect::from_min_size(
-                        crate::egui::pos2(rect.left(), rect.bottom() - 2.5),
-                        vec2(rect.width(), 2.5),
-                    ),
-                    CornerRadius::same(1),
-                    p.accent,
-                );
-            } else if response.hovered() {
-                ui.ctx()
-                    .set_cursor_icon(crate::egui::CursorIcon::PointingHand);
-            }
-            if response.clicked() {
-                m.page = page;
-            }
-        }
-    });
-    widgets::separator(ui);
-}
-
-fn text_row(ui: &mut Ui, label: &str, value: &mut String, hint: &str, width: f32) {
-    widgets::form_row(ui, label, 130.0, |ui| {
-        ui.add(
-            crate::egui::TextEdit::singleline(value)
-                .hint_text(hint)
-                .desired_width(width),
-        );
-    });
-}
-
-fn editor(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui, p: &Palette, height: f32) {
-    if let Some(uri) = &mut m.uri_import {
-        let mut import = false;
-        let mut cancel = false;
-        style::card(p).show(ui, |ui| {
-            ui.label(RichText::new("Import from connection string").strong());
-            ui.add_space(4.0);
-            ui.add(
-                crate::egui::TextEdit::singleline(uri)
-                    .hint_text(widgets::hint(
-                        ui,
-                        "mongodb+srv://user:password@cluster0.example.net/",
-                    ))
-                    .font(FontId::monospace(12.5))
-                    .desired_width(f32::INFINITY),
-            );
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                import = widgets::primary_button(ui, Some(Icon::Import), "Import").clicked();
-                cancel = widgets::secondary_button(ui, None, "Cancel").clicked();
-            });
-        });
-        if import {
-            match ConnectionProfile::from_uri(uri) {
-                Ok((profile, password)) => {
-                    let mut next = ConnectionManager::from_profile(profile);
-                    next.password = password.unwrap_or_default();
-                    *m = next;
-                }
-                Err(err) => m.error = Some(err.to_string()),
-            }
-        } else if cancel {
-            m.uri_import = None;
-        }
-        ui.add_space(10.0);
+fn tab_strip(ui: &mut Ui, m: &mut ConnectionManager) {
+    let tabs: Vec<Tab> = Page::ALL
+        .iter()
+        .map(|(_, label)| Tab::new(*label))
+        .collect();
+    let current = Page::ALL
+        .iter()
+        .position(|(p, _)| *p == m.page)
+        .unwrap_or(0);
+    if let Some(index) = TabBar::new(&tabs, current).show(ui).selected {
+        m.page = Page::ALL[index].0;
     }
-    let footer_height =
-        96.0 + if matches!(m.test, Load::Idle) {
-            0.0
-        } else {
-            36.0
-        } + if m.error.is_some() { 36.0 } else { 0.0 };
-    crate::egui::ScrollArea::vertical()
+}
+
+fn text(ui: &mut Ui, label: &str, value: &mut String, placeholder: &str) {
+    ui.add(TextField::new(value).label(label).placeholder(placeholder));
+}
+
+/// A dropdown over `all` with a visible label; `name` gives each option its text.
+fn pick<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id: &str,
+    label: &str,
+    value: &mut T,
+    all: &[T],
+    name: impl Fn(T) -> String,
+) {
+    widgets::caption(ui, label);
+    let mut selected = name(*value);
+    let options: Vec<String> = all.iter().map(|v| name(*v)).collect();
+    if ui
+        .add(
+            Dropdown::new(id, &mut selected, options)
+                .label(label)
+                .width(240.0),
+        )
+        .changed()
+        && let Some(v) = all.iter().find(|v| name(**v) == selected)
+    {
+        *value = *v;
+    }
+}
+
+fn editor(m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
+    if m.uri_import.is_some() {
+        import_form(m, ui);
+        return;
+    }
+    ScrollArea::vertical()
         .id_salt("raabit-manager-form")
-        .max_height((height - footer_height - ui.min_rect().height()).max(120.0))
+        .max_height(height)
+        .min_scrolled_height(height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-    widgets::form_row(ui, "Name", 130.0, |ui| {
-                ui.add(crate::egui::TextEdit::singleline(&mut m.draft.name).desired_width(300.0));
-            });
-            widgets::form_row(ui, "Folder", 130.0, |ui| {
-                ui.add(crate::egui::TextEdit::singleline(&mut m.draft.folder).hint_text(widgets::hint(ui, "e.g. Production/EU")).desired_width(300.0));
-            });
-            ui.add_space(8.0);
-            tab_strip(ui, m, p);
-            ui.add_space(8.0);
+            ui.spacing_mut().item_spacing.y = size::SECTION_SPACING;
+            text(ui, "Name", &mut m.draft.name, "");
+            text(ui, "Folder", &mut m.draft.folder, "e.g. Production/EU");
+            tab_strip(ui, m);
             match m.page {
-                Page::Server => {
-                    widgets::form_row(ui, "Connection type", 130.0, |ui| {
-                        crate::egui::ComboBox::from_id_salt("raabit-target")
-                            .selected_text(m.target_kind.label())
-                            .width(220.0)
-                            .show_ui(ui, |ui| {
-                                for kind in TargetKind::ALL {
-                                    ui.selectable_value(&mut m.target_kind, kind, kind.label());
-                                }
-                            });
-                    });
-                    match m.target_kind {
-                        TargetKind::Standalone => {
-                            widgets::form_row(ui, "Server", 130.0, |ui| {
-                                ui.add(crate::egui::TextEdit::singleline(&mut m.host).desired_width(220.0));
-                                ui.label(RichText::new(":").color(p.text_info));
-                                ui.add(crate::egui::TextEdit::singleline(&mut m.port).desired_width(64.0));
-                            });
-                        }
-                        TargetKind::Srv => text_row(ui, "Cluster host", &mut m.host, "cluster0.example.net", 300.0),
-                        TargetKind::ReplicaSet | TargetKind::Sharded => {
-                            let label = if m.target_kind == TargetKind::ReplicaSet { "Members" } else { "mongos routers" };
-                            widgets::form_row(ui, label, 130.0, |ui| {
-                                ui.add(
-                                    crate::egui::TextEdit::multiline(&mut m.hosts_text)
-                                        .hint_text(widgets::hint(ui, "host1:27017\nhost2:27017"))
-                                        .font(FontId::monospace(12.5))
-                                        .desired_rows(4)
-                                        .desired_width(300.0),
-                                );
-                            });
-                            if m.target_kind == TargetKind::ReplicaSet {
-                                text_row(ui, "Replica set name", &mut m.set_name, "rs0", 220.0);
-                            }
-                        }
-                    }
-                    widgets::form_row(ui, "Read preference", 130.0, |ui| {
-                        crate::egui::ComboBox::from_id_salt("raabit-readpref")
-                            .selected_text(m.draft.read_preference.as_str())
-                            .width(220.0)
-                            .show_ui(ui, |ui| {
-                                for pref in ReadPreference::ALL {
-                                    ui.selectable_value(&mut m.draft.read_preference, pref, pref.as_str());
-                                }
-                            });
-                    });
-                }
-                Page::Authentication => {
-                    widgets::form_row(ui, "Mechanism", 130.0, |ui| {
-                        crate::egui::ComboBox::from_id_salt("raabit-auth")
-                            .selected_text(m.draft.auth.mechanism.label())
-                            .width(220.0)
-                            .show_ui(ui, |ui| {
-                                for mech in AuthMechanism::ALL {
-                                    ui.selectable_value(&mut m.draft.auth.mechanism, mech, mech.label());
-                                }
-                            });
-                    });
-                    if m.draft.auth.mechanism != AuthMechanism::None {
-                        text_row(ui, "User name", &mut m.draft.auth.username, "", 260.0);
-                        if m.draft.auth.mechanism.needs_password() {
-                            widgets::form_row(ui, "Password", 130.0, |ui| {
-                                ui.add(crate::egui::TextEdit::singleline(&mut m.password).password(true).desired_width(260.0));
-                            });
-                        }
-                        text_row(ui, "Auth database", &mut m.draft.auth.auth_database, "admin", 260.0);
-                        ui.add_space(6.0);
-                        hint(ui, p, "Passwords are kept in the secret store, never in the connections file.");
-                    }
-                }
+                Page::Server => server_page(m, ui),
+                Page::Authentication => auth_page(m, ui),
                 Page::Tls => {
-                    widgets::form_row(ui, "", 130.0, |ui| {
-                        ui.checkbox(&mut m.draft.tls.enabled, "Use TLS/SSL");
-                    });
+                    ui.add(Checkbox::new(&mut m.draft.tls.enabled, "Use TLS/SSL"));
                     if m.draft.tls.enabled {
-                        text_row(ui, "CA file", &mut m.ca_file, "/path/to/ca.pem (optional)", 320.0);
-                        text_row(ui, "Client certificate", &mut m.cert_file, "PEM with key, for X.509", 320.0);
-                        widgets::form_row(ui, "", 130.0, |ui| {
-                            ui.checkbox(&mut m.draft.tls.allow_invalid_certificates, "Allow invalid certificates");
-                        });
-                        widgets::form_row(ui, "", 130.0, |ui| {
-                            ui.checkbox(&mut m.draft.tls.allow_invalid_hostnames, "Allow invalid host names");
-                        });
-                    }
-                }
-                Page::Ssh => {
-                    widgets::form_row(ui, "", 130.0, |ui| {
-                        ui.checkbox(&mut m.ssh_enabled, "Connect through an SSH tunnel");
-                    });
-                    if m.ssh_enabled {
-                        widgets::form_row(ui, "SSH server", 130.0, |ui| {
-                            ui.add(crate::egui::TextEdit::singleline(&mut m.ssh.host).hint_text(widgets::hint(ui, "bastion.example.com")).desired_width(220.0));
-                            ui.label(RichText::new(":").color(p.text_info));
-                            let mut port = m.ssh.port.to_string();
-                            if ui.add(crate::egui::TextEdit::singleline(&mut port).desired_width(48.0)).changed() {
-                                m.ssh.port = port.trim().parse().unwrap_or(m.ssh.port);
-                            }
-                        });
-                        text_row(ui, "SSH user", &mut m.ssh.username, "", 220.0);
-                        widgets::form_row(ui, "Authentication", 130.0, |ui| {
-                            let label = match m.ssh.auth {
-                                SshAuth::Agent => "SSH agent / default keys",
-                                SshAuth::PrivateKey { .. } => "Private key",
-                                SshAuth::Password => "Password",
-                            };
-                            crate::egui::ComboBox::from_id_salt("raabit-ssh-auth").selected_text(label).width(220.0).show_ui(ui, |ui| {
-                                if ui.selectable_label(matches!(m.ssh.auth, SshAuth::Agent), "SSH agent / default keys").clicked() {
-                                    m.ssh.auth = SshAuth::Agent;
-                                }
-                                if ui.selectable_label(matches!(m.ssh.auth, SshAuth::PrivateKey { .. }), "Private key").clicked() {
-                                    m.ssh.auth = SshAuth::PrivateKey { path: m.ssh_key.clone().into() };
-                                }
-                                if ui.selectable_label(matches!(m.ssh.auth, SshAuth::Password), "Password").clicked() {
-                                    m.ssh.auth = SshAuth::Password;
-                                }
-                            });
-                        });
-                        match m.ssh.auth {
-                            SshAuth::PrivateKey { .. } => text_row(ui, "Private key", &mut m.ssh_key, "~/.ssh/id_ed25519", 300.0),
-                            SshAuth::Password => widgets::form_row(ui, "SSH password", 130.0, |ui| {
-                                ui.add(crate::egui::TextEdit::singleline(&mut m.ssh_password).password(true).desired_width(220.0));
-                            }),
-                            SshAuth::Agent => {}
-                        }
-                        ui.add_space(6.0);
-                        let ssh_found = mongo_raabit_core::tunnel::find_ssh();
-                        hint(
+                        text(ui, "CA file", &mut m.ca_file, "/path/to/ca.pem (optional)");
+                        text(
                             ui,
-                            p,
-                            &match ssh_found {
-                                Some(path) => format!("Uses the OpenSSH client at {}", path.display()),
-                                None => "No `ssh` executable on PATH — install the OpenSSH client to use tunnels.".into(),
-                            },
+                            "Client certificate",
+                            &mut m.cert_file,
+                            "PEM with key, for X.509",
                         );
+                        ui.add(Checkbox::new(
+                            &mut m.draft.tls.allow_invalid_certificates,
+                            "Allow invalid certificates",
+                        ));
+                        ui.add(Checkbox::new(
+                            &mut m.draft.tls.allow_invalid_hostnames,
+                            "Allow invalid host names",
+                        ));
                     }
                 }
+                Page::Ssh => ssh_page(m, ui),
                 Page::Advanced => {
-                    text_row(ui, "Default database", &mut m.draft.default_database, "", 220.0);
-                    text_row(ui, "Application name", &mut m.draft.app_name, "mongo-raabit", 220.0);
-                    text_row(ui, "Timeout (ms)", &mut m.timeout, "10000", 120.0);
+                    text(ui, "Default database", &mut m.draft.default_database, "");
+                    text(
+                        ui,
+                        "Application name",
+                        &mut m.draft.app_name,
+                        "mongo-raabit",
+                    );
+                    text(ui, "Timeout (ms)", &mut m.timeout, "10000");
                 }
             }
-        });
-    // Connection string preview and test result below the form.
-    ui.add_space(6.0);
-    widgets::caption(ui, "Connection string");
-    let uri = match m.profile() {
-        Ok(profile) => profile.display_uri(),
-        Err(err) => format!("⚠ {err}"),
-    };
-    crate::egui::Frame::new()
-        .fill(p.field)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(7))
-        .inner_margin(crate::egui::Margin::symmetric(10, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            let mut uri = match m.profile() {
+                Ok(profile) => profile.display_uri(),
+                Err(err) => format!("⚠ {err}"),
+            };
             ui.add(
-                crate::egui::Label::new(
-                    RichText::new(uri)
-                        .font(FontId::monospace(12.0))
-                        .color(p.text_secondary),
-                )
-                .truncate(),
+                TextField::new(&mut uri)
+                    .label("Connection string")
+                    .monospace(true)
+                    .enabled(false),
             );
         });
-    ui.add_space(6.0);
     if let Some(err) = &m.error {
-        banner(ui, p, p.error, Icon::Warning, err);
+        Banner::new(Severity::Error, err).show(ui);
     }
     match &m.test {
         Load::Idle => {}
         Load::Loading => {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(RichText::new("Testing connection…").color(p.text_secondary));
+            ui.add(Spinner::new().label("Testing connection…"));
+        }
+        Load::Ready(info) => {
+            Banner::new(
+                Severity::Success,
+                format!(
+                    "Connected: MongoDB {} · {} · {}",
+                    info.version,
+                    info.topology,
+                    style::duration(info.round_trip)
+                ),
+            )
+            .show(ui);
+        }
+        Load::Failed(err) => {
+            Banner::new(Severity::Error, err).show(ui);
+        }
+    }
+}
+
+fn import_form(m: &mut ConnectionManager, ui: &mut Ui) {
+    let mut import = false;
+    let mut cancel = false;
+    if let Some(uri) = &mut m.uri_import {
+        ui.spacing_mut().item_spacing.y = size::SECTION_SPACING;
+        ui.add(
+            TextField::new(uri)
+                .label("Import from connection string")
+                .placeholder("mongodb+srv://user:password@cluster0.example.net/")
+                .monospace(true),
+        );
+        ui.horizontal(|ui| {
+            import = ui
+                .add(Button::primary("Import").icon(Icon::Import))
+                .clicked();
+            cancel = ui.add(Button::secondary("Cancel")).clicked();
+        });
+    }
+    if let Some(err) = &m.error {
+        Banner::new(Severity::Error, err).show(ui);
+    }
+    if import {
+        let parsed = m.uri_import.as_deref().map(ConnectionProfile::from_uri);
+        match parsed {
+            Some(Ok((profile, password))) => {
+                let mut next = ConnectionManager::from_profile(profile);
+                next.password = password.unwrap_or_default();
+                next.filter = std::mem::take(&mut m.filter);
+                *m = next;
+            }
+            Some(Err(err)) => m.error = Some(err.to_string()),
+            None => {}
+        }
+    } else if cancel {
+        m.uri_import = None;
+        m.error = None;
+    }
+}
+
+fn server_page(m: &mut ConnectionManager, ui: &mut Ui) {
+    pick(
+        ui,
+        "raabit-target",
+        "Connection type",
+        &mut m.target_kind,
+        &TargetKind::ALL,
+        |k| k.label().to_owned(),
+    );
+    match m.target_kind {
+        TargetKind::Standalone => {
+            ui.horizontal_top(|ui| {
+                ui.add(TextField::new(&mut m.host).label("Host").width(240.0));
+                let error = m
+                    .port
+                    .trim()
+                    .parse::<u16>()
+                    .is_err()
+                    .then_some("Enter a port from 0 to 65535");
+                ui.add(
+                    TextField::new(&mut m.port)
+                        .label("Port")
+                        .error(error)
+                        .width(100.0),
+                );
             });
         }
-        Load::Ready(info) => banner(
-            ui,
-            p,
-            p.success,
-            Icon::Check,
-            &format!(
-                "Connected: MongoDB {} · {} · {}",
-                info.version,
-                info.topology,
-                style::duration(info.round_trip)
-            ),
-        ),
-        Load::Failed(err) => banner(ui, p, p.error, Icon::Warning, err),
+        TargetKind::Srv => text(ui, "Cluster host", &mut m.host, "cluster0.example.net"),
+        TargetKind::ReplicaSet | TargetKind::Sharded => {
+            let label = if m.target_kind == TargetKind::ReplicaSet {
+                "Members"
+            } else {
+                "mongos routers"
+            };
+            widgets::caption(ui, label);
+            // The kit has no multi-line text field yet (see "Kit gaps").
+            ui.add(
+                crate::egui::TextEdit::multiline(&mut m.hosts_text)
+                    .hint_text(widgets::hint(ui, "host1:27017\nhost2:27017"))
+                    .font(crate::egui::TextStyle::Monospace)
+                    .desired_rows(4)
+                    .desired_width(300.0),
+            );
+            if m.target_kind == TargetKind::ReplicaSet {
+                text(ui, "Replica set name", &mut m.set_name, "rs0");
+            }
+        }
     }
-    let _ = app;
+    pick(
+        ui,
+        "raabit-readpref",
+        "Read preference",
+        &mut m.draft.read_preference,
+        &ReadPreference::ALL,
+        |p| p.as_str().to_owned(),
+    );
 }
 
-fn hint(ui: &mut Ui, p: &Palette, text: &str) {
-    widgets::form_row(ui, "", 130.0, |ui| {
-        ui.label(RichText::new(text).size(11.5).color(p.text_info));
+fn auth_page(m: &mut ConnectionManager, ui: &mut Ui) {
+    pick(
+        ui,
+        "raabit-auth",
+        "Mechanism",
+        &mut m.draft.auth.mechanism,
+        &AuthMechanism::ALL,
+        |a| a.label().to_owned(),
+    );
+    if m.draft.auth.mechanism != AuthMechanism::None {
+        text(ui, "User name", &mut m.draft.auth.username, "");
+        if m.draft.auth.mechanism.needs_password() {
+            ui.add(
+                TextField::new(&mut m.password)
+                    .label("Password")
+                    .password(true),
+            );
+        }
+        text(
+            ui,
+            "Auth database",
+            &mut m.draft.auth.auth_database,
+            "admin",
+        );
+        widgets::caption(
+            ui,
+            "Passwords are kept in the secret store, never in the connections file.",
+        );
+    }
+}
+
+fn ssh_page(m: &mut ConnectionManager, ui: &mut Ui) {
+    ui.add(Checkbox::new(
+        &mut m.ssh_enabled,
+        "Connect through an SSH tunnel",
+    ));
+    if !m.ssh_enabled {
+        return;
+    }
+    ui.horizontal_top(|ui| {
+        ui.add(
+            TextField::new(&mut m.ssh.host)
+                .label("SSH server")
+                .placeholder("bastion.example.com")
+                .width(240.0),
+        );
+        let mut port = m.ssh.port.to_string();
+        if ui
+            .add(TextField::new(&mut port).label("Port").width(100.0))
+            .changed()
+        {
+            m.ssh.port = port.trim().parse().unwrap_or(m.ssh.port);
+        }
     });
+    text(ui, "SSH user", &mut m.ssh.username, "");
+    #[derive(Clone, Copy, PartialEq)]
+    enum AuthKind {
+        Agent,
+        Key,
+        Password,
+    }
+    let mut kind = match m.ssh.auth {
+        SshAuth::Agent => AuthKind::Agent,
+        SshAuth::PrivateKey { .. } => AuthKind::Key,
+        SshAuth::Password => AuthKind::Password,
+    };
+    pick(
+        ui,
+        "raabit-ssh-auth",
+        "Authentication",
+        &mut kind,
+        &[AuthKind::Agent, AuthKind::Key, AuthKind::Password],
+        |k| {
+            match k {
+                AuthKind::Agent => "SSH agent / default keys",
+                AuthKind::Key => "Private key",
+                AuthKind::Password => "Password",
+            }
+            .to_owned()
+        },
+    );
+    m.ssh.auth = match kind {
+        AuthKind::Agent => SshAuth::Agent,
+        AuthKind::Key => SshAuth::PrivateKey {
+            path: m.ssh_key.clone().into(),
+        },
+        AuthKind::Password => SshAuth::Password,
+    };
+    match m.ssh.auth {
+        SshAuth::PrivateKey { .. } => text(ui, "Private key", &mut m.ssh_key, "~/.ssh/id_ed25519"),
+        SshAuth::Password => {
+            ui.add(
+                TextField::new(&mut m.ssh_password)
+                    .label("SSH password")
+                    .password(true),
+            );
+        }
+        SshAuth::Agent => {}
+    }
+    widgets::caption(
+        ui,
+        &match mongo_raabit_core::tunnel::find_ssh() {
+            Some(path) => format!("Uses the OpenSSH client at {}", path.display()),
+            None => {
+                "No `ssh` executable on PATH — install the OpenSSH client to use tunnels.".into()
+            }
+        },
+    );
 }
 
-fn banner(ui: &mut Ui, p: &Palette, color: Color32, icon: Icon, text: &str) {
-    crate::egui::Frame::new()
-        .fill(color.gamma_multiply(if p.dark { 0.14 } else { 0.10 }))
-        .corner_radius(CornerRadius::same(7))
-        .inner_margin(crate::egui::Margin::symmetric(10, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                crate::icons::icon(ui, icon, color);
-                ui.add(crate::egui::Label::new(RichText::new(text).color(color)).wrap());
-            });
-        });
-    ui.add_space(4.0);
+fn test_connection(app: &mut MongoRaabit, m: &mut ConnectionManager) {
+    match m.profile() {
+        Ok(profile) => {
+            store_secrets(app, m, &profile);
+            m.test = Load::Loading;
+            m.error = None;
+            let secrets = app.secrets.clone();
+            let id = profile.id.clone();
+            app.jobs.spawn(
+                async move { Connection::test(&profile, secrets.as_ref()).await },
+                move |app: &mut MongoRaabit, result| {
+                    if let Some(manager) = &mut app.manager
+                        && manager.draft.id == id
+                    {
+                        manager.test = match result {
+                            Ok(info) => Load::Ready(info),
+                            Err(err) => Load::Failed(err.to_string()),
+                        };
+                    }
+                },
+            );
+        }
+        Err(err) => m.error = Some(err),
+    }
 }
 
 fn store_secrets(app: &MongoRaabit, m: &ConnectionManager, profile: &ConnectionProfile) {
@@ -854,75 +837,6 @@ fn store_secrets(app: &MongoRaabit, m: &ConnectionManager, profile: &ConnectionP
     };
     set(profile.password_key(), &m.password);
     set(profile.ssh_password_key(), &m.ssh_password);
-}
-
-fn footer(
-    app: &mut MongoRaabit,
-    m: &mut ConnectionManager,
-    ui: &mut Ui,
-    p: &Palette,
-    open: &mut bool,
-) {
-    crate::egui::Frame::new()
-        .inner_margin(crate::egui::Margin::symmetric(16, 12))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if widgets::secondary_button(ui, Some(Icon::Pulse), "Test Connection").clicked() {
-                    match m.profile() {
-                        Ok(profile) => {
-                            store_secrets(app, m, &profile);
-                            m.test = Load::Loading;
-                            m.error = None;
-                            let secrets = app.secrets.clone();
-                            let id = profile.id.clone();
-                            app.jobs.spawn(
-                                async move { Connection::test(&profile, secrets.as_ref()).await },
-                                move |app: &mut MongoRaabit, result| {
-                                    if let Some(manager) = &mut app.manager
-                                        && manager.draft.id == id
-                                    {
-                                        manager.test = match result {
-                                            Ok(info) => Load::Ready(info),
-                                            Err(err) => Load::Failed(err.to_string()),
-                                        };
-                                    }
-                                },
-                            );
-                        }
-                        Err(err) => m.error = Some(err),
-                    }
-                }
-                ui.with_layout(
-                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                    |ui| {
-                        let connect =
-                            widgets::primary_button(ui, Some(Icon::Plug), "Connect").clicked();
-                        let save = widgets::secondary_button(ui, None, "Save").clicked();
-                        if connect || save {
-                            match m.profile() {
-                                Ok(profile) => {
-                                    store_secrets(app, m, &profile);
-                                    app.store.upsert(profile.clone());
-                                    app.save_store();
-                                    m.selected = Some(profile.id.clone());
-                                    m.draft = profile.clone();
-                                    m.error = None;
-                                    if connect {
-                                        app.connect(profile);
-                                        *open = false;
-                                    }
-                                }
-                                Err(err) => m.error = Some(err),
-                            }
-                        }
-                        let _ = p;
-                    },
-                );
-            });
-        });
-    if m.close {
-        *open = false;
-    }
 }
 
 #[cfg(test)]

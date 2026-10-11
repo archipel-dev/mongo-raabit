@@ -7,6 +7,8 @@ use crate::icons::{self, Icon};
 use crate::style::Palette;
 use crate::values;
 use crate::widgets;
+use archipel_sdk::kit::Tone;
+use archipel_sdk::kit::components::{Button, Separator, Tag};
 use mongo_raabit_core::aggregate::Pipeline;
 use mongo_raabit_core::shell::{self, ShellStyle};
 use mongo_raabit_core::sql::SqlTranslation;
@@ -34,11 +36,12 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         .strong()
                         .color(p.text_strong),
                 );
-                widgets::badge(ui, "SQL Query", p.keyword);
+                ui.add(Tag::new("SQL Query").tone(Tone::Accent));
                 ui.with_layout(
                     crate::egui::Layout::right_to_left(crate::egui::Align::Center),
                     |ui| {
-                        if widgets::primary_button(ui, Some(Icon::Play), "Run")
+                        if ui
+                            .add(Button::primary("Run").icon(Icon::Play))
                             .on_hover_text("Run (Ctrl+Enter)")
                             .clicked()
                         {
@@ -48,7 +51,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 );
             });
         });
-    widgets::separator(ui);
+    ui.add(Separator);
     let translation = tab.translation();
     let editor_height = (ui.available_height() * 0.42).max(200.0);
     crate::egui::Frame::new()
@@ -104,13 +107,13 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         widgets::caption(ui, "MONGODB QUERY");
                         match &translation {
                             Ok(SqlTranslation::Find { .. }) => {
-                                widgets::badge(ui, "find", p.success);
+                                ui.add(Tag::new("find").tone(Tone::Success));
                             }
                             Ok(SqlTranslation::Aggregate { .. }) => {
-                                widgets::badge(ui, "aggregate", p.accent_text);
+                                ui.add(Tag::new("aggregate").tone(Tone::Accent));
                             }
                             Err(_) => {
-                                widgets::badge(ui, "not translatable", p.error);
+                                ui.add(Tag::new("not translatable").tone(Tone::Error));
                             }
                         }
                     });
@@ -149,15 +152,15 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                     ui.add_space(6.0);
                     if let Ok(t) = &translation {
                         ui.horizontal(|ui| {
-                            if widgets::secondary_button(ui, Some(Icon::Copy), "Copy").clicked() {
+                            if ui.add(Button::secondary("Copy").icon(Icon::Copy)).clicked() {
                                 ui.ctx().copy_text(t.to_shell());
                             }
-                            if widgets::secondary_button(
-                                ui,
-                                Some(Icon::Pipeline),
-                                "Open in Aggregation Editor",
-                            )
-                            .clicked()
+                            if ui
+                                .add(
+                                    Button::secondary("Open in Aggregation Editor")
+                                        .icon(Icon::Pipeline),
+                                )
+                                .clicked()
                             {
                                 let text = shell::to_shell_string(
                                     &mongo_raabit_core::bson::Bson::Array(
@@ -175,7 +178,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 });
             });
         });
-    widgets::separator(ui);
+    ui.add(Separator);
     result_pane(ui, &p, tab_id, &mut tab.view, &mut tab.open, &tab.result);
     let (session, db) = (tab.session, tab.db.clone());
     if run {

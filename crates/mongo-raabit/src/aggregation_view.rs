@@ -10,6 +10,8 @@ use crate::style::{self, Palette};
 use crate::tools::RunResult;
 use crate::values;
 use crate::widgets;
+use archipel_sdk::kit::Tone;
+use archipel_sdk::kit::components::{Button, SegmentedControl, Separator, Tag};
 use mongo_raabit_core::aggregate::{RunOptions, STAGE_OPERATORS, Stage, stage_operator};
 use mongo_raabit_core::bson::Document;
 use mongo_raabit_core::codegen::{CodeRequest, Operation};
@@ -54,14 +56,20 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         .strong()
                         .color(p.text_strong),
                 );
-                widgets::badge(ui, "Aggregation", p.accent_text);
+                ui.add(Tag::new("Aggregation").tone(Tone::Accent));
                 ui.with_layout(
                     crate::egui::Layout::right_to_left(crate::egui::Align::Center),
                     |ui| {
-                        if widgets::primary_button(ui, Some(Icon::Play), "Run Pipeline").clicked() {
+                        if ui
+                            .add(Button::primary("Run Pipeline").icon(Icon::Play))
+                            .clicked()
+                        {
                             actions.push(Action::Run);
                         }
-                        if widgets::secondary_button(ui, Some(Icon::Code), "Query Code").clicked() {
+                        if ui
+                            .add(Button::secondary("Query Code").icon(Icon::Code))
+                            .clicked()
+                        {
                             actions.push(Action::Code);
                         }
                         ui.add_space(8.0);
@@ -84,7 +92,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 );
             });
         });
-    widgets::separator(ui);
+    ui.add(Separator);
     let results_height = if matches!(tab.result, Load::Idle) {
         0.0
     } else {
@@ -121,7 +129,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         },
     );
     if !matches!(tab.result, Load::Idle) {
-        widgets::separator(ui);
+        ui.add(Separator);
         result_pane(ui, &p, tab_id, &mut tab.view, &mut tab.open, &tab.result);
     }
     let mut code = None;
@@ -192,11 +200,7 @@ fn stage_list(
 ) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("Pipeline").strong());
-        widgets::badge(
-            ui,
-            &format!("{} stages", tab.pipeline.stages.len()),
-            p.text_secondary,
-        );
+        ui.add(Tag::new(format!("{} stages", tab.pipeline.stages.len())).tone(Tone::Secondary));
     });
     ui.add_space(6.0);
     let mut select = None;
@@ -470,14 +474,13 @@ fn stage_editor(
     };
     if formable {
         ui.horizontal(|ui| {
-            if widgets::segmented(
-                ui,
-                &mut mode,
-                &[
-                    (Mode::Form, Icon::Edit, "Form"),
-                    (Mode::Code, Icon::Code, "Code"),
-                ],
-            ) {
+            if ui
+                .add(SegmentedControl::new(
+                    &mut mode,
+                    [(Mode::Form, "Form"), (Mode::Code, "Code")],
+                ))
+                .changed()
+            {
                 match mode {
                     Mode::Form if stage_builder::form_available(ui, form_id, stage) => {
                         tab.stage_code.remove(&index);
@@ -607,7 +610,7 @@ fn preview_column(
         ui.set_width(width);
         ui.horizontal(|ui| {
             ui.label(RichText::new(title).strong());
-            widgets::badge(ui, &format!("{} docs", docs.len()), p.text_secondary);
+            ui.add(Tag::new(format!("{} docs", docs.len())).tone(Tone::Secondary));
         });
         ui.add_space(4.0);
         if let Some(note) = note {
@@ -665,20 +668,14 @@ pub fn result_pane(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Results").strong());
-                widgets::segmented(
-                    ui,
+                ui.add(SegmentedControl::new(
                     view,
-                    &[
-                        (ResultView::Tree, Icon::Tree, "Tree"),
-                        (ResultView::Json, Icon::Json, "JSON"),
-                    ],
-                );
+                    [(ResultView::Tree, "Tree"), (ResultView::Json, "JSON")],
+                ));
                 match result {
                     Load::Ready(r) => {
-                        widgets::badge(
-                            ui,
-                            &format!("{} documents", r.documents.len()),
-                            p.accent_text,
+                        ui.add(
+                            Tag::new(format!("{} documents", r.documents.len())).tone(Tone::Accent),
                         );
                         ui.label(RichText::new(style::duration(r.elapsed)).color(p.text_info));
                         if r.documents.len() as u64 >= crate::tools::RUN_LIMIT {
