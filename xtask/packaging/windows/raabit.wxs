@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mongo Raabit MSI (WiX Toolset v5). Built by `cargo xtask dist --installer` on
+  Windows, which passes:
+    Version  numeric product version (from [workspace.package] version)
+    Stage    absolute path of dist/raabit-<version>-windows-<arch>
+  The UpgradeCode must never change: MajorUpgrade uses it to replace any
+  installed version with this one.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Mongo Raabit"
+           Manufacturer="Archipel contributors"
+           Version="$(var.Version)"
+           UpgradeCode="6B0E5C1A-3D52-4F0B-9A87-2C41D7E5B9F3"
+           Scope="perMachine"
+           Language="1033">
+    <SummaryInformation Description="Mongo Raabit installer" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Mongo Raabit is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/archipel-dev/mongo-raabit" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/archipel-dev/mongo-raabit/issues" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Mongo Raabit" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main" Title="Mongo Raabit" Level="1">
+      <Component Id="RaabitExe" Directory="INSTALLFOLDER">
+        <File Id="RaabitExeFile" Source="$(var.Stage)\raabit.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut"
+                    Directory="ProgramMenuFolder"
+                    Name="Mongo Raabit"
+                    Description="Mongo Raabit"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Advertise="yes" />
+        </File>
+        <!-- `raabit` on PATH for new terminals. -->
+        <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]"
+                     Action="set" Part="last" System="yes" Permanent="no" />
+      </Component>
+      <Component Id="Readme" Directory="INSTALLFOLDER">
+        <File Id="ReadmeFile" Source="$(var.Stage)\README.md" KeyPath="yes" />
+      </Component>
+      <Component Id="LicenseApache" Directory="INSTALLFOLDER">
+        <File Id="LicenseApacheFile" Source="$(var.Stage)\LICENSE-APACHE" KeyPath="yes" />
+      </Component>
+      <Component Id="LicenseMit" Directory="INSTALLFOLDER">
+        <File Id="LicenseMitFile" Source="$(var.Stage)\LICENSE-MIT" KeyPath="yes" />
+      </Component>
+    </Feature>
+  </Package>
+</Wix>
