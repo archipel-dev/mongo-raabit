@@ -1,0 +1,215 @@
+name: Release
+
+# Builds the `raabit` binary and packages archives and installers for every
+# platform, then attaches them to the GitHub release `v<version>` that
+# release-please created. See docs/release.md.
+#
+# - push of tag `v*`: build and publish.
+# - workflow_dispatch with a `tag`: same for that tag (release-please.yml uses
+#   this, because tags made with GITHUB_TOKEN do not trigger workflows).
+# - workflow_dispatch without a tag: build only, nothing is published.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (empty: build only)"
+        required: false
+        default: ""
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - id: version
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ -n "$TAG" ] && [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not match workspace version $version (expected v$version)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: package ${{ matrix.name }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Ubuntu keeps the binary's glibc requirement low.
+          - { name: linux-x86_64, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { name: linux-aarch64, os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { name: macos-aarch64, os: macos-latest, target: aarch64-apple-darwin }
+          - { name: macos-x86_64, os: macos-latest, target: x86_64-apple-darwin }
+    env:
+      # Optional signing; every step using them is skipped when they are unset.
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libssl-dev libgl1-mesa-dev libwayland-dev libgtk-3-dev \
+            libx11-dev libxi-dev libxrandr-dev libxcursor-dev libfontconfig1-dev
+
+      - name: Install WiX Toolset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE != ''
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+          echo "RAABIT_MACOS_SIGN_IDENTITY=$MACOS_SIGN_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build archive and installer
+        shell: bash
+        run: cargo xtask dist --installer --target ${{ matrix.target }}
+
+      - name: Notarize DMG
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE != '' && env.APPLE_ID != ''
+        shell: bash
+        run: |
+          cd dist
+          dmg=$(ls raabit-*.dmg)
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$dmg"
+          shasum -a 256 "$dmg" > "$dmg.sha256"
+
+      - name: Sign MSI
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP certificate.pfx
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Select-Object -Last 1
+          Set-Location dist
+          $msi = Get-ChildItem raabit-*.msi | Select-Object -First 1
+          & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 `
+            /tr http://timestamp.digicert.com /td SHA256 $msi.Name
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item $pfx
+          $hash = (Get-FileHash $msi.Name -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("$($msi.Name).sha256", "$hash  $($msi.Name)`n")
+
+      - name: Verify checksums
+        shell: bash
+        run: |
+          cd dist
+          for sum in *.sha256; do
+            if command -v sha256sum > /dev/null; then sha256sum -c "$sum"; else shasum -a 256 -c "$sum"; fi
+          done
+
+      - name: Smoke-test MSI install and uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = (Get-ChildItem dist\raabit-*.msi | Select-Object -First 1).FullName
+          $install = Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /l*v install.log" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { Get-Content install.log -Tail 50; exit $install.ExitCode }
+          $dir = Join-Path $env:ProgramFiles 'Mongo Raabit'
+          if (-not (Test-Path (Join-Path $dir raabit.exe))) { throw 'raabit.exe missing' }
+          $remove = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn" -Wait -PassThru
+          if ($remove.ExitCode -ne 0) { exit $remove.ExitCode }
+          if (Test-Path $dir) { throw 'install directory left behind' }
+
+      - name: Smoke-test DMG and app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mount="$RUNNER_TEMP/raabit-dmg"
+          hdiutil attach dist/raabit-*.dmg -nobrowse -readonly -mountpoint "$mount"
+          app="$mount/Mongo Raabit.app"
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          lipo -archs "$app/Contents/MacOS/raabit"
+          hdiutil detach "$mount"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: raabit-${{ needs.version.outputs.version }}-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.msi
+            dist/*.dmg
+            dist/*.sha256
+
+  release:
+    needs: [version, build]
+    if: needs.version.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - run: ls -la artifacts
+      # Attaches to the release release-please created for the tag (and creates
+      # one without notes if it does not exist, e.g. a hand-pushed tag).
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: Mongo Raabit ${{ needs.version.outputs.version }}
+          generate_release_notes: false
+          files: artifacts/*
+          fail_on_unmatched_files: true

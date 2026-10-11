@@ -11,7 +11,6 @@ Studio 3T. It runs standalone (`raabit`) and as an Archipel IDE plugin from the 
 | `mongo-raabit` | `crates/mongo-raabit` | the views and the plugin, on `archipel-sdk` |
 | `raabit` | `crates/raabit` | standalone desktop app (eframe) hosting the same views |
 
-`reference/` holds temporary copies of the IDE's release tooling; delete files there once replaced.
 
 ## Rules
 

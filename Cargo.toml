@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/mongo-raabit-core", "crates/mongo-raabit", "crates/raabit"]
+members = ["crates/mongo-raabit-core", "crates/mongo-raabit", "crates/raabit", "xtask"]
 
 [workspace.package]
 version = "0.0.0"
