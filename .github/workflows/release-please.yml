@@ -1,9 +1,15 @@
 name: Release PR
 
-# Opens and maintains a release pull request from conventional commits on main:
+# Opens and maintains a release pull request from Conventional Commits on main:
 # it bumps [workspace.package] version in Cargo.toml, refreshes Cargo.lock and
-# updates CHANGELOG.md. It never tags or publishes; merging the PR changes the
-# version on main, and release.yml then builds and publishes. See docs/release.md.
+# updates CHANGELOG.md. Merging it creates the `v<version>` tag, which triggers
+# release.yml. See docs/release.md.
+#
+# Requires "Allow GitHub Actions to create and approve pull requests" to be
+# enabled for the organization and repository (Settings → Actions → General),
+# or a RELEASE_PLEASE_TOKEN secret (PAT / GitHub App token). Without either,
+# release-please fails with "GitHub Actions is not permitted to create or approve
+# pull requests".
 on:
   push:
     branches: [main]
@@ -19,15 +25,13 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    env:
-      # Pushes and PRs made with GITHUB_TOKEN do not trigger other workflows, so
-      # CI would not run on the release PR. Set the RELEASE_PLEASE_TOKEN secret
-      # (a PAT or GitHub App token with contents and pull-requests write) to fix that.
-      GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
+          # Pushes, tags and PRs made with GITHUB_TOKEN do not trigger other
+          # workflows (CI on the release PR, release.yml on the tag); a PAT or
+          # App token in RELEASE_PLEASE_TOKEN fixes that.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -57,16 +61,14 @@ jobs:
             git push
           fi
 
-      # Because skip-github-release is set, release-please never moves merged
-      # release PRs from `autorelease: pending` to `autorelease: tagged`, and it
-      # refuses to open a new release PR while one is pending. release.yml does the
-      # publishing, so relabel them here.
-      - name: Mark merged release PRs as tagged
-        shell: bash
-        run: |
-          gh pr list --repo "$GITHUB_REPOSITORY" --state merged \
-            --label "autorelease: pending" --json number --jq '.[].number' |
-          while read -r pr; do
-            gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" \
-              --remove-label "autorelease: pending" --add-label "autorelease: tagged"
-          done
+      # Tags created with GITHUB_TOKEN do not start release.yml, but a manual
+      # dispatch does, so start it explicitly. (With RELEASE_PLEASE_TOKEN the tag
+      # push also triggers it; release.yml tolerates the double run because
+      # assets are replaced in place.)
+      - name: Start the release build
+        if: steps.release.outputs.release_created == 'true' && env.HAS_PAT != 'true'
+        env:
+          HAS_PAT: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f tag="$TAG"

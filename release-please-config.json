@@ -3,13 +3,12 @@
   "release-type": "simple",
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
-  "skip-github-release": true,
   "include-component-in-tag": false,
   "include-v-in-tag": true,
   "changelog-path": "CHANGELOG.md",
   "packages": {
     ".": {
-      "package-name": "jetthing",
+      "package-name": "mongo-raabit",
       "extra-files": [
         {
           "type": "toml",

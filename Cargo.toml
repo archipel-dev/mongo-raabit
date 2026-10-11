@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/mongo-raabit-core"]
+members = ["crates/mongo-raabit-core", "xtask"]
 # Being ported from the Jetthing plugin API to archipel-sdk; added back as a member by the port.
 exclude = ["crates/mongo-raabit"]
 

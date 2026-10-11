@@ -3,14 +3,12 @@ name = "xtask"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+publish = false
 
 [dependencies]
-anyhow.workspace = true
+anyhow = "1"
 flate2 = "1"
 sha2 = "0.10"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-jetthing-control = { path = "../crates/jetthing-control" }
-serde.workspace = true
-serde_json.workspace = true
-jetthing-plugins = { path = "../crates/jetthing-plugins" }

@@ -3,6 +3,8 @@
 //! Set `MONGO_RAABIT_TEST_URI` to point at a server (default `mongodb://127.0.0.1:27017`).
 //! When none is reachable the tests print a skip message and pass, so CI without
 //! MongoDB stays green; with a server they exercise the real driver paths.
+//! Set `MONGO_RAABIT_REQUIRE_SERVER=1` (CI's live-test job does) to turn that skip
+//! into a failure, so an unreachable server can never pass silently.
 
 #![allow(dead_code)]
 
@@ -12,6 +14,11 @@ use mongo_raabit_core::secrets::MemorySecretStore;
 
 pub fn test_uri() -> String {
     std::env::var("MONGO_RAABIT_TEST_URI").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".into())
+}
+
+/// True when `MONGO_RAABIT_REQUIRE_SERVER` is set to anything but empty or `0`.
+pub fn server_required() -> bool {
+    std::env::var("MONGO_RAABIT_REQUIRE_SERVER").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
 /// Connect to the test server, or `None` (with a message) when it is unavailable.
@@ -30,6 +37,12 @@ pub async fn connect(test: &str) -> Option<(Connection, String)> {
             Some((connection, db))
         }
         Err(err) => {
+            if server_required() {
+                panic!(
+                    "{test}: MONGO_RAABIT_REQUIRE_SERVER is set but no MongoDB server is reachable at {} ({err})",
+                    test_uri()
+                );
+            }
             eprintln!(
                 "skipping {test}: no MongoDB server at {} ({err}); set MONGO_RAABIT_TEST_URI",
                 test_uri()
