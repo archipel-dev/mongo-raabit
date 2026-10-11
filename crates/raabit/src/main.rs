@@ -4,15 +4,18 @@
 //! kit theme, owns the plugin host and renders the plugin's app view in the window.
 //!
 //! ```text
-//! raabit [--light | --dark]
+//! raabit [--light | --dark] [--perf-report <file>]
 //! ```
 
 mod host;
+mod perf;
 
 use archipel_sdk::api::{Plugin, ViewContext, ViewFrame, ViewPlacement};
 use archipel_sdk::kit::{self, Theme, egui};
 use host::StandaloneHost;
 use mongo_raabit::MongoRaabitPlugin;
+use std::path::PathBuf;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThemeChoice {
@@ -20,21 +23,38 @@ enum ThemeChoice {
     Dark,
 }
 
-/// The theme forced on the command line, if any.
-fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<ThemeChoice>, String> {
-    let mut choice = None;
-    for arg in args {
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Args {
+    /// The theme forced on the command line, if any.
+    theme: Option<ThemeChoice>,
+    /// Where to write the perf report (`--perf-report`, else `RAABIT_PERF`).
+    perf_report: Option<PathBuf>,
+}
+
+const USAGE: &str = "usage: raabit [--light | --dark] [--perf-report <file>]";
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
+    let mut parsed = Args::default();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--light" => choice = Some(ThemeChoice::Light),
-            "--dark" => choice = Some(ThemeChoice::Dark),
-            other => {
-                return Err(format!(
-                    "unknown argument `{other}`; usage: raabit [--light | --dark]"
-                ));
+            "--light" => parsed.theme = Some(ThemeChoice::Light),
+            "--dark" => parsed.theme = Some(ThemeChoice::Dark),
+            "--perf-report" => {
+                let file = args
+                    .next()
+                    .ok_or_else(|| format!("--perf-report needs a file; {USAGE}"))?;
+                parsed.perf_report = Some(file.into());
             }
+            other => return Err(format!("unknown argument `{other}`; {USAGE}")),
         }
     }
-    Ok(choice)
+    if parsed.perf_report.is_none() {
+        parsed.perf_report = std::env::var_os(perf::ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+    }
+    Ok(parsed)
 }
 
 fn theme_of(choice: ThemeChoice) -> Theme {
@@ -53,10 +73,15 @@ struct RaabitApp {
     /// The first frame only paints the window; the plugin state is built on the second so
     /// the window appears before any file or runtime setup.
     started: bool,
+    perf: Option<perf::Perf>,
 }
 
 impl RaabitApp {
-    fn new(cc: &eframe::CreationContext<'_>, forced: Option<ThemeChoice>) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        forced: Option<ThemeChoice>,
+        perf: Option<perf::Perf>,
+    ) -> Self {
         let plugin = MongoRaabitPlugin::new();
         let manifest = plugin.manifest();
         let view = manifest.app.as_ref().map_or_else(
@@ -80,6 +105,7 @@ impl RaabitApp {
             forced,
             shown,
             started: false,
+            perf,
         }
     }
 }
@@ -93,6 +119,10 @@ fn system_choice(ctx: &egui::Context) -> ThemeChoice {
 
 impl eframe::App for RaabitApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(perf) = &mut self.perf {
+            perf.begin_frame();
+        }
+        let interactive = self.started;
         let wanted = self.forced.unwrap_or_else(|| system_choice(ctx));
         if wanted != self.shown {
             self.shown = wanted;
@@ -114,17 +144,33 @@ impl eframe::App for RaabitApp {
         if std::mem::take(&mut self.host.repaint) {
             ctx.request_repaint();
         }
+        if let Some(perf) = &mut self.perf {
+            perf.end_frame(interactive);
+            if perf.stop_requested() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(perf) = &self.perf {
+            perf.write();
+        }
     }
 }
 
 fn main() -> eframe::Result {
-    let forced = match parse_args(std::env::args().skip(1)) {
-        Ok(choice) => choice,
+    let start = Instant::now();
+    let args = match parse_args(std::env::args().skip(1)) {
+        Ok(args) => args,
         Err(message) => {
             eprintln!("{message}");
             std::process::exit(2);
         }
     };
+    let forced = args.theme;
+    let perf = args.perf_report.map(|path| perf::Perf::new(path, start));
+    let mut perf = Some(perf);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Mongo Raabit")
@@ -136,7 +182,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Mongo Raabit",
         options,
-        Box::new(move |cc| Ok(Box::new(RaabitApp::new(cc, forced)))),
+        Box::new(move |cc| Ok(Box::new(RaabitApp::new(cc, forced, perf.take().flatten())))),
     )
 }
 
@@ -147,9 +193,22 @@ mod tests {
     #[test]
     fn parses_theme_flags() {
         let args = |a: &[&str]| parse_args(a.iter().map(|s| s.to_string()));
-        assert_eq!(args(&[]), Ok(None));
-        assert_eq!(args(&["--light"]), Ok(Some(ThemeChoice::Light)));
-        assert_eq!(args(&["--light", "--dark"]), Ok(Some(ThemeChoice::Dark)));
+        assert_eq!(args(&[]).unwrap().theme, None);
+        assert_eq!(args(&["--light"]).unwrap().theme, Some(ThemeChoice::Light));
+        assert_eq!(
+            args(&["--light", "--dark"]).unwrap().theme,
+            Some(ThemeChoice::Dark)
+        );
         assert!(args(&["--nope"]).is_err());
+    }
+
+    #[test]
+    fn parses_perf_report() {
+        let args = |a: &[&str]| parse_args(a.iter().map(|s| s.to_string()));
+        assert_eq!(
+            args(&["--perf-report", "p.json"]).unwrap().perf_report,
+            Some("p.json".into())
+        );
+        assert!(args(&["--perf-report"]).is_err());
     }
 }
