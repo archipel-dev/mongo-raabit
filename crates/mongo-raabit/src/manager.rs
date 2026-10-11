@@ -438,7 +438,7 @@ fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui
                 for profile in profiles {
                     let row = ListRow::new(profile.name.as_str())
                         .icon(Icon::Database)
-                        .secondary(crate::values::truncate(&profile.summary(), 30))
+                        .secondary(crate::values::truncate(&profile.summary(), 10))
                         .depth(depth)
                         .selected(m.selected.as_deref() == Some(profile.id.as_str()))
                         .show(ui);
