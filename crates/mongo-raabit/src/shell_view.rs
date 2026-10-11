@@ -10,6 +10,8 @@ use crate::style::{self, Palette};
 use crate::tools::{ShellEngine, shell_documents};
 use crate::values;
 use crate::widgets;
+use archipel_sdk::kit::Tone;
+use archipel_sdk::kit::components::{Button, IconButton, Separator, Tag};
 use mongo_raabit_core::shell_eval;
 
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
@@ -20,17 +22,17 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     let mut run: Option<Option<String>> = None;
     crate::egui::Frame::new().inner_margin(crate::egui::Margin { left: 14, right: 14, top: 10, bottom: 8 }).show(ui, |ui| {
         ui.horizontal(|ui| {
-            icons::icon(ui, Icon::Shell, p.leaf);
+            icons::icon(ui, Icon::Shell, p.accent);
             ui.label(RichText::new(&tab.db).size(15.0).strong().color(p.text_strong));
             match &tab.engine {
                 ShellEngine::Detecting => {
                     ui.spinner();
                 }
                 ShellEngine::Mongosh { version, .. } if !tab.force_builtin => {
-                    widgets::badge(ui, &format!("mongosh {version}"), p.leaf);
+                    ui.add(Tag::new(format!("mongosh {version}")).tone(Tone::Accent));
                 }
                 ShellEngine::Mongosh { .. } | ShellEngine::Builtin => {
-                    widgets::badge(ui, "built-in shell", p.warning).on_hover_text(
+                    ui.add(Tag::new("built-in shell").tone(Tone::Warning)).on_hover_text(
                         "Evaluates show/use and db.<collection> commands with the driver. Install mongosh for full JavaScript.",
                     );
                 }
@@ -38,19 +40,19 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             ui.with_layout(crate::egui::Layout::right_to_left(crate::egui::Align::Center), |ui| {
                 if tab.running {
                     ui.spinner();
-                } else if widgets::primary_button(ui, Some(Icon::Play), "Run").on_hover_text("Run script (Ctrl+Enter)").clicked() {
+                } else if ui.add(Button::primary("Run").icon(Icon::Play)).on_hover_text("Run script (Ctrl+Enter)").clicked() {
                     run = Some(None);
                 }
                 if matches!(tab.engine, ShellEngine::Mongosh { .. }) {
                     ui.checkbox(&mut tab.force_builtin, "Built-in");
                 }
-                if widgets::icon_button(ui, Icon::Trash, "Clear output").clicked() {
+                if ui.add(IconButton::new(Icon::Trash, "Clear output")).clicked() {
                     tab.history.clear();
                 }
             });
         });
     });
-    widgets::separator(ui);
+    ui.add(Separator);
     let editor_height = (ui.available_height() * 0.34).clamp(120.0, 300.0);
     crate::egui::Frame::new()
         .inner_margin(crate::egui::Margin {
@@ -171,7 +173,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 response.request_focus();
             }
         });
-    widgets::separator(ui);
+    ui.add(Separator);
     let last_value = tab.history.last().and_then(|e| e.value.clone());
     let height = ui.available_height();
     ui.horizontal_top(|ui| {
@@ -276,7 +278,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("Result").strong());
-                            widgets::badge(ui, &format!("{} items", docs.len()), p.accent_text);
+                            ui.add(Tag::new(format!("{} items", docs.len())).tone(Tone::Accent));
                         });
                     });
                 if let Some(results::TreeEvent::Toggle(key)) = results::tree(

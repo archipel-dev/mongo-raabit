@@ -1,193 +1,52 @@
-//! Small themed widgets shared by the views.
+//! Small shared helpers over archipel-kit components.
+//!
+//! Buttons, icon buttons, segmented controls, tags, separators and dialogs are used straight
+//! from `archipel_sdk::kit::components`; what remains here is layout glue (captions, form
+//! rows, the query-bar field) and the code editor until the kit ships its own.
 
-use crate::egui::{
-    Color32, CornerRadius, FontId, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
-    vec2,
-};
-use crate::icons::{self, Icon};
+use crate::egui::{Align, CornerRadius, FontId, Layout, Response, RichText, Stroke, Ui};
+use crate::icons::Icon;
 use crate::style::Palette;
+use archipel_sdk::kit::Tone;
+use archipel_sdk::kit::components::{Dialog, DialogAction, TextField};
+use archipel_sdk::kit::tokens::{size, typography};
 
-/// A 26×24 icon button with a hover background and tooltip.
-pub fn icon_button(ui: &mut Ui, icon: Icon, tooltip: &str) -> Response {
-    icon_button_tinted(ui, icon, tooltip, None, true)
+/// Section caption (small, muted).
+pub fn caption(ui: &mut Ui, text: &str) {
+    let color = Tone::Muted.resolve(ui.ctx());
+    ui.label(RichText::new(text).size(typography::SMALL).color(color));
 }
 
-pub fn icon_button_tinted(
-    ui: &mut Ui,
-    icon: Icon,
-    tooltip: &str,
-    tint: Option<Color32>,
-    enabled: bool,
-) -> Response {
-    let p = Palette::of(ui);
-    let sense = if enabled {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let (rect, response) = ui.allocate_exact_size(vec2(26.0, 24.0), sense);
-    response.widget_info(|| {
-        crate::egui::WidgetInfo::labeled(crate::egui::WidgetType::Button, enabled, tooltip)
-    });
-    if enabled && (response.hovered() || response.has_focus()) {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(6), p.hover);
-    }
-    let color = if !enabled {
-        p.text_info.gamma_multiply(0.6)
-    } else {
-        tint.unwrap_or(p.text_secondary)
-    };
-    icons::paint(
-        ui.painter(),
-        Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
-        icon,
-        color,
-    );
-    response.on_hover_text(tooltip)
-}
-
-/// Filled accent button with an optional leading icon.
-pub fn primary_button(ui: &mut Ui, icon: Option<Icon>, label: &str) -> Response {
-    let p = Palette::of(ui);
-    button_impl(ui, icon, label, p.accent, Color32::WHITE, None)
-}
-
-/// Outlined neutral button.
-pub fn secondary_button(ui: &mut Ui, icon: Option<Icon>, label: &str) -> Response {
-    let p = Palette::of(ui);
-    button_impl(ui, icon, label, p.raised, p.text, Some(p.border))
-}
-
-fn button_impl(
-    ui: &mut Ui,
-    icon: Option<Icon>,
-    label: &str,
-    fill: Color32,
-    text: Color32,
-    border: Option<Color32>,
-) -> Response {
-    let font = FontId::proportional(13.0);
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, text);
-    let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
-    let size = vec2(galley.size().x + icon_w + 24.0, 28.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    response.widget_info(|| {
-        crate::egui::WidgetInfo::labeled(crate::egui::WidgetType::Button, true, label)
-    });
-    let fill = if response.is_pointer_button_down_on() {
-        fill.gamma_multiply(0.85)
-    } else if response.hovered() {
-        fill.gamma_multiply(1.12)
-    } else {
-        fill
-    };
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        CornerRadius::same(7),
-        fill,
-        border.map_or(Stroke::NONE, |c| Stroke::new(1.0_f32, c)),
-        StrokeKind::Inside,
-    );
-    let mut x = rect.left() + 12.0;
-    if let Some(icon) = icon {
-        icons::paint(
-            painter,
-            Rect::from_center_size(
-                crate::egui::pos2(x + 7.0, rect.center().y),
-                Vec2::splat(14.0),
-            ),
-            icon,
-            text,
+/// A labeled form row: right-aligned label column of `label_width` then the content.
+pub fn form_row(ui: &mut Ui, label: &str, label_width: f32, add: impl FnOnce(&mut Ui)) {
+    let color = Tone::Secondary.resolve(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            crate::egui::vec2(label_width, size::CONTROL_HEIGHT),
+            Layout::right_to_left(Align::Center),
+            |ui| {
+                ui.label(RichText::new(label).color(color));
+            },
         );
-        x += icon_w;
-    }
-    painter.galley(
-        crate::egui::pos2(x, rect.center().y - galley.size().y / 2.0),
-        galley,
-        text,
-    );
-    response
-}
-
-/// Segmented control (e.g. Table | Tree | JSON). Returns true when changed.
-pub fn segmented<T: PartialEq + Copy>(
-    ui: &mut Ui,
-    value: &mut T,
-    options: &[(T, Icon, &str)],
-) -> bool {
-    let p = Palette::of(ui);
-    let mut changed = false;
-    let frame = crate::egui::Frame::new()
-        .fill(p.field)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(crate::egui::Margin::same(2));
-    frame.show(ui, |ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        ui.horizontal(|ui| {
-            for (option, icon, label) in options {
-                let selected = *value == *option;
-                let font = FontId::proportional(12.5);
-                let color = if selected {
-                    p.text_strong
-                } else {
-                    p.text_secondary
-                };
-                let galley = ui
-                    .painter()
-                    .layout_no_wrap((*label).to_owned(), font, color);
-                let (rect, response) =
-                    ui.allocate_exact_size(vec2(galley.size().x + 34.0, 22.0), Sense::click());
-                response.widget_info(|| {
-                    crate::egui::WidgetInfo::labeled(crate::egui::WidgetType::Button, true, *label)
-                });
-                if selected {
-                    ui.painter().rect(
-                        rect,
-                        CornerRadius::same(6),
-                        if p.dark {
-                            p.selection_inactive
-                        } else {
-                            p.island
-                        },
-                        Stroke::new(1.0_f32, p.border),
-                        StrokeKind::Inside,
-                    );
-                } else if response.hovered() {
-                    ui.painter()
-                        .rect_filled(rect, CornerRadius::same(6), p.hover);
-                }
-                icons::paint(
-                    ui.painter(),
-                    Rect::from_center_size(
-                        crate::egui::pos2(rect.left() + 14.0, rect.center().y),
-                        Vec2::splat(13.0),
-                    ),
-                    *icon,
-                    if selected {
-                        p.accent_text
-                    } else {
-                        p.text_secondary
-                    },
-                );
-                ui.painter().galley(
-                    crate::egui::pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0),
-                    galley,
-                    color,
-                );
-                if response.clicked() && !selected {
-                    *value = *option;
-                    changed = true;
-                }
-            }
-        });
+        ui.add_space(size::SECONDARY_GAP);
+        add(ui);
     });
-    changed
 }
 
-/// A labeled query-bar field: small caption on the left inside a rounded field.
+/// Give an input that has only a placeholder an accessible name (the kit's search field
+/// has none; see "Kit gaps").
+pub fn name_input(response: &Response, name: &str, enabled: bool) {
+    response.widget_info(|| {
+        crate::egui::WidgetInfo::labeled(crate::egui::WidgetType::TextEdit, enabled, name)
+    });
+}
+
+/// Muted hint text.
+pub fn hint(ui: &Ui, text: &str) -> RichText {
+    RichText::new(text).color(Tone::Muted.resolve(ui.ctx()))
+}
+
+/// A query-bar field: a muted caption followed by a monospace kit text field.
 pub fn query_field(
     ui: &mut Ui,
     caption: &str,
@@ -195,75 +54,19 @@ pub fn query_field(
     hint: &str,
     width: f32,
 ) -> Response {
-    let p = Palette::of(ui);
-    let mut response = None;
-    crate::egui::Frame::new()
-        .fill(p.field)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(7))
-        .inner_margin(crate::egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.set_width(width);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(caption).size(11.5).color(p.text_info));
-                let edit = crate::egui::TextEdit::singleline(text)
-                    .hint_text(RichText::new(hint).color(p.text_info))
-                    .font(FontId::monospace(12.5))
-                    .frame(false)
-                    .desired_width(f32::INFINITY);
-                response = Some(ui.add(edit));
-            });
-        });
-    response.unwrap_or_else(|| ui.label(""))
-}
-
-/// A rounded badge (counts, types, states).
-pub fn badge(ui: &mut Ui, text: &str, color: Color32) -> Response {
-    let font = FontId::proportional(11.0);
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
-    let (rect, response) = ui.allocate_exact_size(galley.size() + vec2(12.0, 4.0), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(9), color.gamma_multiply(0.16));
-    ui.painter()
-        .galley(rect.min + vec2(6.0, 2.0), galley, color);
-    response
-}
-
-/// Thin horizontal separator in the separator color.
-pub fn separator(ui: &mut Ui) {
-    let p = Palette::of(ui);
-    let rect = ui.available_rect_before_wrap();
-    let y = ui.cursor().top();
-    ui.painter()
-        .hline(rect.x_range(), y, Stroke::new(1.0_f32, p.separator));
-    ui.add_space(1.0);
-}
-
-/// Section caption (small, secondary).
-pub fn caption(ui: &mut Ui, text: &str) {
-    let p = Palette::of(ui);
-    ui.label(RichText::new(text).size(11.5).color(p.text_info));
-}
-
-/// A labeled form row: right-aligned label column of `label_width` then the content.
-pub fn form_row(ui: &mut Ui, label: &str, label_width: f32, add: impl FnOnce(&mut Ui)) {
-    let p = Palette::of(ui);
+    let color = Tone::Muted.resolve(ui.ctx());
     ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            vec2(label_width, 24.0),
-            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-            |ui| {
-                ui.label(RichText::new(label).color(p.text_secondary));
-            },
-        );
-        ui.add_space(8.0);
-        add(ui);
-    });
-}
-
-/// Dimmed hint text for text fields (explicit color beats the theme override).
-pub fn hint(ui: &Ui, text: &str) -> RichText {
-    RichText::new(text).color(Palette::of(ui).text_info)
+        let label = ui.label(RichText::new(caption).size(typography::SMALL).color(color));
+        let remaining = (width - label.rect.width() - ui.spacing().item_spacing.x).max(40.0);
+        ui.add(
+            TextField::new(text)
+                .placeholder(hint)
+                .monospace(true)
+                .width(remaining),
+        )
+        .labelled_by(label.id)
+    })
+    .inner
 }
 
 /// Multiline code editor with mongo shell syntax coloring.
@@ -323,73 +126,20 @@ pub fn line_col(text: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
-/// Shared modal frame: title with icon and close button, then `body`.
-/// Returns `false` when the user closed it (✕ or Esc).
+/// A kit [`Dialog`] around `body`, for dialogs that lay out their own buttons.
+/// Returns `false` once the user dismissed it (Esc or a click outside).
 pub fn modal(
     ctx: &crate::egui::Context,
-    id: &str,
     title: &str,
     icon: Icon,
-    size: Vec2,
+    width: f32,
     body: impl FnOnce(&mut Ui),
 ) -> bool {
-    let p = Palette::of_ctx(ctx);
-    let mut open = true;
-    let screen = ctx.content_rect();
-    let size = vec2(
-        size.x.min(screen.width() - 40.0),
-        size.y.min(screen.height() - 40.0),
-    );
-    let frame = crate::egui::Frame::new()
-        .fill(p.island)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(crate::egui::Margin::same(0))
-        .shadow(crate::egui::Shadow {
-            offset: [0, 8],
-            blur: 28,
-            spread: 0,
-            color: Color32::from_black_alpha(if p.dark { 120 } else { 40 }),
-        });
-    let response = crate::egui::Modal::new(crate::egui::Id::new(id))
-        .frame(frame)
-        .backdrop_color(Color32::from_black_alpha(if p.dark { 110 } else { 60 }))
-        .show(ctx, |ui| {
-            ui.set_width(size.x);
-            ui.set_max_height(size.y);
-            crate::egui::Frame::new()
-                .inner_margin(crate::egui::Margin {
-                    left: 16,
-                    right: 10,
-                    top: 12,
-                    bottom: 10,
-                })
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        icons::icon(ui, icon, p.leaf);
-                        ui.label(
-                            RichText::new(title)
-                                .size(15.0)
-                                .strong()
-                                .color(p.text_strong),
-                        );
-                        ui.with_layout(
-                            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                            |ui| {
-                                if icon_button(ui, Icon::Close, "Close (Esc)").clicked() {
-                                    open = false;
-                                }
-                            },
-                        );
-                    });
-                });
-            separator(ui);
-            crate::egui::Frame::new()
-                .inner_margin(crate::egui::Margin::same(16))
-                .show(ui, |ui| {
-                    ui.set_width(size.x - 32.0);
-                    body(ui);
-                });
-        });
-    !response.should_close() && open
+    let width = width.min(ctx.content_rect().width() - 40.0);
+    let action = Dialog::new(title)
+        .icon(icon.glyph())
+        .width(width)
+        .content(body)
+        .show(ctx);
+    !matches!(action, Some(DialogAction::Dismissed))
 }

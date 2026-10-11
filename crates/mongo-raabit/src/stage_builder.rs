@@ -8,6 +8,7 @@ use crate::egui::{CornerRadius, FontId, Id, RichText, Stroke, Ui};
 use crate::icons::{self, Icon};
 use crate::style::Palette;
 use crate::widgets;
+use archipel_sdk::kit::components::{IconButton, SegmentedControl};
 use mongo_raabit_core::aggregate::Stage;
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::stage_form::{
@@ -313,14 +314,12 @@ pub fn show(ui: &mut Ui, form: &mut StageForm, suggest: Suggestions, id: Id) -> 
                 ui.horizontal(|ui| {
                     changed |=
                         field_picker(ui, &mut row.field, suggest.fields, "field", 200.0, rid);
-                    changed |= widgets::segmented(
-                        ui,
-                        &mut row.descending,
-                        &[
-                            (false, Icon::ChevronUp, "Ascending"),
-                            (true, Icon::ChevronDown, "Descending"),
-                        ],
-                    );
+                    changed |= ui
+                        .add(SegmentedControl::new(
+                            &mut row.descending,
+                            [(false, "Ascending"), (true, "Descending")],
+                        ))
+                        .changed();
                     if remove_button(ui) {
                         remove = Some(i);
                     }
@@ -593,13 +592,8 @@ fn field_picker(
                 } else {
                     "Pick a name"
                 };
-                let button = widgets::icon_button_tinted(
-                    ui,
-                    Icon::ChevronDown,
-                    tip,
-                    None,
-                    !suggestions.is_empty(),
-                );
+                let button = ui
+                    .add(IconButton::new(Icon::ChevronDown, tip).enabled(!suggestions.is_empty()));
                 crate::egui::Popup::menu(&button).show(|ui| {
                     ui.set_min_width(width);
                     crate::egui::ScrollArea::vertical()
@@ -627,7 +621,7 @@ fn field_picker(
 }
 
 fn remove_button(ui: &mut Ui) -> bool {
-    widgets::icon_button(ui, Icon::Close, "Remove").clicked()
+    ui.add(IconButton::new(Icon::Close, "Remove")).clicked()
 }
 
 fn add_button(ui: &mut Ui, what: &str) -> bool {

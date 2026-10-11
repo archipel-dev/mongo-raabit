@@ -2,10 +2,11 @@
 //! plan and query code.
 
 use crate::app::{Load, MongoRaabit, TabId};
-use crate::egui::{CornerRadius, FontId, RichText, Stroke, Ui, vec2};
+use crate::egui::{CornerRadius, FontId, RichText, Stroke, Ui};
 use crate::icons::{self, Icon};
-use crate::style::{self, Palette};
+use crate::style::Palette;
 use crate::widgets;
+use archipel_sdk::kit::components::Button;
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::codegen::{self, CodeRequest, Language};
 use mongo_raabit_core::query::{Explain, PlanStage};
@@ -114,80 +115,72 @@ fn document_editor(
     };
     let mut save = false;
     let mut cancel = false;
-    let open = widgets::modal(
-        ctx,
-        "raabit-doc-editor",
-        &title,
-        Icon::Edit,
-        vec2(760.0, 640.0),
-        |ui| {
-            widgets::caption(
-                ui,
-                "Document in mongo shell syntax — ObjectId(), ISODate(), NumberLong() and Extended JSON are accepted",
-            );
-            ui.add_space(4.0);
-            crate::egui::ScrollArea::vertical()
-                .max_height(440.0)
-                .show(ui, |ui| {
-                    widgets::code_editor(ui, &mut editor.text, 22, "raabit-doc-text");
-                });
-            ui.add_space(8.0);
-            match editor.parse() {
-                Ok(doc) => {
-                    ui.horizontal(|ui| {
-                        icons::icon(ui, Icon::Check, p.success);
-                        ui.label(
-                            RichText::new(format!(
-                                "Valid document · {} top-level fields",
-                                doc.len()
-                            ))
-                            .color(p.success),
-                        );
-                    });
-                }
-                Err(err) => {
-                    ui.horizontal(|ui| {
-                        icons::icon(ui, Icon::Warning, p.error);
-                        ui.label(RichText::new(err).color(p.error));
-                    });
-                }
-            }
-            if let Some(err) = &editor.error {
-                ui.add_space(4.0);
-                ui.add(crate::egui::Label::new(RichText::new(err).color(p.error)).wrap());
-            }
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if widgets::secondary_button(ui, Some(Icon::Json), "Format").clicked()
-                    && let Ok(doc) = editor.parse()
-                {
-                    editor.text = shell::document_to_shell(&doc, ShellStyle::Pretty(2));
-                }
-                ui.with_layout(
-                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                    |ui| {
-                        let label = if editor.mode == DocumentMode::Insert {
-                            "Insert"
-                        } else {
-                            "Save"
-                        };
-                        if editor.saving {
-                            ui.spinner();
-                        } else if widgets::primary_button(ui, Some(Icon::Check), label).clicked()
-                            || ui.input(|i| {
-                                i.modifiers.command && i.key_pressed(crate::egui::Key::Enter)
-                            })
-                        {
-                            save = true;
-                        }
-                        if widgets::secondary_button(ui, None, "Cancel").clicked() {
-                            cancel = true;
-                        }
-                    },
-                );
+    let open = widgets::modal(ctx, &title, Icon::Edit, 760.0, |ui| {
+        widgets::caption(
+            ui,
+            "Document in mongo shell syntax — ObjectId(), ISODate(), NumberLong() and Extended JSON are accepted",
+        );
+        ui.add_space(4.0);
+        crate::egui::ScrollArea::vertical()
+            .max_height(440.0)
+            .show(ui, |ui| {
+                widgets::code_editor(ui, &mut editor.text, 22, "raabit-doc-text");
             });
-        },
-    );
+        ui.add_space(8.0);
+        match editor.parse() {
+            Ok(doc) => {
+                ui.horizontal(|ui| {
+                    icons::icon(ui, Icon::Check, p.success);
+                    ui.label(
+                        RichText::new(format!("Valid document · {} top-level fields", doc.len()))
+                            .color(p.success),
+                    );
+                });
+            }
+            Err(err) => {
+                ui.horizontal(|ui| {
+                    icons::icon(ui, Icon::Warning, p.error);
+                    ui.label(RichText::new(err).color(p.error));
+                });
+            }
+        }
+        if let Some(err) = &editor.error {
+            ui.add_space(4.0);
+            ui.add(crate::egui::Label::new(RichText::new(err).color(p.error)).wrap());
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add(Button::secondary("Format").icon(Icon::Json))
+                .clicked()
+                && let Ok(doc) = editor.parse()
+            {
+                editor.text = shell::document_to_shell(&doc, ShellStyle::Pretty(2));
+            }
+            ui.with_layout(
+                crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                |ui| {
+                    let label = if editor.mode == DocumentMode::Insert {
+                        "Insert"
+                    } else {
+                        "Save"
+                    };
+                    if editor.saving {
+                        ui.spinner();
+                    } else if ui.add(Button::primary(label).icon(Icon::Check)).clicked()
+                        || ui.input(|i| {
+                            i.modifiers.command && i.key_pressed(crate::egui::Key::Enter)
+                        })
+                    {
+                        save = true;
+                    }
+                    if ui.add(Button::secondary("Cancel")).clicked() {
+                        cancel = true;
+                    }
+                },
+            );
+        });
+    });
     if save {
         match editor.parse() {
             Ok(doc) => {
@@ -215,50 +208,37 @@ fn delete_dialog(
     } else {
         format!("Delete {n} documents?")
     };
-    let open = widgets::modal(
-        ctx,
-        "raabit-delete",
-        &title,
-        Icon::Trash,
-        vec2(460.0, 260.0),
-        |ui| {
-            ui.label("This cannot be undone.");
-            ui.add_space(6.0);
-            for id in confirm.ids.iter().take(5) {
-                ui.label(
-                    RichText::new(format!(
-                        "_id: {}",
-                        shell::to_shell_string(id, ShellStyle::Compact)
-                    ))
-                    .font(FontId::monospace(12.0))
-                    .color(p.text_secondary),
-                );
-            }
-            if n > 5 {
-                ui.label(RichText::new(format!("… and {} more", n - 5)).color(p.text_info));
-            }
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(
-                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                    |ui| {
-                        if confirm.busy {
-                            ui.spinner();
-                        } else {
-                            let r = crate::egui::Button::new(
-                                RichText::new("Delete").color(crate::egui::Color32::WHITE),
-                            )
-                            .fill(p.error)
-                            .corner_radius(CornerRadius::same(7))
-                            .min_size(vec2(84.0, 28.0));
-                            delete = ui.add(r).clicked();
-                        }
-                        cancel = widgets::secondary_button(ui, None, "Cancel").clicked();
-                    },
-                );
-            });
-        },
-    );
+    let open = widgets::modal(ctx, &title, Icon::Trash, 460.0, |ui| {
+        ui.label("This cannot be undone.");
+        ui.add_space(6.0);
+        for id in confirm.ids.iter().take(5) {
+            ui.label(
+                RichText::new(format!(
+                    "_id: {}",
+                    shell::to_shell_string(id, ShellStyle::Compact)
+                ))
+                .font(FontId::monospace(12.0))
+                .color(p.text_secondary),
+            );
+        }
+        if n > 5 {
+            ui.label(RichText::new(format!("… and {} more", n - 5)).color(p.text_info));
+        }
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.with_layout(
+                crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                |ui| {
+                    if confirm.busy {
+                        ui.spinner();
+                    } else {
+                        delete = ui.add(Button::danger("Delete")).clicked();
+                    }
+                    cancel = ui.add(Button::secondary("Cancel")).clicked();
+                },
+            );
+        });
+    });
     if delete {
         confirm.busy = true;
         app.delete_documents(confirm.tab, confirm.ids.clone());
@@ -270,10 +250,9 @@ fn explain_dialog(ctx: &crate::egui::Context, explain: &mut ExplainDialog) -> bo
     let p = Palette::for_dark(ctx.style().visuals.dark_mode);
     widgets::modal(
         ctx,
-        "raabit-explain",
         &explain.title,
         Icon::Explain,
-        vec2(980.0, 640.0),
+        980.0,
         |ui| match &explain.result {
             Load::Idle | Load::Loading => {
                 ui.horizontal(|ui| {
@@ -392,12 +371,11 @@ fn plan_tree(ui: &mut Ui, p: &Palette, stage: &PlanStage) {
                     plan_tree(ui, p, child);
                 }
             });
-            let (rect, _) = ui.allocate_exact_size(vec2(28.0, 20.0), crate::egui::Sense::hover());
-            let y = rect.center().y;
-            ui.painter().arrow(
-                crate::egui::pos2(rect.left() + 2.0, y),
-                vec2(22.0, 0.0),
-                Stroke::new(1.5_f32, p.text_info),
+            archipel_sdk::kit::icons::show(
+                ui,
+                archipel_sdk::kit::Glyph::ArrowRight,
+                20.0,
+                p.text_info,
             );
         }
         let accent = match stage.stage.as_str() {
@@ -448,81 +426,66 @@ fn plan_tree(ui: &mut Ui, p: &Palette, stage: &PlanStage) {
 
 fn code_dialog(ctx: &crate::egui::Context, code: &mut CodeDialog) -> bool {
     let p = Palette::for_dark(ctx.style().visuals.dark_mode);
-    widgets::modal(
-        ctx,
-        "raabit-code",
-        &code.title,
-        Icon::Code,
-        vec2(900.0, 660.0),
-        |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                let chip = |ui: &mut Ui, selected: bool, label: &str| -> bool {
-                    let text = RichText::new(label).color(if selected {
-                        p.text_strong
-                    } else {
-                        p.text_secondary
-                    });
-                    let button = crate::egui::Button::new(text)
-                        .fill(if selected { p.selection } else { p.raised })
-                        .stroke(Stroke::new(
-                            1.0_f32,
-                            if selected { p.accent } else { p.border },
-                        ))
-                        .corner_radius(CornerRadius::same(14));
-                    ui.add(button).clicked()
-                };
-                if chip(ui, code.language.is_none(), "mongo shell") {
-                    code.language = None;
-                }
-                for language in Language::ALL {
-                    if chip(ui, code.language == Some(language), language.label()) {
-                        code.language = Some(language);
-                    }
-                }
-            });
-            ui.add_space(10.0);
-            let text = match code.language {
-                None => code.shell.clone(),
-                Some(language) => codegen::generate(language, &code.request),
-            };
-            crate::egui::Frame::new()
-                .fill(p.field)
-                .stroke(Stroke::new(1.0_f32, p.border))
-                .corner_radius(CornerRadius::same(8))
-                .inner_margin(crate::egui::Margin::same(10))
-                .show(ui, |ui| {
-                    crate::egui::ScrollArea::both()
-                        .max_height(440.0)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            let mut job = crate::egui::text::LayoutJob::default();
-                            crate::values::highlight_into(
-                                &mut job,
-                                &text,
-                                &p,
-                                FontId::monospace(12.5),
-                            );
-                            ui.add(crate::egui::Label::new(job).selectable(true).extend());
-                        });
+    widgets::modal(ctx, &code.title, Icon::Code, 900.0, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let chip = |ui: &mut Ui, selected: bool, label: &str| -> bool {
+                let text = RichText::new(label).color(if selected {
+                    p.text_strong
+                } else {
+                    p.text_secondary
                 });
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("{} lines", text.lines().count())).color(p.text_info),
-                );
-                ui.with_layout(
-                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                    |ui| {
-                        if widgets::primary_button(ui, Some(Icon::Copy), "Copy").clicked() {
-                            ui.ctx().copy_text(text.clone());
-                        }
-                    },
-                );
+                let button = crate::egui::Button::new(text)
+                    .fill(if selected { p.selection } else { p.raised })
+                    .stroke(Stroke::new(
+                        1.0_f32,
+                        if selected { p.accent } else { p.border },
+                    ))
+                    .corner_radius(CornerRadius::same(14));
+                ui.add(button).clicked()
+            };
+            if chip(ui, code.language.is_none(), "mongo shell") {
+                code.language = None;
+            }
+            for language in Language::ALL {
+                if chip(ui, code.language == Some(language), language.label()) {
+                    code.language = Some(language);
+                }
+            }
+        });
+        ui.add_space(10.0);
+        let text = match code.language {
+            None => code.shell.clone(),
+            Some(language) => codegen::generate(language, &code.request),
+        };
+        crate::egui::Frame::new()
+            .fill(p.field)
+            .stroke(Stroke::new(1.0_f32, p.border))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(crate::egui::Margin::same(10))
+            .show(ui, |ui| {
+                crate::egui::ScrollArea::both()
+                    .max_height(440.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let mut job = crate::egui::text::LayoutJob::default();
+                        crate::values::highlight_into(&mut job, &text, &p, FontId::monospace(12.5));
+                        ui.add(crate::egui::Label::new(job).selectable(true).extend());
+                    });
             });
-            let _ = style::RADIUS;
-        },
-    )
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{} lines", text.lines().count())).color(p.text_info));
+            ui.with_layout(
+                crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                |ui| {
+                    if ui.add(Button::primary("Copy").icon(Icon::Copy)).clicked() {
+                        ui.ctx().copy_text(text.clone());
+                    }
+                },
+            );
+        });
+    })
 }
 
 #[cfg(test)]
