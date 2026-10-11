@@ -2,7 +2,7 @@
 //! SSH and advanced settings, URI import and Test Connection.
 
 use crate::app::{Load, MongoRaabit};
-use crate::egui::{ScrollArea, Ui};
+use crate::egui::Ui;
 use crate::icons::Icon;
 use crate::style;
 use crate::widgets;
@@ -327,9 +327,8 @@ fn content(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui, width:
             ui.set_width(LIST_WIDTH);
             connection_list(app, m, ui, height);
         });
-        ui.add(archipel_sdk::kit::components::Separator);
         ui.vertical(|ui| {
-            let form_width = width - LIST_WIDTH - 3.0 * size::CONTENT_INSET - 40.0;
+            let form_width = (width - LIST_WIDTH - 3.0 * size::CONTENT_INSET - 40.0).max(160.0);
             ui.set_width(form_width);
             editor(m, ui, height);
         });
@@ -397,11 +396,12 @@ fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui
             *m = ConnectionManager::new(&app.store);
         }
     });
-    ui.add(TextField::search(&mut m.filter).placeholder("Filter connections"));
+    let filter = ui.add(TextField::search(&mut m.filter).placeholder("Filter connections"));
+    widgets::name_input(&filter, "Filter connections", true);
     let filter = m.filter.to_lowercase();
     let mut clicked: Option<ConnectionProfile> = None;
     let mut connect: Option<ConnectionProfile> = None;
-    ScrollArea::vertical()
+    archipel_sdk::kit::parts::scroll_vertical()
         .id_salt("raabit-manager-list")
         .max_height(height - 70.0)
         .auto_shrink([false, true])
@@ -512,7 +512,7 @@ fn editor(m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
         import_form(m, ui);
         return;
     }
-    ScrollArea::vertical()
+    archipel_sdk::kit::parts::scroll_vertical()
         .id_salt("raabit-manager-form")
         .max_height(height)
         .min_scrolled_height(height)

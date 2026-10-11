@@ -2,7 +2,7 @@
 //! plan and query code.
 
 use crate::app::{Load, MongoRaabit, TabId};
-use crate::egui::{CornerRadius, FontId, RichText, Stroke, Ui, vec2};
+use crate::egui::{CornerRadius, FontId, RichText, Stroke, Ui};
 use crate::icons::{self, Icon};
 use crate::style::Palette;
 use crate::widgets;
@@ -371,12 +371,11 @@ fn plan_tree(ui: &mut Ui, p: &Palette, stage: &PlanStage) {
                     plan_tree(ui, p, child);
                 }
             });
-            let (rect, _) = ui.allocate_exact_size(vec2(28.0, 20.0), crate::egui::Sense::hover());
-            let y = rect.center().y;
-            ui.painter().arrow(
-                crate::egui::pos2(rect.left() + 2.0, y),
-                vec2(22.0, 0.0),
-                Stroke::new(1.5_f32, p.text_info),
+            archipel_sdk::kit::icons::show(
+                ui,
+                archipel_sdk::kit::Glyph::ArrowRight,
+                20.0,
+                p.text_info,
             );
         }
         let accent = match stage.stage.as_str() {

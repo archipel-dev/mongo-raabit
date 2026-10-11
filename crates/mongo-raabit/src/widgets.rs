@@ -33,6 +33,14 @@ pub fn form_row(ui: &mut Ui, label: &str, label_width: f32, add: impl FnOnce(&mu
     });
 }
 
+/// Give an input that has only a placeholder an accessible name (the kit's search field
+/// has none; see "Kit gaps").
+pub fn name_input(response: &Response, name: &str, enabled: bool) {
+    response.widget_info(|| {
+        crate::egui::WidgetInfo::labeled(crate::egui::WidgetType::TextEdit, enabled, name)
+    });
+}
+
 /// Muted hint text.
 pub fn hint(ui: &Ui, text: &str) -> RichText {
     RichText::new(text).color(Tone::Muted.resolve(ui.ctx()))

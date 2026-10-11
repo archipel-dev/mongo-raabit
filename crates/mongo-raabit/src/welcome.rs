@@ -1,7 +1,7 @@
 //! Welcome tab: quick actions and saved connections.
 
 use crate::app::MongoRaabit;
-use crate::egui::{Align, Layout, ScrollArea, Ui};
+use crate::egui::{Align, Layout, Ui};
 use crate::icons::Icon;
 use archipel_sdk::kit::components::{Button, EmptyState, ListRow, SectionHeader};
 use archipel_sdk::kit::parts::Slot;
@@ -13,7 +13,7 @@ const LIST_WIDTH: f32 = 560.0;
 
 pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
     let mut connect: Option<ConnectionProfile> = None;
-    ScrollArea::vertical()
+    archipel_sdk::kit::parts::scroll_vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let new = EmptyState::new("Mongo Raabit")

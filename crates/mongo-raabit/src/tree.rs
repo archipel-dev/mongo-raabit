@@ -303,11 +303,12 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
             ui.set_min_height(height - size::HEADER_HEIGHT - size::SECTION_SPACING);
             ui.horizontal(|ui| {
                 ui.add_space(size::TOOLBAR_GAP);
-                ui.add(
+                let filter = ui.add(
                     TextField::search(&mut app.tree_filter)
                         .placeholder("Filter databases and collections")
                         .width(ui.available_width() - size::TOOLBAR_GAP),
                 );
+                crate::widgets::name_input(&filter, "Filter databases and collections", true);
             });
             ui.add_space(size::TOOLBAR_GAP);
             for error in &flat.errors {
