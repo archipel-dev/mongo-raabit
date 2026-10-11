@@ -10,7 +10,7 @@ rust-version = "1.91"
 repository = "https://github.com/archipel-dev/mongo-raabit"
 
 [workspace.dependencies]
-archipel-sdk = { git = "https://github.com/archipel-dev/sdk", branch = "claude/sdk-v0.1" }
+archipel-sdk = { git = "https://github.com/archipel-dev/sdk", branch = "main" }
 mongo-raabit-core = { path = "crates/mongo-raabit-core" }
 mongo-raabit = { path = "crates/mongo-raabit" }
 serde = { version = "1.0", features = ["derive"] }
