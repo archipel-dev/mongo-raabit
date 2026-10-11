@@ -227,6 +227,8 @@ pub struct MongoRaabit {
     pub selected: Option<NodeKey>,
     pub tree_filter: String,
     pub status: String,
+    /// Island sizes and visibility of the window.
+    pub layout: archipel_sdk::kit::components::WorkbenchState,
     next_id: u64,
 }
 
@@ -264,6 +266,7 @@ impl MongoRaabit {
             selected: None,
             tree_filter: String::new(),
             status,
+            layout: Default::default(),
             next_id: 1,
         }
     }

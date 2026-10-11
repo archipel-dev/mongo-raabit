@@ -7,11 +7,11 @@ use crate::app::{Load, MongoRaabit, NodeKey, SessionId, SessionState};
 use crate::egui::Ui;
 use crate::icons::Icon;
 use crate::style;
+use archipel_sdk::kit::Glyph;
 use archipel_sdk::kit::components::{
-    Banner, Button, IconButton, MenuItem, MenuSeparator, Panel, Severity, TextField, Tree, TreeRow,
+    Banner, EmptyState, IconButton, MenuItem, MenuSeparator, Severity, TextField, Tree, TreeRow,
 };
 use archipel_sdk::kit::tokens::size;
-use archipel_sdk::kit::{Glyph, Tone, egui::RichText};
 use mongo_raabit_core::connection::CollectionKind;
 
 enum Action {
@@ -261,6 +261,47 @@ fn node_menu(ui: &mut Ui, flat: &Flat, i: usize, actions: &mut Vec<Action>) {
 }
 
 /// Render the tree panel: a kit panel with the filter and the tree.
+/// The header buttons of the Connections tool window, right to left: Connection Manager,
+/// refresh, and the selected node's menu.
+pub fn header_actions(app: &mut MongoRaabit, ui: &mut Ui) {
+    let flat = flatten(app);
+    let current = app
+        .selected
+        .as_ref()
+        .and_then(|key| flat.keys.iter().position(|k| k == key));
+    let session_ids: Vec<SessionId> = app.sessions.iter().map(|s| s.id).collect();
+    let mut open_manager = false;
+    let mut actions = Vec::new();
+    let more = ui.add(
+        IconButton::new(Glyph::More, "Actions for the selected item").enabled(current.is_some()),
+    );
+    if let Some(i) = current {
+        crate::egui::Popup::menu(&more).show(|ui| {
+            node_menu(ui, &flat, i, &mut actions);
+        });
+    }
+    if ui
+        .add(IconButton::new(Icon::Refresh, "Refresh all"))
+        .clicked()
+    {
+        actions.extend(session_ids.iter().map(|id| Action::RefreshSession(*id)));
+    }
+    if ui
+        .add(IconButton::new(Icon::Plug, "Connection Manager… (Ctrl+N)"))
+        .clicked()
+    {
+        open_manager = true;
+    }
+    if open_manager {
+        app.open_manager();
+    }
+    for action in actions {
+        apply(app, action);
+    }
+}
+
+/// The body of the Connections tool window: the filter and the tree of connections,
+/// databases and collections, or a way to connect when there is none.
 pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
     let flat = flatten(app);
     let mut selected = app
@@ -268,94 +309,54 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
         .as_ref()
         .and_then(|key| flat.keys.iter().position(|k| k == key));
     let has_sessions = !app.sessions.is_empty();
-    let session_ids: Vec<SessionId> = app.sessions.iter().map(|s| s.id).collect();
     let mut open_manager = false;
-    let mut header_open = false;
-    let mut header_actions = Vec::new();
     let mut actions = Vec::new();
-    let height = ui.available_height();
-    let current = selected;
-    Panel::new("Connections")
-        .actions(|ui| {
-            if ui
-                .add(IconButton::new(Icon::Plug, "Connection Manager… (Ctrl+N)"))
-                .clicked()
-            {
-                header_open = true;
-            }
-            if ui
-                .add(IconButton::new(Icon::Refresh, "Refresh all"))
-                .clicked()
-            {
-                header_actions.extend(session_ids.iter().map(|id| Action::RefreshSession(*id)));
-            }
-            let more = ui.add(
-                IconButton::new(Glyph::More, "Actions for the selected item")
-                    .enabled(current.is_some()),
-            );
-            if let Some(i) = current {
-                crate::egui::Popup::menu(&more).show(|ui| {
-                    node_menu(ui, &flat, i, &mut header_actions);
-                });
-            }
-        })
-        .show(ui, |ui| {
-            ui.set_min_height(height - size::HEADER_HEIGHT - size::SECTION_SPACING);
-            ui.horizontal(|ui| {
-                ui.add_space(size::TOOLBAR_GAP);
-                let filter = ui.add(
-                    TextField::search(&mut app.tree_filter)
-                        .placeholder("Filter databases and collections")
-                        .width(ui.available_width() - size::TOOLBAR_GAP),
-                );
-                crate::widgets::name_input(&filter, "Filter databases and collections", true);
-            });
-            ui.add_space(size::TOOLBAR_GAP);
-            for error in &flat.errors {
-                Banner::new(Severity::Error, error).show(ui);
-            }
-            if !has_sessions {
-                ui.add_space(40.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new("No open connections")
-                            .color(Tone::Secondary.resolve(ui.ctx())),
-                    );
-                    ui.add_space(size::SECTION_SPACING);
-                    if ui
-                        .add(Button::primary("Connect…").icon(Icon::Plug))
-                        .clicked()
-                    {
-                        open_manager = true;
-                    }
-                });
-                return;
-            }
-            let out = Tree::new("raabit-tree", &flat.rows, &mut selected)
-                .name("Connections")
-                .height(ui.available_height())
-                .show(ui);
-            if out.selection_changed
-                && let Some(i) = selected
-            {
-                actions.push(Action::Select(flat.keys[i].clone()));
-            }
-            if let Some(i) = out.toggled {
-                actions.push(Action::Toggle(flat.keys[i].clone()));
-            }
-            if let Some(i) = out.activated {
-                match (&flat.collections[i], &flat.keys[i]) {
-                    (Some((db, name, kind)), NodeKey::Collection(session, ..)) => {
-                        actions.push(Action::Open(*session, db.clone(), name.clone(), *kind));
-                    }
-                    _ => actions.push(Action::Toggle(flat.keys[i].clone())),
+    ui.spacing_mut().item_spacing.y = size::TOOLBAR_GAP;
+    ui.horizontal(|ui| {
+        ui.add_space(size::CONTENT_INSET);
+        let filter = ui.add(
+            TextField::search(&mut app.tree_filter)
+                .name("Filter databases and collections")
+                .placeholder("Filter databases and collections")
+                .width((ui.available_width() - size::CONTENT_INSET).max(0.0)),
+        );
+        let _ = filter;
+    });
+    for error in &flat.errors {
+        Banner::new(Severity::Error, error).show(ui);
+    }
+    if !has_sessions {
+        let connect = EmptyState::new("No open connections")
+            .icon(Icon::Plug)
+            .action("Connect…")
+            .show(ui);
+        open_manager = connect.clicked();
+    } else {
+        let out = Tree::new("raabit-tree", &flat.rows, &mut selected)
+            .name("Connections")
+            .height(ui.available_height())
+            .show(ui);
+        if out.selection_changed
+            && let Some(i) = selected
+        {
+            actions.push(Action::Select(flat.keys[i].clone()));
+        }
+        if let Some(i) = out.toggled {
+            actions.push(Action::Toggle(flat.keys[i].clone()));
+        }
+        if let Some(i) = out.activated {
+            match (&flat.collections[i], &flat.keys[i]) {
+                (Some((db, name, kind)), NodeKey::Collection(session, ..)) => {
+                    actions.push(Action::Open(*session, db.clone(), name.clone(), *kind));
                 }
+                _ => actions.push(Action::Toggle(flat.keys[i].clone())),
             }
-        });
-    if open_manager || header_open {
+        }
+    }
+    if open_manager {
         app.open_manager();
     }
-    for action in header_actions.into_iter().chain(actions) {
+    for action in actions {
         apply(app, action);
     }
 }

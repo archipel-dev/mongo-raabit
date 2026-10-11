@@ -95,7 +95,11 @@ impl Plugin for MongoRaabitPlugin {
             return;
         };
         if view.view == VIEW {
-            self.app(host).ui(ui);
+            let app = self.app(host);
+            app.ui(ui);
+            // One status bar: the host's.
+            let line = app.status_line();
+            host.show_status(&line);
         } else if view.view == DATABASES_VIEW {
             let app = self.app(host);
             app.jobs.set_context(ui.ctx());

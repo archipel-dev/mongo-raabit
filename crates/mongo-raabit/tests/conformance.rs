@@ -116,7 +116,8 @@ fn query_field_takes_text() {
     let mut harness = testing::harness_state(Theme::dark(), String::new(), |ui, text| {
         widgets::query_field(ui, "Filter", text, "{ }", 240.0);
     });
-    let input = harness.get_by_label("Filter");
+    let input =
+        harness.get_by_role_and_label(archipel_sdk::kit::testing::Role::TextInput, "Filter");
     input.focus();
     input.type_text("{a: 1}");
     harness.run();

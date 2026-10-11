@@ -19,8 +19,12 @@ fn themes() -> [Theme; 2] {
 }
 
 fn screen<'a>(theme: Theme, app: MongoRaabit) -> Harness<'a, MongoRaabit> {
-    let mut harness = testing::harness_state(theme, app, |ui, app: &mut MongoRaabit| app.ui(ui));
-    harness.set_size(vec2(1280.0, 800.0));
+    let mut harness = testing::harness_state_sized(
+        theme,
+        vec2(1280.0, 800.0),
+        app,
+        |ui, app: &mut MongoRaabit| app.ui(ui),
+    );
     harness.run_ok();
     harness
 }
@@ -150,7 +154,7 @@ fn every_connection_manager_tab_passes_the_audit() {
 fn the_tree_passes_the_audit() {
     for theme in themes() {
         let mut harness = screen(theme, with_tree());
-        harness.get_by_label("Connections");
+        harness.get_by_role_and_label(testing::Role::Tree, "Connections");
         audit(&mut harness).assert_clean();
     }
 }

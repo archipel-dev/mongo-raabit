@@ -2,7 +2,7 @@
 
 use archipel_sdk::api::{
     EditorTabRequest, Permission, Plugin, PluginHost, PluginManifest, Value, ViewContext,
-    ViewPlacement,
+    ViewFrame, ViewPlacement,
 };
 use archipel_sdk::kit::Theme;
 use archipel_sdk::testing::{DataDir, Fixture, RecordingHost, audit, view_harness};
@@ -60,8 +60,18 @@ fn commands_open_the_tab_and_the_tool_window() {
 #[test]
 fn main_screen_passes_the_kit_audit_in_both_themes() {
     for theme in [Theme::dark(), Theme::light()] {
+        // The app fills its area: a window fitted to the content would be a few points wide.
         let fixture = Fixture::new(MongoRaabitPlugin::new(), ID);
-        let mut harness = view_harness(theme, fixture, app_view());
+        let view = app_view();
+        let mut harness = archipel_sdk::kit::testing::harness_state_sized(
+            theme,
+            archipel_sdk::kit::egui::vec2(1000.0, 640.0),
+            fixture,
+            move |ui, fixture| {
+                let Fixture { plugin, host } = fixture;
+                plugin.render_view(&view, &mut ViewFrame::new(ui), host);
+            },
+        );
         harness.run();
         audit(&mut harness).assert_clean();
     }

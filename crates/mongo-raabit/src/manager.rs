@@ -293,7 +293,8 @@ pub fn show(app: &mut MongoRaabit, ctx: &crate::egui::Context) {
             save(app, &mut manager);
         }
         Some(DialogAction::Dismissed) => open = false,
-        None => {}
+        // The manager has no tertiary action.
+        Some(_) | None => {}
     }
     // The dialog may have been replaced while its content ran (e.g. by `connect`).
     if open && app.manager.is_none() {

@@ -8,7 +8,7 @@ use crate::egui::{Align, CornerRadius, FontId, Layout, Response, RichText, Strok
 use crate::icons::Icon;
 use crate::style::Palette;
 use archipel_sdk::kit::Tone;
-use archipel_sdk::kit::components::{Dialog, DialogAction, TextField};
+use archipel_sdk::kit::components::{Dialog, DialogAction, FieldLabel, TextField};
 use archipel_sdk::kit::tokens::{size, typography};
 
 /// Section caption (small, muted).
@@ -54,17 +54,17 @@ pub fn query_field(
     hint: &str,
     width: f32,
 ) -> Response {
-    let color = Tone::Muted.resolve(ui.ctx());
     ui.horizontal(|ui| {
-        let label = ui.label(RichText::new(caption).size(typography::SMALL).color(color));
-        let remaining = (width - label.rect.width() - ui.spacing().item_spacing.x).max(40.0);
+        ui.spacing_mut().item_spacing.x = size::FORM_LABEL_GAP;
+        let label = ui.add(FieldLabel::new(caption));
+        let remaining = (width - label.rect.width() - size::FORM_LABEL_GAP).max(40.0);
         ui.add(
             TextField::new(text)
+                .name(caption)
                 .placeholder(hint)
                 .monospace(true)
                 .width(remaining),
         )
-        .labelled_by(label.id)
     })
     .inner
 }
