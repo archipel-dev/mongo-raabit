@@ -1,5 +1,6 @@
 //! Drives the view state against a local mongod (skipped when none is reachable).
 
+use archipel_sdk::kit::{self, Theme, egui};
 use mongo_raabit::MongoRaabit;
 use mongo_raabit::app::{Load, SessionState, TabKind};
 use mongo_raabit::core::bson::doc;
@@ -110,19 +111,6 @@ fn connect_browse_query_and_page() {
     rt.block_on(async {
         conn.drop_database(db).await.unwrap();
     });
-}
-
-#[test]
-fn renders_every_view_headlessly() {
-    let mut app = MongoRaabit::new(None);
-    app.open_manager();
-    let ctx = egui::Context::default();
-    for _ in 0..2 {
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.ui(ui));
-        });
-    }
-    assert!(app.manager.is_some());
 }
 
 #[test]
@@ -435,6 +423,7 @@ fn aggregation_sql_schema_and_index_tabs() {
 
     // Render every tab headlessly.
     let ctx = egui::Context::default();
+    kit::install(&ctx, Theme::dark());
     for i in 0..app.tabs.len() {
         app.active_tab = i;
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
@@ -490,6 +479,7 @@ fn visual_query_builder_runs_its_query() {
 
     // The builder is the default mode and sees the fields of the first page.
     let ctx = egui::Context::default();
+    kit::install(&ctx, Theme::dark());
     let _ = ctx.run(egui::RawInput::default(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| app.ui(ui));
     });

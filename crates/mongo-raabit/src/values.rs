@@ -1,8 +1,8 @@
 //! Display helpers for BSON values: compact previews and syntax-colored shell text.
 
+use crate::egui::text::LayoutJob;
+use crate::egui::{Color32, FontId, TextFormat};
 use crate::style::Palette;
-use egui::text::LayoutJob;
-use egui::{Color32, FontId, TextFormat};
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::shell::{self, ShellStyle};
 
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn highlighting_covers_all_text() {
         let doc = doc! {"name": "Ada", "n": 3, "ok": true, "nested": {"x": "ü"}};
-        let job = document_job(&doc, &Palette::DARK, FontId::monospace(12.0));
+        let job = document_job(&doc, &Palette::for_dark(true), FontId::monospace(12.0));
         assert_eq!(
             job.text,
             shell::document_to_shell(&doc, ShellStyle::Pretty(2))
@@ -291,12 +291,12 @@ mod tests {
             .iter()
             .find(|s| &job.text[s.byte_range.clone()] == "name")
             .unwrap();
-        assert_eq!(key.format.color, Palette::DARK.key);
+        assert_eq!(key.format.color, Palette::for_dark(true).key);
         let string = job
             .sections
             .iter()
             .find(|s| &job.text[s.byte_range.clone()] == "\"Ada\"")
             .unwrap();
-        assert_eq!(string.format.color, Palette::DARK.string);
+        assert_eq!(string.format.color, Palette::for_dark(true).string);
     }
 }

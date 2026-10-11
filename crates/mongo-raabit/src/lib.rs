@@ -1,4 +1,4 @@
-//! mongo-raabit: a clean-room MongoDB GUI for Jetthing.
+//! Mongo Raabit: a clean-room MongoDB GUI for the Archipel suite.
 //!
 //! [`MongoRaabit`] is the whole view state; render it with [`MongoRaabit::ui`] inside
 //! any egui `Ui` (a plugin tool window, an editor tab or a standalone window). All
@@ -28,15 +28,16 @@ mod welcome;
 pub mod widgets;
 
 pub use app::MongoRaabit;
+pub use archipel_sdk::kit::egui;
 pub use mongo_raabit_core as core;
 pub use plugin::MongoRaabitPlugin;
 
+use crate::egui::{CornerRadius, FontId, RichText, Sense, Stroke, Ui, vec2};
 use app::TabKind;
-use egui::{CornerRadius, FontId, RichText, Sense, Stroke, Ui, vec2};
 use icons::Icon;
 use style::Palette;
 
-pub const PLUGIN_ID: &str = "dev.jetthing.mongo-raabit";
+pub const PLUGIN_ID: &str = "dev.archipel.mongo-raabit";
 
 impl MongoRaabit {
     /// Render the full application view into `ui`.
@@ -44,14 +45,14 @@ impl MongoRaabit {
         self.jobs.set_context(ui.ctx());
         self.poll();
         let p = Palette::of(ui);
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
+        if ui.input_mut(|i| i.consume_key(crate::egui::Modifiers::COMMAND, crate::egui::Key::N)) {
             self.open_manager();
         }
         let full = ui.available_rect_before_wrap();
         ui.painter().rect_filled(full, 0.0, p.frame);
 
-        egui::TopBottomPanel::top("raabit-toolbar")
-            .frame(egui::Frame::new().inner_margin(egui::Margin {
+        crate::egui::TopBottomPanel::top("raabit-toolbar")
+            .frame(crate::egui::Frame::new().inner_margin(crate::egui::Margin {
                 left: 10,
                 right: 10,
                 top: 6,
@@ -59,8 +60,8 @@ impl MongoRaabit {
             }))
             .show_separator_line(false)
             .show_inside(ui, |ui| self.toolbar(ui, &p));
-        egui::TopBottomPanel::bottom("raabit-status")
-            .frame(egui::Frame::new().inner_margin(egui::Margin {
+        crate::egui::TopBottomPanel::bottom("raabit-status")
+            .frame(crate::egui::Frame::new().inner_margin(crate::egui::Margin {
                 left: 12,
                 right: 12,
                 top: 3,
@@ -68,11 +69,11 @@ impl MongoRaabit {
             }))
             .show_separator_line(false)
             .show_inside(ui, |ui| self.status_bar(ui, &p));
-        egui::SidePanel::left("raabit-tree")
+        crate::egui::SidePanel::left("raabit-tree")
             .resizable(true)
             .default_width(290.0)
             .width_range(200.0..=520.0)
-            .frame(egui::Frame::new().inner_margin(egui::Margin {
+            .frame(crate::egui::Frame::new().inner_margin(crate::egui::Margin {
                 left: 6,
                 right: 0,
                 top: 0,
@@ -85,8 +86,8 @@ impl MongoRaabit {
                     tree::show(self, ui);
                 });
             });
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().inner_margin(egui::Margin {
+        crate::egui::CentralPanel::default()
+            .frame(crate::egui::Frame::new().inner_margin(crate::egui::Margin {
                 left: style::GAP as i8 + 2,
                 right: 6,
                 top: 0,
@@ -111,7 +112,7 @@ impl MongoRaabit {
         ui.horizontal(|ui| {
             icons::icon(ui, Icon::Leaf, p.leaf);
             ui.label(
-                RichText::new("mongo-raabit")
+                RichText::new("Mongo Raabit")
                     .size(14.0)
                     .strong()
                     .color(p.text_strong),
@@ -178,19 +179,22 @@ impl MongoRaabit {
                         .color(p.text_secondary),
                 );
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.jobs.busy() {
-                    ui.spinner();
-                }
-            });
+            ui.with_layout(
+                crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                |ui| {
+                    if self.jobs.busy() {
+                        ui.spinner();
+                    }
+                },
+            );
         });
     }
 
     fn tab_bar(&mut self, ui: &mut Ui, p: &Palette) {
         let mut activate = None;
         let mut close = None;
-        egui::Frame::new()
-            .inner_margin(egui::Margin {
+        crate::egui::Frame::new()
+            .inner_margin(crate::egui::Margin {
                 left: 6,
                 right: 6,
                 top: 4,
@@ -228,10 +232,18 @@ impl MongoRaabit {
                         } else {
                             p.text_secondary
                         };
+                        let name = title.clone();
                         let galley = ui.painter().layout_no_wrap(title, font, text_color);
                         let width = galley.size().x + 58.0;
                         let (rect, response) =
                             ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
+                        response.widget_info(|| {
+                            crate::egui::WidgetInfo::labeled(
+                                crate::egui::WidgetType::Button,
+                                true,
+                                &name,
+                            )
+                        });
                         if active {
                             ui.painter().rect_filled(
                                 rect.shrink2(vec2(0.0, 3.0)),
@@ -247,20 +259,23 @@ impl MongoRaabit {
                         }
                         icons::paint(
                             ui.painter(),
-                            egui::Rect::from_center_size(
-                                egui::pos2(rect.left() + 16.0, rect.center().y),
+                            crate::egui::Rect::from_center_size(
+                                crate::egui::pos2(rect.left() + 16.0, rect.center().y),
                                 vec2(14.0, 14.0),
                             ),
                             icon,
                             color,
                         );
                         ui.painter().galley(
-                            egui::pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0),
+                            crate::egui::pos2(
+                                rect.left() + 30.0,
+                                rect.center().y - galley.size().y / 2.0,
+                            ),
                             galley,
                             text_color,
                         );
-                        let close_rect = egui::Rect::from_center_size(
-                            egui::pos2(rect.right() - 14.0, rect.center().y),
+                        let close_rect = crate::egui::Rect::from_center_size(
+                            crate::egui::pos2(rect.right() - 14.0, rect.center().y),
                             vec2(16.0, 16.0),
                         );
                         let close_hover = response

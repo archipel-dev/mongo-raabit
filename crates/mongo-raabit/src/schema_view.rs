@@ -2,10 +2,10 @@
 //! top-value charts.
 
 use crate::app::{Load, MongoRaabit, TabId};
+use crate::egui::{Align2, CornerRadius, FontId, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use crate::icons::{self, Icon};
 use crate::style::{self, Palette};
 use crate::widgets;
-use egui::{Align2, CornerRadius, FontId, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use egui_extras::{Column, TableBuilder};
 use mongo_raabit_core::schema::{FieldStats, HISTOGRAM_BUCKETS, SampleMethod};
 
@@ -21,8 +21,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     };
     let mut analyze = false;
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin {
             left: 14,
             right: 14,
             top: 10,
@@ -42,29 +42,32 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         .color(p.text_strong),
                 );
                 widgets::badge(ui, "Schema", p.leaf);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::primary_button(ui, Some(Icon::Refresh), "Analyze").clicked() {
-                        analyze = true;
-                    }
-                    widgets::segmented(
-                        ui,
-                        &mut tab.method,
-                        &[
-                            (SampleMethod::Last, Icon::ChevronDown, "Last"),
-                            (SampleMethod::First, Icon::ChevronUp, "First"),
-                            (SampleMethod::Random, Icon::Refresh, "Random"),
-                        ],
-                    );
-                    let mut size = tab.size.to_string();
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut size).desired_width(56.0))
-                        .changed()
-                        && let Ok(v) = size.trim().parse::<u64>()
-                    {
-                        tab.size = v.clamp(1, 100_000);
-                    }
-                    ui.label(RichText::new("Sample").color(p.text_info));
-                });
+                ui.with_layout(
+                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                    |ui| {
+                        if widgets::primary_button(ui, Some(Icon::Refresh), "Analyze").clicked() {
+                            analyze = true;
+                        }
+                        widgets::segmented(
+                            ui,
+                            &mut tab.method,
+                            &[
+                                (SampleMethod::Last, Icon::ChevronDown, "Last"),
+                                (SampleMethod::First, Icon::ChevronUp, "First"),
+                                (SampleMethod::Random, Icon::Refresh, "Random"),
+                            ],
+                        );
+                        let mut size = tab.size.to_string();
+                        if ui
+                            .add(crate::egui::TextEdit::singleline(&mut size).desired_width(56.0))
+                            .changed()
+                            && let Ok(v) = size.trim().parse::<u64>()
+                        {
+                            tab.size = v.clamp(1, 100_000);
+                        }
+                        ui.label(RichText::new("Sample").color(p.text_info));
+                    },
+                );
             });
         });
     widgets::separator(ui);
@@ -89,8 +92,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 ui.vertical(|ui| {
                     ui.set_width(ui.available_width() - detail_width - 12.0);
                     ui.set_height(height);
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin {
+                    crate::egui::Frame::new()
+                        .inner_margin(crate::egui::Margin {
                             left: 14,
                             right: 0,
                             top: 8,
@@ -117,12 +120,12 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 ui.painter().rect_filled(sep, 0.0, p.separator);
                 ui.vertical(|ui| {
                     ui.set_width(detail_width);
-                    egui::ScrollArea::vertical()
+                    crate::egui::ScrollArea::vertical()
                         .id_salt(("raabit-schema-detail", tab_id))
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            egui::Frame::new()
-                                .inner_margin(egui::Margin::same(14))
+                            crate::egui::Frame::new()
+                                .inner_margin(crate::egui::Margin::same(14))
                                 .show(ui, |ui| {
                                     ui.set_width(detail_width - 28.0);
                                     match tab.selected.and_then(|i| report.fields.get(i)) {
@@ -156,7 +159,9 @@ fn field_table(
         .id_salt(("raabit-schema-table", tab_id))
         .striped(true)
         .sense(Sense::click())
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .cell_layout(crate::egui::Layout::left_to_right(
+            crate::egui::Align::Center,
+        ))
         .column(Column::initial(230.0).at_least(140.0).clip(true))
         .column(Column::initial(150.0).at_least(100.0))
         .column(Column::initial(200.0).at_least(120.0))
@@ -357,15 +362,18 @@ fn details(ui: &mut Ui, p: &Palette, field: &FieldStats) {
             ui.painter()
                 .rect_filled(sw, CornerRadius::same(2), p.type_color(name));
             ui.label(RichText::new(name).color(p.text));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "{count}  ·  {:.1}%",
-                        *count as f64 * 100.0 / total as f64
-                    ))
-                    .color(p.text_secondary),
-                );
-            });
+            ui.with_layout(
+                crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{count}  ·  {:.1}%",
+                            *count as f64 * 100.0 / total as f64
+                        ))
+                        .color(p.text_secondary),
+                    );
+                },
+            );
         });
     }
     if let (Some(min), Some(max), Some(mean)) = (field.min, field.max, field.mean) {
@@ -413,11 +421,11 @@ fn details(ui: &mut Ui, p: &Palette, field: &FieldStats) {
 }
 
 fn stat_inline(ui: &mut Ui, p: &Palette, label: &str, value: &str) {
-    egui::Frame::new()
+    crate::egui::Frame::new()
         .fill(p.raised)
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(egui::Margin::symmetric(10, 5))
+        .inner_margin(crate::egui::Margin::symmetric(10, 5))
         .show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.label(RichText::new(label).size(11.0).color(p.text_info));

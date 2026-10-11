@@ -1,10 +1,10 @@
 //! Connection tree: sessions → databases → collections, views, time series and GridFS.
 
 use crate::app::{Load, MongoRaabit, NodeKey, SessionId, SessionState};
+use crate::egui::{Align2, CornerRadius, FontId, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use crate::icons::{self, Icon};
 use crate::style::{self, Palette};
 use crate::widgets;
-use egui::{Align2, CornerRadius, FontId, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use mongo_raabit_core::connection::CollectionKind;
 
 enum Action {
@@ -32,7 +32,7 @@ const INDENT: f32 = 16.0;
 struct Row<'a> {
     depth: usize,
     icon: Icon,
-    icon_color: egui::Color32,
+    icon_color: crate::egui::Color32,
     label: &'a str,
     info: String,
     expandable: bool,
@@ -42,9 +42,12 @@ struct Row<'a> {
     loading: bool,
 }
 
-fn row(ui: &mut Ui, p: &Palette, r: Row<'_>) -> (egui::Response, bool) {
+fn row(ui: &mut Ui, p: &Palette, r: Row<'_>) -> (crate::egui::Response, bool) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, ROW), Sense::click());
+    response.widget_info(|| {
+        crate::egui::WidgetInfo::labeled(crate::egui::WidgetType::Button, true, r.label)
+    });
     let painter = ui.painter();
     if r.selected {
         painter.rect_filled(
@@ -97,7 +100,7 @@ fn row(ui: &mut Ui, p: &Palette, r: Row<'_>) -> (egui::Response, bool) {
     if r.loading {
         let c = pos2(rect.right() - 16.0, rect.center().y);
         let t = ui.input(|i| i.time) as f32;
-        painter.add(egui::Shape::line(
+        painter.add(crate::egui::Shape::line(
             (0..=12)
                 .map(|i| {
                     let a = t * 6.0 + i as f32 * 0.4;
@@ -134,8 +137,8 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
     let p = Palette::of(ui);
     let mut actions = Vec::new();
     // Header.
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin {
             left: 12,
             right: 6,
             top: 8,
@@ -144,40 +147,43 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Connections").strong().color(p.text_strong));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    if widgets::icon_button(ui, Icon::Refresh, "Refresh all").clicked() {
-                        for s in &app.sessions {
-                            actions.push(Action::RefreshSession(s.id));
+                ui.with_layout(
+                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        if widgets::icon_button(ui, Icon::Refresh, "Refresh all").clicked() {
+                            for s in &app.sessions {
+                                actions.push(Action::RefreshSession(s.id));
+                            }
                         }
-                    }
-                    if widgets::icon_button_tinted(
-                        ui,
-                        Icon::Plug,
-                        "Connection Manager… (Ctrl+N)",
-                        Some(p.leaf),
-                        true,
-                    )
-                    .clicked()
-                    {
-                        app.open_manager();
-                    }
-                });
+                        if widgets::icon_button_tinted(
+                            ui,
+                            Icon::Plug,
+                            "Connection Manager… (Ctrl+N)",
+                            Some(p.leaf),
+                            true,
+                        )
+                        .clicked()
+                        {
+                            app.open_manager();
+                        }
+                    },
+                );
             });
         });
-    egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(8, 0))
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin::symmetric(8, 0))
         .show(ui, |ui| {
-            egui::Frame::new()
+            crate::egui::Frame::new()
                 .fill(p.field)
                 .stroke(Stroke::new(1.0_f32, p.border))
                 .corner_radius(CornerRadius::same(7))
-                .inner_margin(egui::Margin::symmetric(8, 2))
+                .inner_margin(crate::egui::Margin::symmetric(8, 2))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         icons::icon(ui, Icon::Search, p.text_info);
                         ui.add(
-                            egui::TextEdit::singleline(&mut app.tree_filter)
+                            crate::egui::TextEdit::singleline(&mut app.tree_filter)
                                 .hint_text(widgets::hint(ui, "Filter databases and collections"))
                                 .frame(false)
                                 .desired_width(f32::INFINITY),
@@ -187,7 +193,7 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
         });
     ui.add_space(6.0);
     let filter = app.tree_filter.to_lowercase();
-    egui::ScrollArea::vertical()
+    crate::egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -249,8 +255,8 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
                     continue;
                 }
                 if let SessionState::Failed(err) = &session.state {
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin {
+                    crate::egui::Frame::new()
+                        .inner_margin(crate::egui::Margin {
                             left: 40,
                             right: 8,
                             top: 2,
@@ -258,15 +264,17 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
                         })
                         .show(ui, |ui| {
                             ui.add(
-                                egui::Label::new(RichText::new(err).size(11.5).color(p.error))
-                                    .wrap(),
+                                crate::egui::Label::new(
+                                    RichText::new(err).size(11.5).color(p.error),
+                                )
+                                .wrap(),
                             );
                         });
                 }
                 let Load::Ready(databases) = &session.databases else {
                     if let Load::Failed(err) = &session.databases {
-                        egui::Frame::new()
-                            .inner_margin(egui::Margin {
+                        crate::egui::Frame::new()
+                            .inner_margin(crate::egui::Margin {
                                 left: 40,
                                 right: 8,
                                 top: 2,
@@ -274,8 +282,10 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
                             })
                             .show(ui, |ui| {
                                 ui.add(
-                                    egui::Label::new(RichText::new(err).size(11.5).color(p.error))
-                                        .wrap(),
+                                    crate::egui::Label::new(
+                                        RichText::new(err).size(11.5).color(p.error),
+                                    )
+                                    .wrap(),
                                 );
                             });
                     }
@@ -332,8 +342,8 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
                     match &db.collections {
                         Load::Ready(list) => {
                             if list.is_empty() {
-                                egui::Frame::new()
-                                    .inner_margin(egui::Margin {
+                                crate::egui::Frame::new()
+                                    .inner_margin(crate::egui::Margin {
                                         left: 64,
                                         right: 8,
                                         top: 2,
@@ -479,8 +489,8 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
                             }
                         }
                         Load::Failed(err) => {
-                            egui::Frame::new()
-                                .inner_margin(egui::Margin {
+                            crate::egui::Frame::new()
+                                .inner_margin(crate::egui::Margin {
                                     left: 64,
                                     right: 8,
                                     top: 2,
@@ -488,7 +498,7 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
                                 })
                                 .show(ui, |ui| {
                                     ui.add(
-                                        egui::Label::new(
+                                        crate::egui::Label::new(
                                             RichText::new(err).size(11.5).color(p.error),
                                         )
                                         .wrap(),

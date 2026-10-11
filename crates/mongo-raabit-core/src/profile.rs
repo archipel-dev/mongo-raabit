@@ -686,7 +686,7 @@ pub struct ProfileStore {
 }
 
 impl ProfileStore {
-    /// Default location: `$XDG_CONFIG_HOME/jetthing/mongo-raabit/connections.json`
+    /// Default location: `$XDG_CONFIG_HOME/archipel/mongo-raabit/connections.json`
     /// (or the platform equivalent).
     pub fn default_path() -> Option<PathBuf> {
         let base = if cfg!(target_os = "windows") {
@@ -700,7 +700,7 @@ impl ProfileStore {
                 .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         };
         base.map(|base| {
-            base.join("jetthing")
+            base.join("archipel")
                 .join("mongo-raabit")
                 .join("connections.json")
         })

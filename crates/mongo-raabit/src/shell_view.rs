@@ -2,14 +2,14 @@
 //! and a result tree. Uses the installed mongosh, or the built-in evaluator.
 
 use crate::app::{MongoRaabit, TabId};
+use crate::egui::text::{CCursor, CCursorRange};
+use crate::egui::{CornerRadius, FontId, RichText, Stroke, Ui, vec2};
 use crate::icons::{self, Icon};
 use crate::results;
 use crate::style::{self, Palette};
 use crate::tools::{ShellEngine, shell_documents};
 use crate::values;
 use crate::widgets;
-use egui::text::{CCursor, CCursorRange};
-use egui::{CornerRadius, FontId, RichText, Stroke, Ui, vec2};
 use mongo_raabit_core::shell_eval;
 
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
@@ -18,7 +18,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     };
     let mut run: Option<Option<String>> = None;
-    egui::Frame::new().inner_margin(egui::Margin { left: 14, right: 14, top: 10, bottom: 8 }).show(ui, |ui| {
+    crate::egui::Frame::new().inner_margin(crate::egui::Margin { left: 14, right: 14, top: 10, bottom: 8 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             icons::icon(ui, Icon::Shell, p.leaf);
             ui.label(RichText::new(&tab.db).size(15.0).strong().color(p.text_strong));
@@ -35,7 +35,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                     );
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(crate::egui::Layout::right_to_left(crate::egui::Align::Center), |ui| {
                 if tab.running {
                     ui.spinner();
                 } else if widgets::primary_button(ui, Some(Icon::Play), "Run").on_hover_text("Run script (Ctrl+Enter)").clicked() {
@@ -52,15 +52,15 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     });
     widgets::separator(ui);
     let editor_height = (ui.available_height() * 0.34).clamp(120.0, 300.0);
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin {
             left: 14,
             right: 14,
             top: 10,
             bottom: 4,
         })
         .show(ui, |ui| {
-            let response = egui::ScrollArea::vertical()
+            let response = crate::egui::ScrollArea::vertical()
                 .id_salt(("raabit-shell-editor", tab_id))
                 .max_height(editor_height)
                 .show(ui, |ui| {
@@ -69,7 +69,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 .inner;
             // Completion for the token before the cursor.
             let ctx = ui.ctx().clone();
-            let mut state = egui::TextEdit::load_state(&ctx, response.id);
+            let mut state = crate::egui::TextEdit::load_state(&ctx, response.id);
             let cursor = state
                 .as_ref()
                 .and_then(|s| s.cursor.char_range())
@@ -88,7 +88,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             };
             let mut accept: Option<String> = None;
             if response.has_focus()
-                && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
+                && ui.input(|i| i.modifiers.command && i.key_pressed(crate::egui::Key::Enter))
             {
                 // Run the selection when there is one, otherwise the whole script.
                 let selection = state
@@ -106,7 +106,9 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 run = Some(selection);
             }
             if !completions.is_empty()
-                && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Space))
+                && ui.input_mut(|i| {
+                    i.consume_key(crate::egui::Modifiers::CTRL, crate::egui::Key::Space)
+                })
             {
                 accept = completions.first().cloned();
             }
@@ -120,7 +122,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 } else {
                     widgets::caption(ui, "Ctrl+Space");
                     for completion in &completions {
-                        let chip = egui::Button::new(
+                        let chip = crate::egui::Button::new(
                             RichText::new(completion)
                                 .font(FontId::monospace(12.0))
                                 .color(p.text),
@@ -181,13 +183,13 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         ui.vertical(|ui| {
             ui.set_width(console_width);
             ui.set_height(height);
-            egui::ScrollArea::vertical()
+            crate::egui::ScrollArea::vertical()
                 .id_salt(("raabit-shell-console", tab_id))
                 .stick_to_bottom(true)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(14, 10))
+                    crate::egui::Frame::new()
+                        .inner_margin(crate::egui::Margin::symmetric(14, 10))
                         .show(ui, |ui| {
                             if tab.history.is_empty() {
                                 widgets::caption(ui, "Output appears here.");
@@ -214,7 +216,9 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                                         .color(p.text_strong),
                                     );
                                     ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        crate::egui::Layout::right_to_left(
+                                            crate::egui::Align::Center,
+                                        ),
                                         |ui| {
                                             ui.label(
                                                 RichText::new(format!(
@@ -231,7 +235,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                                         },
                                     );
                                 });
-                                let mut job = egui::text::LayoutJob::default();
+                                let mut job = crate::egui::text::LayoutJob::default();
                                 if entry.ok {
                                     values::highlight_into(
                                         &mut job,
@@ -243,27 +247,27 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                                     job.append(
                                         &entry.output,
                                         0.0,
-                                        egui::TextFormat {
+                                        crate::egui::TextFormat {
                                             font_id: FontId::monospace(12.0),
                                             color: p.error,
                                             ..Default::default()
                                         },
                                     );
                                 }
-                                ui.add(egui::Label::new(job).selectable(true).wrap());
+                                ui.add(crate::egui::Label::new(job).selectable(true).wrap());
                                 ui.add_space(10.0);
                             }
                         });
                 });
         });
         if let Some(value) = &last_value {
-            let (sep, _) = ui.allocate_exact_size(vec2(1.0, height), egui::Sense::hover());
+            let (sep, _) = ui.allocate_exact_size(vec2(1.0, height), crate::egui::Sense::hover());
             ui.painter().rect_filled(sep, 0.0, p.separator);
             ui.vertical(|ui| {
                 ui.set_height(height);
                 let docs = shell_documents(value);
-                egui::Frame::new()
-                    .inner_margin(egui::Margin {
+                crate::egui::Frame::new()
+                    .inner_margin(crate::egui::Margin {
                         left: 12,
                         right: 12,
                         top: 8,
@@ -278,7 +282,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 if let Some(results::TreeEvent::Toggle(key)) = results::tree(
                     ui,
                     results::TreeState {
-                        id: egui::Id::new(("raabit-shell-tree", tab_id)),
+                        id: crate::egui::Id::new(("raabit-shell-tree", tab_id)),
                         open: &tab.open,
                         selected: None,
                     },

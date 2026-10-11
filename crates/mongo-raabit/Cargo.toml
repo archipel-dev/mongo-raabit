@@ -4,20 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
 publish = false
-description = "mongo-raabit: a MongoDB GUI plugin for Jetthing (egui views over mongo-raabit-core)"
+description = "Mongo Raabit: the MongoDB GUI of the Archipel suite, as an Archipel plugin (views over mongo-raabit-core)"
 
 [dependencies]
-mongo-raabit-core = { path = "core" }
-jetthing-plugin-api = { path = "../../crates/jetthing-plugin-api" }
-jetthing-plugin-ui = { path = "../../crates/jetthing-plugin-ui" }
-egui.workspace = true
+mongo-raabit-core.workspace = true
+archipel-sdk.workspace = true
 egui_extras = { version = "0.33", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+archipel-sdk = { workspace = true, features = ["testing"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-eframe.workspace = true
-jetthing-ui = { path = "../../crates/jetthing-ui" }
+
+[lints]
+workspace = true

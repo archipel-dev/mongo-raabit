@@ -3,10 +3,10 @@
 //! The model lives in `mongo_raabit_core::builder`; this module draws it in the query
 //! bar's place and reports when the generated query text changed or should run.
 
+use crate::egui::{CornerRadius, FontId, Id, Rect, RichText, Sense, Stroke, Ui, Vec2, vec2};
 use crate::icons::{self, Icon};
 use crate::style::Palette;
 use crate::widgets;
-use egui::{CornerRadius, FontId, Id, Rect, RichText, Sense, Stroke, Ui, Vec2, vec2};
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::builder::{
     Builder, Condition, Group, Item, MatchMode, Operands, Operator, ProjectionMode, SortKey,
@@ -125,11 +125,11 @@ pub fn show(ui: &mut Ui, p: &Palette, builder: &mut QueryBuilder, fields: &[Stri
     let id = ui.id().with("raabit-query-builder");
     let mut run = false;
     let mut reset = false;
-    egui::Frame::new()
+    crate::egui::Frame::new()
         .fill(p.raised)
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(10))
-        .inner_margin(egui::Margin::same(8))
+        .inner_margin(crate::egui::Margin::same(8))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
             ui.horizontal(|ui| {
@@ -148,20 +148,23 @@ pub fn show(ui: &mut Ui, p: &Palette, builder: &mut QueryBuilder, fields: &[Stri
                     )
                     .on_hover_text("Incomplete conditions are left out of the query");
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::primary_button(ui, Some(Icon::Play), "Run")
-                        .on_hover_text("Run query (Ctrl+Enter)")
-                        .clicked()
-                    {
-                        run = true;
-                    }
-                    if widgets::secondary_button(ui, None, "Reset")
-                        .on_hover_text("Clear conditions, sort, projection, skip and limit")
-                        .clicked()
-                    {
-                        reset = true;
-                    }
-                });
+                ui.with_layout(
+                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                    |ui| {
+                        if widgets::primary_button(ui, Some(Icon::Play), "Run")
+                            .on_hover_text("Run query (Ctrl+Enter)")
+                            .clicked()
+                        {
+                            run = true;
+                        }
+                        if widgets::secondary_button(ui, None, "Reset")
+                            .on_hover_text("Clear conditions, sort, projection, skip and limit")
+                            .clicked()
+                        {
+                            reset = true;
+                        }
+                    },
+                );
             });
             if let Some(note) = &builder.note {
                 ui.horizontal(|ui| {
@@ -217,7 +220,8 @@ pub fn show(ui: &mut Ui, p: &Palette, builder: &mut QueryBuilder, fields: &[Stri
             }
             preview(ui, p, &builder.to_query_text());
         });
-    run |= ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
+    run |=
+        ui.input_mut(|i| i.consume_key(crate::egui::Modifiers::COMMAND, crate::egui::Key::Enter));
     if reset {
         *builder = QueryBuilder {
             show_sort: builder.show_sort,
@@ -254,7 +258,7 @@ fn new_group(model: &Builder) -> Item {
 }
 
 fn mode_combo(ui: &mut Ui, id: Id, mode: &mut MatchMode) {
-    egui::ComboBox::from_id_salt(id)
+    crate::egui::ComboBox::from_id_salt(id)
         .selected_text(mode.label())
         .width(58.0)
         .show_ui(ui, |ui| {
@@ -309,12 +313,12 @@ fn group_box(
     enter: &mut bool,
 ) -> bool {
     let mut remove = false;
-    egui::Frame::new()
+    crate::egui::Frame::new()
         .fill(if p.dark { p.field } else { p.island })
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(egui::Margin::same(6))
-        .outer_margin(egui::Margin {
+        .inner_margin(crate::egui::Margin::same(6))
+        .outer_margin(crate::egui::Margin {
             left: 18,
             ..Default::default()
         })
@@ -323,15 +327,18 @@ fn group_box(
                 ui.label(RichText::new("Match").color(p.text_secondary));
                 mode_combo(ui, id.with("mode"), &mut group.mode);
                 ui.label(RichText::new("of:").color(p.text_secondary));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    remove = widgets::icon_button(ui, Icon::Trash, "Remove group").clicked();
-                    if widgets::icon_button(ui, Icon::Plus, "Add a condition to this group")
-                        .clicked()
-                    {
-                        group.items.push(Item::Condition(Condition::default()));
-                    }
-                });
+                ui.with_layout(
+                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        remove = widgets::icon_button(ui, Icon::Trash, "Remove group").clicked();
+                        if widgets::icon_button(ui, Icon::Plus, "Add a condition to this group")
+                            .clicked()
+                        {
+                            group.items.push(Item::Condition(Condition::default()));
+                        }
+                    },
+                );
             });
             if group.items.is_empty() {
                 ui.label(widgets::hint(
@@ -363,7 +370,7 @@ fn condition_row(
             id.with("field"),
             FIELD_WIDTH,
         );
-        egui::ComboBox::from_id_salt(id.with("operator"))
+        crate::egui::ComboBox::from_id_salt(id.with("operator"))
             .selected_text(condition.operator.label())
             .width(OPERATOR_WIDTH)
             .show_ui(ui, |ui| {
@@ -400,7 +407,7 @@ fn condition_row(
                 *enter |= value_edit(ui, &mut condition.value2, "to", half, !null);
             }
             Operands::Type => {
-                egui::ComboBox::from_id_salt(id.with("type-name"))
+                crate::egui::ComboBox::from_id_salt(id.with("type-name"))
                     .selected_text(condition.type_name.alias())
                     .width(width - 8.0)
                     .show_ui(ui, |ui| {
@@ -411,7 +418,7 @@ fn condition_row(
             }
         }
         if condition.operator.uses_value_type() {
-            egui::ComboBox::from_id_salt(id.with("value-type"))
+            crate::egui::ComboBox::from_id_salt(id.with("value-type"))
                 .selected_text(condition.value_type.label())
                 .width(TYPE_WIDTH - 8.0)
                 .show_ui(ui, |ui| {
@@ -452,12 +459,12 @@ fn condition_row(
 
 /// A single-line value field. Returns true when Enter was pressed in it.
 fn value_edit(ui: &mut Ui, text: &mut String, hint: &str, width: f32, enabled: bool) -> bool {
-    let edit = egui::TextEdit::singleline(text)
+    let edit = crate::egui::TextEdit::singleline(text)
         .hint_text(widgets::hint(ui, hint))
         .font(FontId::monospace(12.5))
         .desired_width(width);
     let response = ui.add_enabled(enabled, edit);
-    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+    response.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter))
 }
 
 /// An editable field path with a picker of the fields seen in the results.
@@ -471,7 +478,7 @@ fn field_picker(
 ) {
     ui.spacing_mut().item_spacing.x = 0.0;
     ui.add(
-        egui::TextEdit::singleline(field)
+        crate::egui::TextEdit::singleline(field)
             .id(id.with("text"))
             .hint_text(widgets::hint(ui, "field"))
             .font(FontId::monospace(12.5))
@@ -479,28 +486,30 @@ fn field_picker(
     );
     let button = widgets::icon_button(ui, Icon::ChevronDown, "Pick a field");
     ui.spacing_mut().item_spacing.x = 6.0;
-    egui::Popup::menu(&button).id(id.with("popup")).show(|ui| {
-        ui.set_min_width(200.0);
-        if fields.is_empty() {
-            ui.label(widgets::hint(ui, "Run the query to list the fields"));
-            return;
-        }
-        let needle = field.trim().to_lowercase();
-        let filtered = !needle.is_empty() && !fields.iter().any(|f| f == field);
-        egui::ScrollArea::vertical()
-            .max_height(260.0)
-            .show(ui, |ui| {
-                for name in fields {
-                    if filtered && !name.to_lowercase().contains(&needle) {
-                        continue;
+    crate::egui::Popup::menu(&button)
+        .id(id.with("popup"))
+        .show(|ui| {
+            ui.set_min_width(200.0);
+            if fields.is_empty() {
+                ui.label(widgets::hint(ui, "Run the query to list the fields"));
+                return;
+            }
+            let needle = field.trim().to_lowercase();
+            let filtered = !needle.is_empty() && !fields.iter().any(|f| f == field);
+            crate::egui::ScrollArea::vertical()
+                .max_height(260.0)
+                .show(ui, |ui| {
+                    for name in fields {
+                        if filtered && !name.to_lowercase().contains(&needle) {
+                            continue;
+                        }
+                        let text = RichText::new(name).monospace().color(p.text);
+                        if ui.selectable_label(name == field, text).clicked() {
+                            *field = name.clone();
+                        }
                     }
-                    let text = RichText::new(name).monospace().color(p.text);
-                    if ui.selectable_label(name == field, text).clicked() {
-                        *field = name.clone();
-                    }
-                }
-            });
-    });
+                });
+        });
 }
 
 /// A collapsible section header such as "Sort (2)".
@@ -527,7 +536,7 @@ fn section_toggle(ui: &mut Ui, p: &Palette, open: &mut bool, label: &str, count:
     icons::paint(
         ui.painter(),
         Rect::from_center_size(
-            egui::pos2(rect.left() + 11.0, rect.center().y),
+            crate::egui::pos2(rect.left() + 11.0, rect.center().y),
             Vec2::splat(12.0),
         ),
         if *open {
@@ -538,7 +547,7 @@ fn section_toggle(ui: &mut Ui, p: &Palette, open: &mut bool, label: &str, count:
         color,
     );
     ui.painter().galley(
-        egui::pos2(rect.left() + 20.0, rect.center().y - galley.size().y / 2.0),
+        crate::egui::pos2(rect.left() + 20.0, rect.center().y - galley.size().y / 2.0),
         galley,
         color,
     );
@@ -550,7 +559,7 @@ fn section_toggle(ui: &mut Ui, p: &Palette, open: &mut bool, label: &str, count:
 fn section_label(ui: &mut Ui, p: &Palette, text: &str) {
     ui.allocate_ui_with_layout(
         vec2(72.0, 22.0),
-        egui::Layout::left_to_right(egui::Align::Center),
+        crate::egui::Layout::left_to_right(crate::egui::Align::Center),
         |ui| {
             ui.label(RichText::new(text).color(p.text_secondary));
         },
@@ -564,7 +573,7 @@ fn sort_section(ui: &mut Ui, p: &Palette, sort: &mut Vec<SortKey>, fields: &[Str
         for (index, key) in sort.iter_mut().enumerate() {
             let key_id = id.with(index);
             field_picker(ui, p, &mut key.field, fields, key_id.with("field"), 120.0);
-            egui::ComboBox::from_id_salt(key_id.with("direction"))
+            crate::egui::ComboBox::from_id_salt(key_id.with("direction"))
                 .selected_text(if key.descending {
                     "Descending"
                 } else {
@@ -596,7 +605,7 @@ fn projection_section(ui: &mut Ui, p: &Palette, model: &mut Builder, fields: &[S
     let projection = &mut model.projection;
     ui.horizontal_wrapped(|ui| {
         section_label(ui, p, "Fields");
-        egui::ComboBox::from_id_salt(id.with("mode"))
+        crate::egui::ComboBox::from_id_salt(id.with("mode"))
             .selected_text(match projection.mode {
                 ProjectionMode::Include => "Only",
                 ProjectionMode::Exclude => "All except",
@@ -630,10 +639,10 @@ fn projection_section(ui: &mut Ui, p: &Palette, model: &mut Builder, fields: &[S
 fn paging_section(ui: &mut Ui, p: &Palette, model: &mut Builder) {
     ui.horizontal(|ui| {
         section_label(ui, p, "Skip");
-        ui.add(egui::DragValue::new(&mut model.skip).speed(1.0));
+        ui.add(crate::egui::DragValue::new(&mut model.skip).speed(1.0));
         ui.add_space(12.0);
         ui.label(RichText::new("Limit").color(p.text_secondary));
-        ui.add(egui::DragValue::new(&mut model.limit).speed(1.0));
+        ui.add(crate::egui::DragValue::new(&mut model.limit).speed(1.0));
         ui.label(widgets::hint(ui, "0 = no limit"));
     });
 }
@@ -642,7 +651,7 @@ fn paging_section(ui: &mut Ui, p: &Palette, model: &mut Builder) {
 fn preview(ui: &mut Ui, p: &Palette, query: &QueryText) {
     let text = preview_text(query);
     ui.add(
-        egui::Label::new(
+        crate::egui::Label::new(
             RichText::new(&text)
                 .font(FontId::monospace(11.5))
                 .color(p.text_info),
@@ -684,16 +693,16 @@ mod tests {
     use mongo_raabit_core::bson::doc;
 
     fn render(builder: &mut QueryBuilder, fields: &[String], dark: bool) -> Vec<Event> {
-        let ctx = egui::Context::default();
+        let ctx = crate::egui::Context::default();
         ctx.set_visuals(if dark {
-            egui::Visuals::dark()
+            crate::egui::Visuals::dark()
         } else {
-            egui::Visuals::light()
+            crate::egui::Visuals::light()
         });
         let mut events = Vec::new();
         for _ in 0..2 {
-            let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            let _ = ctx.run(crate::egui::RawInput::default(), |ctx| {
+                crate::egui::CentralPanel::default().show(ctx, |ui| {
                     let p = Palette::of(ui);
                     events.push(show(ui, &p, builder, fields));
                 });
@@ -814,23 +823,23 @@ mod tests {
 
     #[test]
     fn ctrl_enter_runs() {
-        let ctx = egui::Context::default();
+        let ctx = crate::egui::Context::default();
         let mut builder = QueryBuilder::default();
         let mut events = Vec::new();
         for frame in 0..2 {
-            let mut input = egui::RawInput::default();
+            let mut input = crate::egui::RawInput::default();
             if frame == 1 {
-                input.modifiers = egui::Modifiers::COMMAND;
-                input.events.push(egui::Event::Key {
-                    key: egui::Key::Enter,
+                input.modifiers = crate::egui::Modifiers::COMMAND;
+                input.events.push(crate::egui::Event::Key {
+                    key: crate::egui::Key::Enter,
                     physical_key: None,
                     pressed: true,
                     repeat: false,
-                    modifiers: egui::Modifiers::COMMAND,
+                    modifiers: crate::egui::Modifiers::COMMAND,
                 });
             }
             let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+                crate::egui::CentralPanel::default().show(ctx, |ui| {
                     let p = Palette::of(ui);
                     events.push(show(ui, &p, &mut builder, &[]));
                 });

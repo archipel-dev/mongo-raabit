@@ -4,10 +4,10 @@
 //! whenever the draft is valid, so previews, Query Code and runs keep reading the body.
 //! A body changed elsewhere (Code mode, operator switch) is parsed again.
 
+use crate::egui::{CornerRadius, FontId, Id, RichText, Stroke, Ui};
 use crate::icons::{self, Icon};
 use crate::style::Palette;
 use crate::widgets;
-use egui::{CornerRadius, FontId, Id, RichText, Stroke, Ui};
 use mongo_raabit_core::aggregate::Stage;
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::stage_form::{
@@ -137,11 +137,11 @@ pub fn stage_form(ui: &mut Ui, stage: &mut Stage, suggest: Suggestions, id: Id) 
     let mut draft = draft(ui, id, stage)?;
     let p = Palette::of(ui);
     let mut rewritten = false;
-    let changed = egui::Frame::new()
+    let changed = crate::egui::Frame::new()
         .fill(p.field)
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(egui::Margin::same(10))
+        .inner_margin(crate::egui::Margin::same(10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             show(ui, &mut draft.form, suggest, id)
@@ -193,7 +193,7 @@ pub fn show(ui: &mut Ui, form: &mut StageForm, suggest: Suggestions, id: Id) -> 
                 ui.horizontal(|ui| {
                     changed |= field_picker(ui, &mut c.field, suggest.fields, "field", 170.0, row);
                     let before = c.op;
-                    egui::ComboBox::from_id_salt(row.with("op"))
+                    crate::egui::ComboBox::from_id_salt(row.with("op"))
                         .selected_text(c.op.label())
                         .width(84.0)
                         .show_ui(ui, |ui| {
@@ -270,7 +270,7 @@ pub fn show(ui: &mut Ui, form: &mut StageForm, suggest: Suggestions, id: Id) -> 
                 ui.horizontal(|ui| {
                     changed |= text_field(ui, &mut row.name, "output name", 130.0);
                     ui.label("=");
-                    egui::ComboBox::from_id_salt(rid.with("fn"))
+                    crate::egui::ComboBox::from_id_salt(rid.with("fn"))
                         .selected_text(row.function.label())
                         .width(110.0)
                         .show_ui(ui, |ui| {
@@ -349,7 +349,7 @@ pub fn show(ui: &mut Ui, form: &mut StageForm, suggest: Suggestions, id: Id) -> 
                         ProjectAction::Exclude => "remove",
                         ProjectAction::RenameTo(_) => "rename to",
                     };
-                    egui::ComboBox::from_id_salt(rid.with("action"))
+                    crate::egui::ComboBox::from_id_salt(rid.with("action"))
                         .selected_text(label)
                         .width(96.0)
                         .show_ui(ui, |ui| {
@@ -508,7 +508,11 @@ fn number_row(ui: &mut Ui, before: &str, value: &mut u64, after: &str) -> bool {
     ui.horizontal(|ui| {
         ui.label(before);
         changed |= ui
-            .add(egui::DragValue::new(value).range(0..=u64::MAX).speed(1.0))
+            .add(
+                crate::egui::DragValue::new(value)
+                    .range(0..=u64::MAX)
+                    .speed(1.0),
+            )
             .changed();
         ui.label(after);
     });
@@ -528,7 +532,7 @@ fn choice<T: PartialEq + Clone>(
         .iter()
         .find(|(v, _)| v == value)
         .map_or("…", |(_, label)| *label);
-    egui::ComboBox::from_id_salt(id)
+    crate::egui::ComboBox::from_id_salt(id)
         .selected_text(current)
         .width(width)
         .show_ui(ui, |ui| {
@@ -546,7 +550,7 @@ fn choice<T: PartialEq + Clone>(
 fn text_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> bool {
     let hint = widgets::hint(ui, hint);
     ui.add(
-        egui::TextEdit::singleline(text)
+        crate::egui::TextEdit::singleline(text)
             .hint_text(hint)
             .font(FontId::monospace(12.5))
             .desired_width(width),
@@ -565,18 +569,18 @@ fn field_picker(
 ) -> bool {
     let p = Palette::of(ui);
     let mut changed = false;
-    egui::Frame::new()
+    crate::egui::Frame::new()
         .fill(p.island)
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(5))
-        .inner_margin(egui::Margin::symmetric(4, 1))
+        .inner_margin(crate::egui::Margin::symmetric(4, 1))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.horizontal(|ui| {
                 let hint = widgets::hint(ui, hint);
                 changed |= ui
                     .add(
-                        egui::TextEdit::singleline(text)
+                        crate::egui::TextEdit::singleline(text)
                             .id_salt(id.with("text"))
                             .hint_text(hint)
                             .font(FontId::monospace(12.5))
@@ -596,9 +600,9 @@ fn field_picker(
                     None,
                     !suggestions.is_empty(),
                 );
-                egui::Popup::menu(&button).show(|ui| {
+                crate::egui::Popup::menu(&button).show(|ui| {
                     ui.set_min_width(width);
-                    egui::ScrollArea::vertical()
+                    crate::egui::ScrollArea::vertical()
                         .max_height(320.0)
                         .show(ui, |ui| {
                             for name in suggestions {
@@ -628,6 +632,9 @@ fn remove_button(ui: &mut Ui) -> bool {
 
 fn add_button(ui: &mut Ui, what: &str) -> bool {
     let p = Palette::of(ui);
-    ui.add(egui::Button::new(RichText::new(format!("+ {what}")).color(p.accent_text)).frame(false))
-        .clicked()
+    ui.add(
+        crate::egui::Button::new(RichText::new(format!("+ {what}")).color(p.accent_text))
+            .frame(false),
+    )
+    .clicked()
 }

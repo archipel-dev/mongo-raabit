@@ -1,10 +1,11 @@
-//! Palette and small drawing helpers following the Jetthing "Islands" look.
+//! Palette and small drawing helpers.
 //!
-//! Colors are picked from the host's visuals (`dark_mode`), so the views follow the
-//! workbench theme. Dark values match the Islands Dark tokens of `jetthing-ui`; light
-//! values follow the IntelliJ Light theme facts (Apache-2.0 theme files).
+//! Surfaces, text and interaction colors come from the Archipel kit theme installed by the
+//! host (`Theme::colors`). Only the BSON value colors and the chart slots below are domain
+//! colors the kit has no token for (see "SDK gaps" in the port notes).
 
-use egui::{Color32, CornerRadius, FontId, Margin, Stroke, Ui};
+use crate::egui::{Color32, CornerRadius, FontId, Margin, Stroke, Ui};
+use archipel_sdk::kit::{Theme, theme::Colors, tokens};
 
 const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
@@ -44,72 +45,72 @@ pub struct Palette {
 }
 
 impl Palette {
-    pub const DARK: Self = Self {
-        dark: true,
-        frame: hex(0x26282C),
-        island: hex(0x191A1C),
-        raised: hex(0x2B2D30),
-        field: hex(0x1E1F22),
-        border: hex(0x393B40),
-        separator: hex(0x2B2D30),
-        text: hex(0xD1D3D9),
-        text_strong: hex(0xEDEEF0),
-        text_secondary: hex(0x9FA2A8),
-        text_info: hex(0x73767C),
-        hover: Color32::from_rgba_premultiplied(0x17, 0x17, 0x17, 0x17),
-        selection: hex(0x2A4371),
-        selection_inactive: hex(0x2E3036),
-        accent: hex(0x3871E1),
-        accent_text: hex(0x6EA0FA),
-        success: hex(0x6DB083),
-        warning: hex(0xD59637),
-        error: hex(0xF57E84),
-        stripe: hex(0x1D1E21),
-        key: hex(0xC77DBB),
-        string: hex(0x6AAB73),
-        number: hex(0x2AACB8),
-        keyword: hex(0xCF8E6D),
-        object_id: hex(0x56A8F5),
-        date: hex(0xB3AE60),
-        leaf: hex(0x5FB878),
-    };
-
-    pub const LIGHT: Self = Self {
-        dark: false,
-        frame: hex(0xF2F3F5),
-        island: hex(0xFFFFFF),
-        raised: hex(0xF7F8FA),
-        field: hex(0xFFFFFF),
-        border: hex(0xDFE1E5),
-        separator: hex(0xEBECF0),
-        text: hex(0x1E1F22),
-        text_strong: hex(0x000000),
-        text_secondary: hex(0x6C707E),
-        text_info: hex(0x8C8F99),
-        hover: Color32::from_rgba_premultiplied(0, 0, 0, 0x0D),
-        selection: hex(0xD5E1FF),
-        selection_inactive: hex(0xEBECF0),
-        accent: hex(0x3574F0),
-        accent_text: hex(0x2D5FD0),
-        success: hex(0x208A3C),
-        warning: hex(0xC27D04),
-        error: hex(0xDB3B4B),
-        stripe: hex(0xF9FAFB),
-        key: hex(0x871094),
-        string: hex(0x067D17),
-        number: hex(0x1750EB),
-        keyword: hex(0x0033B3),
-        object_id: hex(0x00627A),
-        date: hex(0x9E880D),
-        leaf: hex(0x2E9447),
-    };
-
-    pub fn of(ui: &Ui) -> Self {
-        Self::for_dark(ui.visuals().dark_mode)
+    fn from_colors(dark: bool, c: &Colors) -> Self {
+        let (key, string, number, keyword, object_id, date, leaf) = if dark {
+            (
+                hex(0xC77DBB),
+                hex(0x6AAB73),
+                hex(0x2AACB8),
+                hex(0xCF8E6D),
+                hex(0x56A8F5),
+                hex(0xB3AE60),
+                hex(0x5FB878),
+            )
+        } else {
+            (
+                hex(0x871094),
+                hex(0x067D17),
+                hex(0x1750EB),
+                hex(0x0033B3),
+                hex(0x00627A),
+                hex(0x9E880D),
+                hex(0x2E9447),
+            )
+        };
+        Self {
+            dark,
+            frame: c.frame,
+            island: c.island,
+            raised: c.popup,
+            field: c.field,
+            border: c.border,
+            separator: c.separator,
+            text: c.text,
+            text_strong: c.text_strong,
+            text_secondary: c.text_secondary,
+            text_info: c.text_placeholder,
+            hover: c.hover,
+            selection: c.selection,
+            selection_inactive: c.row_hover,
+            accent: c.accent,
+            accent_text: c.link,
+            success: c.success,
+            warning: c.warning,
+            error: c.error,
+            stripe: c.frame,
+            key,
+            string,
+            number,
+            keyword,
+            object_id,
+            date,
+            leaf,
+        }
     }
 
+    /// The palette of the theme installed in `ui`'s context.
+    pub fn of(ui: &Ui) -> Self {
+        Self::of_ctx(ui.ctx())
+    }
+
+    pub fn of_ctx(ctx: &crate::egui::Context) -> Self {
+        Self::from_colors(Theme::current(ctx).dark, &Theme::colors(ctx))
+    }
+
+    /// The palette of the default dark or light kit theme (tests, headless use).
     pub fn for_dark(dark: bool) -> Self {
-        if dark { Self::DARK } else { Self::LIGHT }
+        let theme = if dark { Theme::dark() } else { Theme::light() };
+        Self::from_colors(dark, &theme.colors)
     }
 }
 
@@ -157,20 +158,20 @@ impl Palette {
     }
 }
 
-pub const RADIUS: u8 = 10;
+pub const RADIUS: u8 = tokens::radius::ISLAND;
 pub const GAP: f32 = 2.0;
 
 /// A rounded island panel.
-pub fn island(p: &Palette) -> egui::Frame {
-    egui::Frame::new()
+pub fn island(p: &Palette) -> crate::egui::Frame {
+    crate::egui::Frame::new()
         .fill(p.island)
         .corner_radius(CornerRadius::same(RADIUS))
         .inner_margin(Margin::same(0))
 }
 
 /// A subtle bordered card inside an island.
-pub fn card(p: &Palette) -> egui::Frame {
-    egui::Frame::new()
+pub fn card(p: &Palette) -> crate::egui::Frame {
+    crate::egui::Frame::new()
         .fill(p.raised)
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(8))

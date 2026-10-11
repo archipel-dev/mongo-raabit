@@ -2,17 +2,17 @@
 //! a segmented control.
 
 use crate::app::{MongoRaabit, TabId};
+use crate::egui::Ui;
 use crate::icons::Icon;
 use crate::tools::StructureSection;
 use crate::widgets;
-use egui::Ui;
 
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     let Some(tab) = app.structure_tab_mut(tab_id) else {
         return;
     };
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin {
             left: 14,
             right: 14,
             top: 8,
