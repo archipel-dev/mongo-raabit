@@ -4,8 +4,8 @@
 //! host (`Theme::colors`). Only the BSON value colors and the chart slots below are domain
 //! colors the kit has no token for (see "SDK gaps" in the port notes).
 
-use crate::egui::{Color32, CornerRadius, FontId, Margin, Stroke, Ui};
-use archipel_sdk::kit::{Theme, theme::Colors, tokens};
+use crate::egui::{Color32, FontId, Ui};
+use archipel_sdk::kit::{Theme, theme::Colors};
 
 const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
@@ -40,13 +40,11 @@ pub struct Palette {
     pub keyword: Color32,
     pub object_id: Color32,
     pub date: Color32,
-    /// Leaf green used for brand accents (database icons, charts).
-    pub leaf: Color32,
 }
 
 impl Palette {
     fn from_colors(dark: bool, c: &Colors) -> Self {
-        let (key, string, number, keyword, object_id, date, leaf) = if dark {
+        let (key, string, number, keyword, object_id, date) = if dark {
             (
                 hex(0xC77DBB),
                 hex(0x6AAB73),
@@ -54,7 +52,6 @@ impl Palette {
                 hex(0xCF8E6D),
                 hex(0x56A8F5),
                 hex(0xB3AE60),
-                hex(0x5FB878),
             )
         } else {
             (
@@ -64,7 +61,6 @@ impl Palette {
                 hex(0x0033B3),
                 hex(0x00627A),
                 hex(0x9E880D),
-                hex(0x2E9447),
             )
         };
         Self {
@@ -94,7 +90,6 @@ impl Palette {
             keyword,
             object_id,
             date,
-            leaf,
         }
     }
 
@@ -156,26 +151,6 @@ impl Palette {
             .position(|t| *t == type_name)
             .map_or(self.text_info, |i| self.chart(i))
     }
-}
-
-pub const RADIUS: u8 = tokens::radius::ISLAND;
-pub const GAP: f32 = 2.0;
-
-/// A rounded island panel.
-pub fn island(p: &Palette) -> crate::egui::Frame {
-    crate::egui::Frame::new()
-        .fill(p.island)
-        .corner_radius(CornerRadius::same(RADIUS))
-        .inner_margin(Margin::same(0))
-}
-
-/// A subtle bordered card inside an island.
-pub fn card(p: &Palette) -> crate::egui::Frame {
-    crate::egui::Frame::new()
-        .fill(p.raised)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::same(10))
 }
 
 pub fn mono(size: f32) -> FontId {

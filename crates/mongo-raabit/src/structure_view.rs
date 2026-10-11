@@ -3,9 +3,8 @@
 
 use crate::app::{MongoRaabit, TabId};
 use crate::egui::Ui;
-use crate::icons::Icon;
 use crate::tools::StructureSection;
-use crate::widgets;
+use archipel_sdk::kit::components::SegmentedControl;
 
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     let Some(tab) = app.structure_tab_mut(tab_id) else {
@@ -19,14 +18,13 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             bottom: 0,
         })
         .show(ui, |ui| {
-            widgets::segmented(
-                ui,
+            ui.add(SegmentedControl::new(
                 &mut tab.section,
-                &[
-                    (StructureSection::Schema, Icon::Schema, "Schema"),
-                    (StructureSection::Indexes, Icon::Index, "Indexes"),
+                [
+                    (StructureSection::Schema, "Schema"),
+                    (StructureSection::Indexes, "Indexes"),
                 ],
-            );
+            ));
         });
     match tab.section {
         StructureSection::Schema => crate::schema_view::show(app, tab_id, ui),

@@ -32,73 +32,64 @@ pub use archipel_sdk::kit::egui;
 pub use mongo_raabit_core as core;
 pub use plugin::MongoRaabitPlugin;
 
-use crate::egui::{CornerRadius, FontId, RichText, Sense, Stroke, Ui, vec2};
+use crate::egui::{Frame, Margin, Ui};
 use app::TabKind;
+use archipel_sdk::kit::components::{Button, IconButton, Spinner, Tab, TabBar};
+use archipel_sdk::kit::parts::Surface;
+use archipel_sdk::kit::tokens::{size, typography};
+use archipel_sdk::kit::{Glyph, Tone, icons as kit_icons};
 use icons::Icon;
-use style::Palette;
 
 pub const PLUGIN_ID: &str = "dev.archipel.mongo-raabit";
+
+/// The gap between islands and the window edge.
+const GAP: i8 = size::ISLAND_GAP as i8;
 
 impl MongoRaabit {
     /// Render the full application view into `ui`.
     pub fn ui(&mut self, ui: &mut Ui) {
         self.jobs.set_context(ui.ctx());
         self.poll();
-        let p = Palette::of(ui);
         if ui.input_mut(|i| i.consume_key(crate::egui::Modifiers::COMMAND, crate::egui::Key::N)) {
             self.open_manager();
         }
-        let full = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(full, 0.0, p.frame);
 
         crate::egui::TopBottomPanel::top("raabit-toolbar")
-            .frame(crate::egui::Frame::new().inner_margin(crate::egui::Margin {
-                left: 10,
-                right: 10,
-                top: 6,
-                bottom: 6,
-            }))
+            .frame(Frame::new().inner_margin(Margin::symmetric(size::CONTENT_INSET as i8 - 2, GAP)))
             .show_separator_line(false)
-            .show_inside(ui, |ui| self.toolbar(ui, &p));
+            .show_inside(ui, |ui| self.toolbar(ui));
         crate::egui::TopBottomPanel::bottom("raabit-status")
-            .frame(crate::egui::Frame::new().inner_margin(crate::egui::Margin {
-                left: 12,
-                right: 12,
-                top: 3,
-                bottom: 4,
-            }))
+            .frame(Frame::new().inner_margin(Margin::symmetric(size::CONTENT_INSET as i8, GAP)))
             .show_separator_line(false)
-            .show_inside(ui, |ui| self.status_bar(ui, &p));
+            .show_inside(ui, |ui| self.status_bar(ui));
         crate::egui::SidePanel::left("raabit-tree")
             .resizable(true)
             .default_width(290.0)
             .width_range(200.0..=520.0)
-            .frame(crate::egui::Frame::new().inner_margin(crate::egui::Margin {
-                left: 6,
+            .frame(Frame::new().inner_margin(Margin {
+                left: GAP,
                 right: 0,
                 top: 0,
-                bottom: 4,
+                bottom: GAP,
             }))
             .show_separator_line(false)
-            .show_inside(ui, |ui| {
-                style::island(&p).show(ui, |ui| {
-                    ui.set_min_size(ui.available_size());
-                    tree::show(self, ui);
-                });
-            });
+            .show_inside(ui, |ui| tree::show(self, ui));
         crate::egui::CentralPanel::default()
-            .frame(crate::egui::Frame::new().inner_margin(crate::egui::Margin {
-                left: style::GAP as i8 + 2,
-                right: 6,
+            .frame(Frame::new().inner_margin(Margin {
+                left: GAP,
+                right: GAP,
                 top: 0,
-                bottom: 4,
+                bottom: GAP,
             }))
             .show_inside(ui, |ui| {
-                style::island(&p).show(ui, |ui| {
-                    ui.set_min_size(ui.available_size());
-                    self.tab_bar(ui, &p);
-                    self.tab_content(ui);
-                });
+                Surface::Island
+                    .frame(ui.ctx())
+                    .inner_margin(Margin::ZERO)
+                    .show(ui, |ui| {
+                        ui.set_min_size(ui.available_size());
+                        self.tab_bar(ui);
+                        self.tab_content(ui);
+                    });
             });
         manager::show(self, ui.ctx());
         dialogs::show(self, ui.ctx());
@@ -108,17 +99,18 @@ impl MongoRaabit {
         }
     }
 
-    fn toolbar(&mut self, ui: &mut Ui, p: &Palette) {
+    fn toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            icons::icon(ui, Icon::Leaf, p.leaf);
+            let colors = archipel_sdk::kit::Theme::colors(ui.ctx());
+            kit_icons::show(ui, Glyph::Database, size::ICON, colors.icon);
             ui.label(
-                RichText::new("Mongo Raabit")
-                    .size(14.0)
-                    .strong()
-                    .color(p.text_strong),
+                crate::egui::RichText::new("Mongo Raabit")
+                    .font(typography::semibold(ui.ctx(), typography::TITLE + 1.0))
+                    .color(colors.text_strong),
             );
-            ui.add_space(14.0);
-            if widgets::secondary_button(ui, Some(Icon::Plug), "Connect")
+            ui.add_space(size::CONTENT_INSET);
+            if ui
+                .add(Button::secondary("Connect").icon(Icon::Plug))
                 .on_hover_text("Connection Manager (Ctrl+N)")
                 .clicked()
             {
@@ -129,26 +121,17 @@ impl MongoRaabit {
                 | app::NodeKey::Database(s, _)
                 | app::NodeKey::Collection(s, _, _) => *s,
             });
-            if widgets::icon_button_tinted(
-                ui,
-                Icon::Unplug,
-                "Disconnect",
-                None,
-                selected_session.is_some(),
-            )
-            .clicked()
+            let enabled = selected_session.is_some();
+            if ui
+                .add(IconButton::new(Icon::Unplug, "Disconnect").enabled(enabled))
+                .clicked()
                 && let Some(id) = selected_session
             {
                 self.disconnect(id);
             }
-            if widgets::icon_button_tinted(
-                ui,
-                Icon::Refresh,
-                "Refresh",
-                None,
-                selected_session.is_some(),
-            )
-            .clicked()
+            if ui
+                .add(IconButton::new(Icon::Refresh, "Refresh").enabled(enabled))
+                .clicked()
                 && let Some(id) = selected_session
             {
                 self.load_databases(id);
@@ -156,169 +139,76 @@ impl MongoRaabit {
         });
     }
 
-    fn status_bar(&mut self, ui: &mut Ui, p: &Palette) {
+    fn status_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
+            let colors = archipel_sdk::kit::Theme::colors(ui.ctx());
             let connected = self
                 .sessions
                 .iter()
                 .filter(|s| s.connection().is_some())
                 .count();
-            let (color, text) = if connected > 0 {
-                (p.success, format!("{connected} connected"))
+            let (glyph, color, text) = if connected > 0 {
+                (
+                    Glyph::Success,
+                    colors.success,
+                    format!("{connected} connected"),
+                )
             } else {
-                (p.text_info, "Not connected".to_owned())
+                (
+                    Glyph::Info,
+                    colors.text_placeholder,
+                    "Not connected".to_owned(),
+                )
             };
-            let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-            ui.painter().circle_filled(rect.center(), 3.5, color);
-            ui.label(RichText::new(text).size(12.0).color(p.text_secondary));
+            kit_icons::show(ui, glyph, size::ICON - 2.0, color);
+            ui.label(crate::egui::RichText::new(text).color(Tone::Secondary.resolve(ui.ctx())));
             if !self.status.is_empty() {
-                ui.label(RichText::new("·").color(p.text_info));
+                ui.label(crate::egui::RichText::new("·").color(Tone::Muted.resolve(ui.ctx())));
                 ui.label(
-                    RichText::new(&self.status)
-                        .size(12.0)
-                        .color(p.text_secondary),
+                    crate::egui::RichText::new(&self.status)
+                        .color(Tone::Secondary.resolve(ui.ctx())),
                 );
             }
             ui.with_layout(
                 crate::egui::Layout::right_to_left(crate::egui::Align::Center),
                 |ui| {
                     if self.jobs.busy() {
-                        ui.spinner();
+                        ui.add(Spinner::new().label("Working"));
                     }
                 },
             );
         });
     }
 
-    fn tab_bar(&mut self, ui: &mut Ui, p: &Palette) {
-        let mut activate = None;
-        let mut close = None;
-        crate::egui::Frame::new()
-            .inner_margin(crate::egui::Margin {
-                left: 6,
-                right: 6,
-                top: 4,
-                bottom: 0,
-            })
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    for (index, tab) in self.tabs.iter().enumerate() {
-                        let (icon, title, color) = match &tab.kind {
-                            TabKind::Welcome => (Icon::Leaf, "Welcome".to_owned(), p.leaf),
-                            TabKind::Collection(c) => (
-                                match c.kind {
-                                    core::connection::CollectionKind::View => Icon::View,
-                                    _ => Icon::Collection,
-                                },
-                                format!("{} · Query", c.collection),
-                                p.text_secondary,
-                            ),
-                            TabKind::Aggregation(t) => (
-                                Icon::Pipeline,
-                                format!("{} · Aggregate", t.collection),
-                                p.accent_text,
-                            ),
-                            TabKind::Structure(t) => (
-                                Icon::Schema,
-                                format!("{} · Structure", t.schema.collection),
-                                p.leaf,
-                            ),
-                        };
-                        let active = index == self.active_tab;
-                        let font = FontId::proportional(13.0);
-                        let text_color = if active {
-                            p.text_strong
-                        } else {
-                            p.text_secondary
-                        };
-                        let name = title.clone();
-                        let galley = ui.painter().layout_no_wrap(title, font, text_color);
-                        let width = galley.size().x + 58.0;
-                        let (rect, response) =
-                            ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
-                        response.widget_info(|| {
-                            crate::egui::WidgetInfo::labeled(
-                                crate::egui::WidgetType::Button,
-                                true,
-                                &name,
-                            )
-                        });
-                        if active {
-                            ui.painter().rect_filled(
-                                rect.shrink2(vec2(0.0, 3.0)),
-                                CornerRadius::same(7),
-                                p.selection_inactive,
-                            );
-                        } else if response.hovered() {
-                            ui.painter().rect_filled(
-                                rect.shrink2(vec2(0.0, 3.0)),
-                                CornerRadius::same(7),
-                                p.hover,
-                            );
-                        }
-                        icons::paint(
-                            ui.painter(),
-                            crate::egui::Rect::from_center_size(
-                                crate::egui::pos2(rect.left() + 16.0, rect.center().y),
-                                vec2(14.0, 14.0),
-                            ),
-                            icon,
-                            color,
-                        );
-                        ui.painter().galley(
-                            crate::egui::pos2(
-                                rect.left() + 30.0,
-                                rect.center().y - galley.size().y / 2.0,
-                            ),
-                            galley,
-                            text_color,
-                        );
-                        let close_rect = crate::egui::Rect::from_center_size(
-                            crate::egui::pos2(rect.right() - 14.0, rect.center().y),
-                            vec2(16.0, 16.0),
-                        );
-                        let close_hover = response
-                            .hover_pos()
-                            .is_some_and(|pos| close_rect.contains(pos));
-                        if active || response.hovered() {
-                            if close_hover {
-                                ui.painter().rect_filled(
-                                    close_rect,
-                                    CornerRadius::same(4),
-                                    p.hover,
-                                );
-                            }
-                            icons::paint(
-                                ui.painter(),
-                                close_rect.shrink(3.0),
-                                Icon::Close,
-                                p.text_info,
-                            );
-                        }
-                        if response.clicked() {
-                            if close_hover {
-                                close = Some(index);
-                            } else {
-                                activate = Some(index);
-                            }
-                        }
-                        if response.middle_clicked() {
-                            close = Some(index);
-                        }
+    fn tab_bar(&mut self, ui: &mut Ui) {
+        let tabs: Vec<Tab> = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                let (icon, title) = match &tab.kind {
+                    TabKind::Welcome => (Icon::Database, "Welcome".to_owned()),
+                    TabKind::Collection(c) => (
+                        match c.kind {
+                            core::connection::CollectionKind::View => Icon::View,
+                            _ => Icon::Collection,
+                        },
+                        format!("{} · Query", c.collection),
+                    ),
+                    TabKind::Aggregation(t) => {
+                        (Icon::Pipeline, format!("{} · Aggregate", t.collection))
                     }
-                });
-            });
-        let rect = ui.available_rect_before_wrap();
-        ui.painter().hline(
-            rect.x_range(),
-            rect.top(),
-            Stroke::new(1.0_f32, p.separator),
-        );
-        if let Some(index) = activate {
+                    TabKind::Structure(t) => {
+                        (Icon::Schema, format!("{} · Structure", t.schema.collection))
+                    }
+                };
+                Tab::new(title).icon(icon).closable(true)
+            })
+            .collect();
+        let out = TabBar::new(&tabs, self.active_tab).show(ui);
+        if let Some(index) = out.selected {
             self.active_tab = index;
         }
-        if let Some(index) = close {
+        if let Some(index) = out.closed {
             self.close_tab(index);
         }
     }

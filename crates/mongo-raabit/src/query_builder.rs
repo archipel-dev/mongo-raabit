@@ -7,6 +7,9 @@ use crate::egui::{CornerRadius, FontId, Id, Rect, RichText, Sense, Stroke, Ui, V
 use crate::icons::{self, Icon};
 use crate::style::Palette;
 use crate::widgets;
+use archipel_sdk::kit::Tone;
+use archipel_sdk::kit::components::Tag;
+use archipel_sdk::kit::components::{Button, IconButton};
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::builder::{
     Builder, Condition, Group, Item, MatchMode, Operands, Operator, ProjectionMode, SortKey,
@@ -138,26 +141,27 @@ pub fn show(ui: &mut Ui, p: &Palette, builder: &mut QueryBuilder, fields: &[Stri
                 ui.label(RichText::new("of the following conditions").color(p.text_secondary));
                 let errors = builder.model.error_count();
                 if errors > 0 {
-                    widgets::badge(
-                        ui,
-                        &format!(
+                    ui.add(
+                        Tag::new(format!(
                             "{errors} incomplete condition{}",
                             if errors == 1 { "" } else { "s" }
-                        ),
-                        p.warning,
+                        ))
+                        .tone(Tone::Warning),
                     )
                     .on_hover_text("Incomplete conditions are left out of the query");
                 }
                 ui.with_layout(
                     crate::egui::Layout::right_to_left(crate::egui::Align::Center),
                     |ui| {
-                        if widgets::primary_button(ui, Some(Icon::Play), "Run")
+                        if ui
+                            .add(Button::primary("Run").icon(Icon::Play))
                             .on_hover_text("Run query (Ctrl+Enter)")
                             .clicked()
                         {
                             run = true;
                         }
-                        if widgets::secondary_button(ui, None, "Reset")
+                        if ui
+                            .add(Button::secondary("Reset"))
                             .on_hover_text("Clear conditions, sort, projection, skip and limit")
                             .clicked()
                         {
@@ -183,7 +187,8 @@ pub fn show(ui: &mut Ui, p: &Palette, builder: &mut QueryBuilder, fields: &[Stri
             }
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                if widgets::secondary_button(ui, Some(Icon::Plus), "Condition")
+                if ui
+                    .add(Button::secondary("Condition").icon(Icon::Plus))
                     .on_hover_text("Add a condition")
                     .clicked()
                 {
@@ -193,7 +198,8 @@ pub fn show(ui: &mut Ui, p: &Palette, builder: &mut QueryBuilder, fields: &[Stri
                         .items
                         .push(Item::Condition(Condition::default()));
                 }
-                if widgets::secondary_button(ui, Some(Icon::Plus), "Group")
+                if ui
+                    .add(Button::secondary("Group").icon(Icon::Plus))
                     .on_hover_text("Add a group of conditions with its own All / Any")
                     .clicked()
                 {
@@ -331,8 +337,11 @@ fn group_box(
                     crate::egui::Layout::right_to_left(crate::egui::Align::Center),
                     |ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
-                        remove = widgets::icon_button(ui, Icon::Trash, "Remove group").clicked();
-                        if widgets::icon_button(ui, Icon::Plus, "Add a condition to this group")
+                        remove = ui
+                            .add(IconButton::new(Icon::Trash, "Remove group"))
+                            .clicked();
+                        if ui
+                            .add(IconButton::new(Icon::Plus, "Add a condition to this group"))
                             .clicked()
                         {
                             group.items.push(Item::Condition(Condition::default()));
@@ -440,7 +449,9 @@ fn condition_row(
         } else {
             ui.allocate_space(vec2(TYPE_WIDTH, 20.0));
         }
-        remove = widgets::icon_button(ui, Icon::Close, "Remove condition").clicked();
+        remove = ui
+            .add(IconButton::new(Icon::Close, "Remove condition"))
+            .clicked();
     });
     if let Some(error) = condition.error() {
         // A fresh row only needs a gentle nudge; real mistakes are errors.
@@ -484,7 +495,7 @@ fn field_picker(
             .font(FontId::monospace(12.5))
             .desired_width(width),
     );
-    let button = widgets::icon_button(ui, Icon::ChevronDown, "Pick a field");
+    let button = ui.add(IconButton::new(Icon::ChevronDown, "Pick a field"));
     ui.spacing_mut().item_spacing.x = 6.0;
     crate::egui::Popup::menu(&button)
         .id(id.with("popup"))
@@ -584,7 +595,10 @@ fn sort_section(ui: &mut Ui, p: &Palette, sort: &mut Vec<SortKey>, fields: &[Str
                     ui.selectable_value(&mut key.descending, false, "Ascending");
                     ui.selectable_value(&mut key.descending, true, "Descending");
                 });
-            if widgets::icon_button(ui, Icon::Close, "Remove sort field").clicked() {
+            if ui
+                .add(IconButton::new(Icon::Close, "Remove sort field"))
+                .clicked()
+            {
                 remove = Some(index);
             }
             ui.add_space(6.0);
@@ -592,7 +606,10 @@ fn sort_section(ui: &mut Ui, p: &Palette, sort: &mut Vec<SortKey>, fields: &[Str
         if let Some(index) = remove {
             sort.remove(index);
         }
-        if widgets::icon_button(ui, Icon::Plus, "Add sort field").clicked() {
+        if ui
+            .add(IconButton::new(Icon::Plus, "Add sort field"))
+            .clicked()
+        {
             sort.push(SortKey::default());
         }
         if sort.is_empty() {
@@ -620,7 +637,10 @@ fn projection_section(ui: &mut Ui, p: &Palette, model: &mut Builder, fields: &[S
         let mut remove = None;
         for (index, field) in projection.fields.iter_mut().enumerate() {
             field_picker(ui, p, field, fields, id.with(index), 120.0);
-            if widgets::icon_button(ui, Icon::Close, "Remove field").clicked() {
+            if ui
+                .add(IconButton::new(Icon::Close, "Remove field"))
+                .clicked()
+            {
                 remove = Some(index);
             }
             ui.add_space(6.0);
@@ -628,7 +648,7 @@ fn projection_section(ui: &mut Ui, p: &Palette, model: &mut Builder, fields: &[S
         if let Some(index) = remove {
             projection.fields.remove(index);
         }
-        if widgets::icon_button(ui, Icon::Plus, "Add field").clicked() {
+        if ui.add(IconButton::new(Icon::Plus, "Add field")).clicked() {
             projection.fields.push(String::new());
         }
         ui.add_space(8.0);
