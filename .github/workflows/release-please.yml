@@ -21,6 +21,8 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  # `gh workflow run release.yml` below.
+  actions: write
 
 jobs:
   release-please:
