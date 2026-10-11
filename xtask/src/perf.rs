@@ -204,7 +204,17 @@ impl Xvfb {
     fn start() -> Result<Self> {
         let display = format!(":{}", 90 + std::process::id() % 100);
         let child = Command::new("Xvfb")
-            .args([&display, "-screen", "0", SCREEN, "-nolisten", "tcp"])
+            // `-noreset`: by default Xvfb resets when its last client disconnects, and a
+            // raabit started during that reset cannot open the display.
+            .args([
+                &display,
+                "-screen",
+                "0",
+                SCREEN,
+                "-nolisten",
+                "tcp",
+                "-noreset",
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
