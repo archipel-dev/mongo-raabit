@@ -63,3 +63,48 @@ jobs:
         with:
           key: live
       - run: cargo test -p mongo-raabit-core
+
+  # Speed budgets of perf-budgets.toml on the release build, driven under Xvfb. Medians over
+  # several runs absorb runner noise; the budgets themselves are never loosened for it.
+  perf:
+    name: perf budgets
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            xvfb xdotool libgl1-mesa-dri libegl1 libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libssl-dev \
+            libgl1-mesa-dev libwayland-dev libgtk-3-dev libx11-dev libxi-dev libxrandr-dev \
+            libxcursor-dev libfontconfig1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf
+      - name: Check the budgets
+        env:
+          # No Vulkan driver on the runner: measure the host's OpenGL (glow) renderer.
+          ARCHIPEL_RENDERER: glow
+        run: |
+          set -o pipefail
+          cargo xtask perf --runs 7 --json perf-report.json 2>&1 | tee perf.txt
+          { echo '```'; sed -n '/^perf budgets/,$p' perf.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-report
+          path: |
+            perf.txt
+            perf-report.json

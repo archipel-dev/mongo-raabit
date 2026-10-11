@@ -1,155 +1,99 @@
 //! `raabit`: Mongo Raabit as a standalone desktop app.
 //!
-//! A thin eframe shell around the plugin of the `mongo-raabit` crate: it installs the
-//! kit theme, owns the plugin host and renders the plugin's app view in the window.
+//! The plugin of the `mongo-raabit` crate on `archipel-app`, the Archipel standalone host
+//! (window, theme, settings, notifications, tool windows and tabs).
 //!
 //! ```text
-//! raabit [--light | --dark]
+//! raabit [--light | --dark] [--perf-report <file>]
 //! ```
 
-mod host;
+mod perf;
 
-use archipel_sdk::api::{Plugin, ViewContext, ViewFrame, ViewPlacement};
-use archipel_sdk::kit::{self, Theme, egui};
-use host::StandaloneHost;
+use archipel_sdk::app::{AppError, AppOptions, ThemeMode, run};
 use mongo_raabit::MongoRaabitPlugin;
+use std::path::PathBuf;
+use std::time::Instant;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ThemeChoice {
-    Light,
-    Dark,
+#[derive(Debug, PartialEq, Eq)]
+struct Args {
+    theme: ThemeMode,
+    /// Where to write the perf report (`--perf-report`, else `RAABIT_PERF`).
+    perf_report: Option<PathBuf>,
 }
 
-/// The theme forced on the command line, if any.
-fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<ThemeChoice>, String> {
-    let mut choice = None;
-    for arg in args {
+const USAGE: &str = "usage: raabit [--light | --dark] [--perf-report <file>]";
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
+    let mut perf_report = None;
+    let mut theme_args = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--light" => choice = Some(ThemeChoice::Light),
-            "--dark" => choice = Some(ThemeChoice::Dark),
-            other => {
-                return Err(format!(
-                    "unknown argument `{other}`; usage: raabit [--light | --dark]"
-                ));
+            "--perf-report" => {
+                let file = args
+                    .next()
+                    .ok_or_else(|| format!("--perf-report needs a file; {USAGE}"))?;
+                perf_report = Some(file.into());
             }
+            "--light" | "--dark" => theme_args.push(arg),
+            other => return Err(format!("unknown argument `{other}`; {USAGE}")),
         }
     }
-    Ok(choice)
-}
-
-fn theme_of(choice: ThemeChoice) -> Theme {
-    match choice {
-        ThemeChoice::Light => Theme::light(),
-        ThemeChoice::Dark => Theme::dark(),
+    if perf_report.is_none() {
+        perf_report = std::env::var_os(perf::ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
     }
+    Ok(Args {
+        theme: ThemeMode::from_args(theme_args)?,
+        perf_report,
+    })
 }
 
-struct RaabitApp {
-    plugin: MongoRaabitPlugin,
-    host: StandaloneHost,
-    view: ViewContext,
-    forced: Option<ThemeChoice>,
-    shown: ThemeChoice,
-    /// The first frame only paints the window; the plugin state is built on the second so
-    /// the window appears before any file or runtime setup.
-    started: bool,
-}
-
-impl RaabitApp {
-    fn new(cc: &eframe::CreationContext<'_>, forced: Option<ThemeChoice>) -> Self {
-        let plugin = MongoRaabitPlugin::new();
-        let manifest = plugin.manifest();
-        let view = manifest.app.as_ref().map_or_else(
-            || mongo_raabit::plugin::VIEW.to_owned(),
-            |app| app.view.clone(),
-        );
-        let host = StandaloneHost::new(
-            manifest.id.clone(),
-            manifest.permissions.clone(),
-            host::default_data_dir(),
-        );
-        let shown = forced.unwrap_or_else(|| system_choice(&cc.egui_ctx));
-        kit::install(&cc.egui_ctx, theme_of(shown));
-        Self {
-            plugin,
-            host,
-            view: ViewContext {
-                view,
-                placement: ViewPlacement::App,
+fn main() -> Result<(), AppError> {
+    let start = Instant::now();
+    let args = parse_args(std::env::args().skip(1)).unwrap_or_else(|message| {
+        eprintln!("{message}");
+        std::process::exit(2);
+    });
+    let options = AppOptions {
+        theme: args.theme,
+        ..AppOptions::new("Mongo Raabit", "dev.archipel.raabit")
+    };
+    match args.perf_report {
+        Some(path) => run(
+            perf::PerfPlugin {
+                inner: MongoRaabitPlugin::new(),
+                perf: perf::Perf::new(path, start),
             },
-            forced,
-            shown,
-            started: false,
-        }
+            options,
+        ),
+        None => run(MongoRaabitPlugin::new(), options),
     }
-}
-
-fn system_choice(ctx: &egui::Context) -> ThemeChoice {
-    match ctx.system_theme() {
-        Some(egui::Theme::Light) => ThemeChoice::Light,
-        _ => ThemeChoice::Dark,
-    }
-}
-
-impl eframe::App for RaabitApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let wanted = self.forced.unwrap_or_else(|| system_choice(ctx));
-        if wanted != self.shown {
-            self.shown = wanted;
-            kit::install(ctx, theme_of(wanted));
-        }
-        let colors = Theme::colors(ctx);
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(colors.frame))
-            .show(ctx, |ui| {
-                if !self.started {
-                    self.started = true;
-                    ctx.request_repaint();
-                    return;
-                }
-                self.plugin.poll(&mut self.host);
-                self.plugin
-                    .render_view(&self.view, &mut ViewFrame::new(ui), &mut self.host);
-            });
-        if std::mem::take(&mut self.host.repaint) {
-            ctx.request_repaint();
-        }
-    }
-}
-
-fn main() -> eframe::Result {
-    let forced = match parse_args(std::env::args().skip(1)) {
-        Ok(choice) => choice,
-        Err(message) => {
-            eprintln!("{message}");
-            std::process::exit(2);
-        }
-    };
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Mongo Raabit")
-            .with_app_id("dev.archipel.raabit")
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([760.0, 480.0]),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "Mongo Raabit",
-        options,
-        Box::new(move |cc| Ok(Box::new(RaabitApp::new(cc, forced)))),
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn args(a: &[&str]) -> Result<Args, String> {
+        parse_args(a.iter().map(|s| s.to_string()))
+    }
+
     #[test]
     fn parses_theme_flags() {
-        let args = |a: &[&str]| parse_args(a.iter().map(|s| s.to_string()));
-        assert_eq!(args(&[]), Ok(None));
-        assert_eq!(args(&["--light"]), Ok(Some(ThemeChoice::Light)));
-        assert_eq!(args(&["--light", "--dark"]), Ok(Some(ThemeChoice::Dark)));
+        assert_eq!(args(&[]).unwrap().theme, ThemeMode::System);
+        assert_eq!(args(&["--light"]).unwrap().theme, ThemeMode::Light);
+        assert_eq!(args(&["--light", "--dark"]).unwrap().theme, ThemeMode::Dark);
         assert!(args(&["--nope"]).is_err());
+    }
+
+    #[test]
+    fn parses_perf_report() {
+        assert_eq!(
+            args(&["--perf-report", "p.json"]).unwrap().perf_report,
+            Some("p.json".into())
+        );
+        assert!(args(&["--perf-report"]).is_err());
     }
 }

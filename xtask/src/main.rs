@@ -10,6 +10,8 @@
 //!
 //! Every artifact gets a `sha256sum`-format `<file>.sha256`.
 
+mod perf;
+
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -26,7 +28,10 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("dist") => dist(Options::parse(args)?),
-        _ => bail!("usage: cargo xtask dist [--installer] [--target <triple>]"),
+        Some("perf") => perf::run(args),
+        _ => bail!(
+            "usage: cargo xtask dist [--installer] [--target <triple>]\n       cargo xtask perf [--runs N] [--uri URI] [--no-build] [--bin PATH] [--budgets FILE] [--json FILE]"
+        ),
     }
 }
 

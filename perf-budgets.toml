@@ -1,0 +1,29 @@
+# Speed budgets of Mongo Raabit, checked by `cargo xtask perf` (CI job `perf`).
+# See docs/perf.md. The charter budgets (cold start 400 ms, frame 16 ms, idle 1 % CPU) are
+# fixed: do not loosen them to pass. Fix the code, or mark the check `known_breach` with
+# the issue that tracks it, so CI stays honest without blocking.
+#
+# Every number is the median over the runs of `cargo xtask perf --runs N`.
+
+[cold_start]
+# Process start to the first interactive frame of `raabit`.
+max_ms = 400.0
+
+[frame]
+# 95th percentile of the update()/ui CPU time per frame, on each screen while driving it.
+max_ms = 16.0
+
+[idle]
+# CPU of the whole process over the idle window on the documents table (percent of one core).
+max_cpu_percent = 1.0
+# update() calls during that window: an idle window must not repaint.
+max_repaints = 2
+
+[memory]
+# Resident set after connecting and showing 50 documents. Measured ~140 MB; the budget leaves
+# ~45 % headroom for allocator and driver noise and stays at about a third of Electron's idle.
+max_rss_mb = 200.0
+
+# A check that breaks today is listed here with its tracking issue instead of loosened:
+# [known_breach]
+# "frame.table" = "https://github.com/archipel-dev/mongo-raabit/issues/N"
