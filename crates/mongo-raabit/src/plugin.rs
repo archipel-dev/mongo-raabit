@@ -1,14 +1,19 @@
-//! Jetthing plugin entry point: the whole mongo-raabit view as an editor tab
-//! (Tools › MongoDB) or as the standalone app (`jetthing --app dev.jetthing.mongo-raabit`).
+//! Archipel plugin entry point: the whole mongo-raabit view as an editor tab
+//! (Tools › MongoDB), the Databases tool window, or the standalone `raabit` app.
 
-use crate::MongoRaabit;
-use jetthing_plugin_api::{
+use crate::{MongoRaabit, tree};
+use archipel_sdk::api::{
     CommandContribution, CommandError, CommandResult, Contributions, EditorTabRequest,
-    MenuLocation, Plugin, PluginHost, PluginManifest, Value, ViewContext, ViewFrame,
+    MenuLocation, Plugin, PluginHost, PluginManifest, ToolWindowAnchor, ToolWindowContribution,
+    Value, ViewContext, ViewFrame,
 };
+use archipel_sdk::ui;
 
 pub const VIEW: &str = "mongo.main";
+pub const DATABASES_VIEW: &str = "mongo.databases";
+pub const DATABASES_WINDOW: &str = "mongo-databases";
 pub const OPEN: &str = "mongo.open";
+pub const SHOW_DATABASES: &str = "mongo.showDatabases";
 const PROFILES_FILE: &str = "connections.json";
 
 pub struct MongoRaabitPlugin {
@@ -26,7 +31,7 @@ impl Default for MongoRaabitPlugin {
 impl MongoRaabitPlugin {
     pub fn new() -> Self {
         Self {
-            manifest: PluginManifest::parse(include_str!("../jetthing-plugin.toml"))
+            manifest: PluginManifest::parse(include_str!("../archipel-plugin.toml"))
                 .expect("bundled manifest is valid"),
             app: None,
         }
@@ -48,8 +53,17 @@ impl Plugin for MongoRaabitPlugin {
 
     fn contributions(&self) -> Contributions {
         Contributions::new()
-            .command(CommandContribution::new(OPEN, "MongoDB (mongo-raabit)"))
+            .command(CommandContribution::new(OPEN, "MongoDB (Mongo Raabit)"))
+            .command(CommandContribution::new(
+                SHOW_DATABASES,
+                "Show MongoDB Databases",
+            ))
             .menu(MenuLocation::Tools, OPEN)
+            .tool_window(
+                ToolWindowContribution::new(DATABASES_WINDOW, "Databases", DATABASES_VIEW)
+                    .anchor(ToolWindowAnchor::Left)
+                    .icon_text("Db"),
+            )
     }
 
     fn execute(
@@ -63,6 +77,10 @@ impl Plugin for MongoRaabitPlugin {
                 host.open_editor_tab(EditorTabRequest::new(VIEW, "MongoDB"));
                 Ok(Value::Null)
             }
+            SHOW_DATABASES => {
+                host.open_tool_window(DATABASES_WINDOW);
+                Ok(Value::Null)
+            }
             other => Err(CommandError::Unknown(other.into())),
         }
     }
@@ -73,11 +91,16 @@ impl Plugin for MongoRaabitPlugin {
         frame: &mut ViewFrame<'_>,
         host: &mut dyn PluginHost,
     ) {
-        let Some(ui) = jetthing_plugin_ui::ui(frame) else {
+        let Some(ui) = ui::ui(frame) else {
             return;
         };
         if view.view == VIEW {
             self.app(host).ui(ui);
+        } else if view.view == DATABASES_VIEW {
+            let app = self.app(host);
+            app.jobs.set_context(ui.ctx());
+            app.poll();
+            tree::show(app, ui);
         } else {
             ui.label(format!("Unknown view {}", view.view));
         }
@@ -96,7 +119,7 @@ impl Plugin for MongoRaabitPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jetthing_plugin_api::testing::RecordingHost;
+    use archipel_sdk::testing::RecordingHost;
 
     #[test]
     fn open_command_opens_the_editor_tab() {

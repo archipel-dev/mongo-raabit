@@ -2,6 +2,7 @@
 //! input/output preview and full pipeline runs.
 
 use crate::app::{Load, MongoRaabit, ResultView, TabId, TabKind};
+use crate::egui::{CornerRadius, FontId, RichText, Sense, Stroke, Ui, vec2};
 use crate::icons::{self, Icon};
 use crate::results;
 use crate::stage_builder::{self, Mode, Suggestions};
@@ -9,7 +10,6 @@ use crate::style::{self, Palette};
 use crate::tools::RunResult;
 use crate::values;
 use crate::widgets;
-use egui::{CornerRadius, FontId, RichText, Sense, Stroke, Ui, vec2};
 use mongo_raabit_core::aggregate::{RunOptions, STAGE_OPERATORS, Stage, stage_operator};
 use mongo_raabit_core::bson::Document;
 use mongo_raabit_core::codegen::{CodeRequest, Operation};
@@ -34,8 +34,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     };
     let mut actions = Vec::new();
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin {
             left: 14,
             right: 14,
             top: 10,
@@ -55,30 +55,33 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         .color(p.text_strong),
                 );
                 widgets::badge(ui, "Aggregation", p.accent_text);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::primary_button(ui, Some(Icon::Play), "Run Pipeline").clicked() {
-                        actions.push(Action::Run);
-                    }
-                    if widgets::secondary_button(ui, Some(Icon::Code), "Query Code").clicked() {
-                        actions.push(Action::Code);
-                    }
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("docs").color(p.text_info));
-                    let mut sample = tab.sample.to_string();
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut sample).desired_width(56.0))
-                        .lost_focus()
-                        && let Ok(v) = sample.trim().parse()
-                        && v != tab.sample
-                    {
-                        tab.sample = v;
-                        actions.push(Action::Preview);
-                    }
-                    ui.label(RichText::new("Preview on first").color(p.text_info))
-                        .on_hover_text(
-                            "Stage previews read only this many input documents (0 = all)",
-                        );
-                });
+                ui.with_layout(
+                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                    |ui| {
+                        if widgets::primary_button(ui, Some(Icon::Play), "Run Pipeline").clicked() {
+                            actions.push(Action::Run);
+                        }
+                        if widgets::secondary_button(ui, Some(Icon::Code), "Query Code").clicked() {
+                            actions.push(Action::Code);
+                        }
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("docs").color(p.text_info));
+                        let mut sample = tab.sample.to_string();
+                        if ui
+                            .add(crate::egui::TextEdit::singleline(&mut sample).desired_width(56.0))
+                            .lost_focus()
+                            && let Ok(v) = sample.trim().parse()
+                            && v != tab.sample
+                        {
+                            tab.sample = v;
+                            actions.push(Action::Preview);
+                        }
+                        ui.label(RichText::new("Preview on first").color(p.text_info))
+                            .on_hover_text(
+                                "Stage previews read only this many input documents (0 = all)",
+                            );
+                    },
+                );
             });
         });
     widgets::separator(ui);
@@ -90,20 +93,20 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     let body_height = ui.available_height() - results_height;
     ui.allocate_ui_with_layout(
         vec2(ui.available_width(), body_height),
-        egui::Layout::left_to_right(egui::Align::Min),
+        crate::egui::Layout::left_to_right(crate::egui::Align::Min),
         |ui| {
             // ---- stage list
-            egui::Frame::new()
+            crate::egui::Frame::new()
                 .fill(p.raised)
-                .inner_margin(egui::Margin::same(10))
+                .inner_margin(crate::egui::Margin::same(10))
                 .show(ui, |ui| {
                     ui.set_width(270.0);
                     ui.set_height(body_height - 20.0);
                     ui.vertical(|ui| stage_list(ui, &p, tab, &mut actions));
                 });
             // ---- stage editor and preview
-            egui::Frame::new()
-                .inner_margin(egui::Margin {
+            crate::egui::Frame::new()
+                .inner_margin(crate::egui::Margin {
                     left: 14,
                     right: 14,
                     top: 10,
@@ -200,7 +203,7 @@ fn stage_list(
     let mut toggle = None;
     let mut remove = None;
     let mut move_by: Option<(usize, isize)> = None;
-    egui::ScrollArea::vertical()
+    crate::egui::ScrollArea::vertical()
         .max_height(ui.available_height() - 40.0)
         .auto_shrink([false, true])
         .show(ui, |ui| {
@@ -220,11 +223,11 @@ fn stage_list(
                     CornerRadius::same(8),
                     fill,
                     Stroke::new(1.0_f32, if selected { p.accent } else { p.border }),
-                    egui::StrokeKind::Inside,
+                    crate::egui::StrokeKind::Inside,
                 );
                 // Index bubble.
-                let bubble = egui::Rect::from_center_size(
-                    egui::pos2(rect.left() + 18.0, rect.top() + 18.0),
+                let bubble = crate::egui::Rect::from_center_size(
+                    crate::egui::pos2(rect.left() + 18.0, rect.top() + 18.0),
                     vec2(20.0, 20.0),
                 );
                 ui.painter().circle_filled(
@@ -238,7 +241,7 @@ fn stage_list(
                 );
                 ui.painter().text(
                     bubble.center(),
-                    egui::Align2::CENTER_CENTER,
+                    crate::egui::Align2::CENTER_CENTER,
                     (i + 1).to_string(),
                     FontId::proportional(11.0),
                     if stage.enabled {
@@ -253,8 +256,8 @@ fn stage_list(
                     p.text_info
                 };
                 ui.painter().text(
-                    egui::pos2(rect.left() + 36.0, rect.top() + 18.0),
-                    egui::Align2::LEFT_CENTER,
+                    crate::egui::pos2(rect.left() + 36.0, rect.top() + 18.0),
+                    crate::egui::Align2::LEFT_CENTER,
                     &stage.operator,
                     FontId::monospace(13.0),
                     name_color,
@@ -265,16 +268,16 @@ fn stage_list(
                     max_chars,
                 );
                 ui.painter().text(
-                    egui::pos2(rect.left() + 36.0, rect.top() + 37.0),
-                    egui::Align2::LEFT_CENTER,
+                    crate::egui::pos2(rect.left() + 36.0, rect.top() + 37.0),
+                    crate::egui::Align2::LEFT_CENTER,
                     summary,
                     FontId::monospace(11.0),
                     p.text_info,
                 );
                 // Row buttons.
                 let button = |offset: f32, icon: Icon, tip: &str| -> bool {
-                    let r = egui::Rect::from_center_size(
-                        egui::pos2(rect.right() - offset, rect.top() + 18.0),
+                    let r = crate::egui::Rect::from_center_size(
+                        crate::egui::pos2(rect.right() - offset, rect.top() + 18.0),
                         vec2(20.0, 20.0),
                     );
                     let resp = ui.interact(r, ui.id().with(("stage-btn", i, tip)), Sense::click());
@@ -295,8 +298,8 @@ fn stage_list(
                         move_by = Some((i, -1));
                     }
                 }
-                let check = egui::Rect::from_center_size(
-                    egui::pos2(rect.right() - 14.0, rect.top() + 39.0),
+                let check = crate::egui::Rect::from_center_size(
+                    crate::egui::pos2(rect.right() - 14.0, rect.top() + 39.0),
                     vec2(14.0, 14.0),
                 );
                 let check_resp =
@@ -306,14 +309,14 @@ fn stage_list(
                     CornerRadius::same(3),
                     if stage.enabled { p.accent } else { p.field },
                     Stroke::new(1.0_f32, p.border),
-                    egui::StrokeKind::Inside,
+                    crate::egui::StrokeKind::Inside,
                 );
                 if stage.enabled {
                     icons::paint(
                         ui.painter(),
                         check.shrink(1.0),
                         Icon::Check,
-                        egui::Color32::WHITE,
+                        crate::egui::Color32::WHITE,
                     );
                 }
                 if check_resp
@@ -335,21 +338,21 @@ fn stage_list(
     let mut add = None;
     let add_button = ui.add_sized(
         vec2(ui.available_width(), 26.0),
-        egui::Button::new(RichText::new("+  Add stage").color(p.accent_text)),
+        crate::egui::Button::new(RichText::new("+  Add stage").color(p.accent_text)),
     );
-    egui::Popup::menu(&add_button).show(|ui| {
+    crate::egui::Popup::menu(&add_button).show(|ui| {
         ui.set_min_width(260.0);
         for (name, label, description) in stage_builder::FRIENDLY_STAGES {
-            let mut job = egui::text::LayoutJob::default();
+            let mut job = crate::egui::text::LayoutJob::default();
             job.append(
                 label,
                 0.0,
-                egui::TextFormat::simple(FontId::proportional(13.0), p.text_strong),
+                crate::egui::TextFormat::simple(FontId::proportional(13.0), p.text_strong),
             );
             job.append(
                 &format!("\n{description}"),
                 0.0,
-                egui::TextFormat::simple(FontId::proportional(11.5), p.text_info),
+                crate::egui::TextFormat::simple(FontId::proportional(11.5), p.text_info),
             );
             if ui.selectable_label(false, job).clicked() {
                 add = Some(*name);
@@ -358,7 +361,7 @@ fn stage_list(
         ui.separator();
         ui.menu_button("More stages…", |ui| {
             ui.set_min_width(320.0);
-            egui::ScrollArea::vertical()
+            crate::egui::ScrollArea::vertical()
                 .max_height(380.0)
                 .show(ui, |ui| {
                     for op in STAGE_OPERATORS {
@@ -432,7 +435,7 @@ fn stage_editor(
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("Stage {}", index + 1)).strong());
         let before = stage.operator.clone();
-        egui::ComboBox::from_id_salt(("raabit-stage-op", index))
+        crate::egui::ComboBox::from_id_salt(("raabit-stage-op", index))
             .selected_text(RichText::new(&stage.operator).font(FontId::monospace(13.0)))
             .width(180.0)
             .height(420.0)
@@ -516,7 +519,7 @@ fn stage_editor(
     } else {
         (ui.available_height() * 0.36).clamp(110.0, 260.0)
     };
-    egui::ScrollArea::vertical()
+    crate::egui::ScrollArea::vertical()
         .id_salt(("raabit-stage-body", index, mode == Mode::Form))
         .max_height(editor_height)
         .show(ui, |ui| {
@@ -556,7 +559,7 @@ fn stage_editor(
             });
         }
         Load::Failed(err) => {
-            ui.add(egui::Label::new(RichText::new(err).color(p.error)).wrap());
+            ui.add(crate::egui::Label::new(RichText::new(err).color(p.error)).wrap());
         }
         Load::Ready(preview) => {
             let width = (ui.available_width() - 12.0) / 2.0;
@@ -608,31 +611,31 @@ fn preview_column(
         });
         ui.add_space(4.0);
         if let Some(note) = note {
-            egui::Frame::new()
+            crate::egui::Frame::new()
                 .fill(p.warning.gamma_multiply(0.14))
                 .corner_radius(CornerRadius::same(7))
-                .inner_margin(egui::Margin::symmetric(10, 6))
+                .inner_margin(crate::egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
                     ui.set_width(width - 20.0);
                     ui.label(RichText::new(note).color(p.warning));
                 });
             return;
         }
-        egui::ScrollArea::vertical()
+        crate::egui::ScrollArea::vertical()
             .id_salt(id)
             .max_height(height - 30.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for doc in docs {
-                    egui::Frame::new()
+                    crate::egui::Frame::new()
                         .fill(p.field)
                         .stroke(Stroke::new(1.0_f32, p.border))
                         .corner_radius(CornerRadius::same(7))
-                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .inner_margin(crate::egui::Margin::symmetric(10, 6))
                         .show(ui, |ui| {
                             ui.set_width(width - 22.0);
                             let job = values::document_job(doc, p, FontId::monospace(11.5));
-                            ui.add(egui::Label::new(job).wrap());
+                            ui.add(crate::egui::Label::new(job).wrap());
                         });
                     ui.add_space(6.0);
                 }
@@ -652,8 +655,8 @@ pub fn result_pane(
     open: &mut std::collections::HashSet<String>,
     result: &Load<RunResult>,
 ) {
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin {
             left: 14,
             right: 14,
             top: 8,
@@ -694,10 +697,10 @@ pub fn result_pane(
         });
     match result {
         Load::Failed(err) => {
-            egui::Frame::new()
-                .inner_margin(egui::Margin::symmetric(14, 4))
+            crate::egui::Frame::new()
+                .inner_margin(crate::egui::Margin::symmetric(14, 4))
                 .show(ui, |ui| {
-                    ui.add(egui::Label::new(RichText::new(err).color(p.error)).wrap());
+                    ui.add(crate::egui::Label::new(RichText::new(err).color(p.error)).wrap());
                 });
         }
         Load::Ready(r) => match view {
@@ -706,7 +709,7 @@ pub fn result_pane(
                 if let Some(results::TreeEvent::Toggle(key)) = results::tree(
                     ui,
                     results::TreeState {
-                        id: egui::Id::new(("raabit-run-tree", id)),
+                        id: crate::egui::Id::new(("raabit-run-tree", id)),
                         open,
                         selected: None,
                     },

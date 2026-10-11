@@ -13,7 +13,7 @@ pub struct Jobs<S> {
     tx: Sender<Apply<S>>,
     rx: Receiver<Apply<S>>,
     pending: Arc<AtomicUsize>,
-    repaint: Arc<Mutex<Option<egui::Context>>>,
+    repaint: Arc<Mutex<Option<crate::egui::Context>>>,
 }
 
 impl<S: 'static> Default for Jobs<S> {
@@ -41,7 +41,7 @@ impl<S: 'static> Jobs<S> {
     }
 
     /// Remember the context so finished jobs can wake the UI.
-    pub fn set_context(&self, ctx: &egui::Context) {
+    pub fn set_context(&self, ctx: &crate::egui::Context) {
         if let Ok(mut slot) = self.repaint.lock()
             && slot.is_none()
         {

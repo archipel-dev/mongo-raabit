@@ -1,6 +1,7 @@
 //! Visual stage forms of the Aggregation Editor: headless rendering of every form and,
 //! when a local mongod is reachable, pipelines built only from forms.
 
+use archipel_sdk::kit::{self, Theme, egui};
 use mongo_raabit::MongoRaabit;
 use mongo_raabit::app::SessionState;
 use mongo_raabit::core::aggregate::{Pipeline, Stage};
@@ -111,11 +112,7 @@ fn renders_every_stage_form_headlessly() {
     let collections = vec!["regions".to_owned()];
     for dark in [true, false] {
         let ctx = egui::Context::default();
-        ctx.set_visuals(if dark {
-            egui::Visuals::dark()
-        } else {
-            egui::Visuals::light()
-        });
+        kit::install(&ctx, if dark { Theme::dark() } else { Theme::light() });
         for mut stage in sample_stages() {
             let original = stage.body.clone();
             for _ in 0..2 {
@@ -165,6 +162,7 @@ fn renders_the_aggregation_tab_with_forms_and_code() {
     let tab = app.open_aggregation(0, "db", "sales", Some(Pipeline { stages }));
     app.aggregation_tab_mut(tab).unwrap().stage_code.insert(1);
     let ctx = egui::Context::default();
+    kit::install(&ctx, Theme::dark());
     for selected in 0..count {
         app.aggregation_tab_mut(tab).unwrap().selected = selected;
         for _ in 0..2 {
