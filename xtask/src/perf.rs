@@ -250,6 +250,48 @@ fn unix_ms() -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
+/// Where the driver clicks and hovers, in the 1280x800 window of `raabit --dark`. When a layout
+/// change moves a target, the `find` check fails the run: re-read the positions from a
+/// screenshot (`import -window root shot.png` under Xvfb) and update them here.
+mod at {
+    pub type Point = (u32, u32);
+    pub const WELCOME_HOVER: [Point; 6] = [
+        (700, 186),
+        (785, 186),
+        (785, 236),
+        (850, 236),
+        (700, 130),
+        (400, 400),
+    ];
+    pub const TOOLBAR_CONNECT: Point = (193, 18);
+    pub const DIALOG_HOVER: [Point; 6] = [
+        (330, 196),
+        (583, 276),
+        (681, 276),
+        (580, 334),
+        (740, 182),
+        (958, 671),
+    ];
+    /// The dialog's "Close" button.
+    pub const DIALOG_CLOSE: Point = (392, 627);
+    /// The welcome screen's "Connect to localhost".
+    pub const CONNECT_LOCALHOST: Point = (785, 236);
+    pub const TREE_HOVER: [Point; 5] = [(100, 115), (100, 139), (100, 163), (100, 187), (100, 211)];
+    /// Expander arrow of the `raabit_perf` database row (the fourth database).
+    pub const DB_ARROW: Point = (37, 211);
+    /// The `customers` collection row below it.
+    pub const COLLECTION: Point = (100, 235);
+    pub const TABLE_HOVER: [Point; 6] = [
+        (500, 385),
+        (500, 441),
+        (700, 500),
+        (900, 560),
+        (1100, 620),
+        (600, 700),
+    ];
+    pub const TABLE_SCROLL: Point = (700, 500);
+}
+
 struct Driver<'a> {
     display: &'a str,
 }
@@ -368,55 +410,34 @@ fn drive(child: &mut Child, display: &str, report: &Path, spawn_ms: u128) -> Res
     let mut screen = |name: &'static str, start: u128| windows.push((name, start, unix_ms()));
 
     // Welcome: the window from process start, then the pointer over the welcome buttons.
-    d.hover(&[
-        (600, 285),
-        (700, 285),
-        (866, 285),
-        (950, 285),
-        (700, 200),
-        (400, 400),
-    ])?;
+    d.hover(&at::WELCOME_HOVER)?;
     screen("welcome", spawn_ms);
 
     // Connection dialog: open from the toolbar, move over its tabs and fields, close.
     let start = unix_ms();
-    d.click(191, 20)?;
+    d.click(at::TOOLBAR_CONNECT.0, at::TOOLBAR_CONNECT.1)?;
     sleep(Duration::from_millis(600));
-    d.hover(&[
-        (300, 208),
-        (590, 232),
-        (690, 232),
-        (780, 305),
-        (780, 172),
-        (935, 677),
-    ])?;
-    d.click(1056, 121)?;
+    d.hover(&at::DIALOG_HOVER)?;
+    d.click(at::DIALOG_CLOSE.0, at::DIALOG_CLOSE.1)?;
     sleep(Duration::from_millis(400));
     screen("dialog", start);
 
     // Connect to localhost: the tree with its databases.
     let start = unix_ms();
-    d.click(866, 285)?;
+    d.click(at::CONNECT_LOCALHOST.0, at::CONNECT_LOCALHOST.1)?;
     sleep(Duration::from_millis(2500));
-    d.hover(&[(100, 134), (100, 158), (100, 182), (100, 206), (100, 230)])?;
+    d.hover(&at::TREE_HOVER)?;
     screen("tree", start);
 
     // Expand `raabit_perf`, open `customers`: 50 rows. Hover, then scroll down and back.
     let start = unix_ms();
-    d.click(36, 230)?;
+    d.click(at::DB_ARROW.0, at::DB_ARROW.1)?;
     sleep(Duration::from_millis(700));
-    d.double_click(90, 254)?;
+    d.double_click(at::COLLECTION.0, at::COLLECTION.1)?;
     sleep(Duration::from_millis(2000));
-    d.hover(&[
-        (500, 384),
-        (500, 440),
-        (700, 500),
-        (900, 560),
-        (1100, 620),
-        (600, 700),
-    ])?;
-    d.scroll(700, 500, "5")?;
-    d.scroll(700, 500, "4")?;
+    d.hover(&at::TABLE_HOVER)?;
+    d.scroll(at::TABLE_SCROLL.0, at::TABLE_SCROLL.1, "5")?;
+    d.scroll(at::TABLE_SCROLL.0, at::TABLE_SCROLL.1, "4")?;
     sleep(Duration::from_millis(300));
     screen("table", start);
 

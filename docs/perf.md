@@ -74,17 +74,17 @@ job then prints `KNOWN BREACH (link)` and stays green; remove the entry when the
 
 The driver clicks fixed coordinates in the 1280x800 window (welcome buttons, the toolbar's
 Connect, the dialog's close button, the first database and collection rows of the tree). When a
-layout change moves them, the `find` check fails the run; update the coordinates in `drive()`.
+layout change moves them, the `find` check fails the run; update the coordinates in the `at` module of `xtask/src/perf.rs`.
 
 ## Current numbers
 
-Median of 8 runs, release build, shared 2-core VM, MongoDB 7.0.14 (`cargo xtask perf --runs 8`):
+Median of 7 runs, release build (after the kit port of the chrome, connection manager and tree), shared 2-core VM, MongoDB 7.0.14 (`cargo xtask perf --runs 7`):
 
 | Check | Measured | Budget |
 |---|---|---|
-| cold start | ~150 ms (105–275 ms) | 400 ms |
-| frame p95: welcome / dialog / tree / table | 0.1 / 0.2 / 0.2 / 0.6 ms | 16 ms |
-| worst single frame | ~6 ms (dialog, first open) | – |
+| cold start | ~160 ms (105–310 ms per run) | 400 ms |
+| frame p95: welcome / dialog / tree / table | 0.3 / 0.3 / 0.2 / 0.7 ms | 16 ms |
+| worst single frame | ~8 ms (table, first open) | – |
 | idle CPU | 0.00 % | 1 % |
 | idle repaints in 5 s | 0 | 2 |
 | RSS, 50 documents | 137 MB | 200 MB |
