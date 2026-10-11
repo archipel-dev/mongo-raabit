@@ -1,0 +1,33 @@
+name: PR title
+
+# Lints pull request titles against Conventional Commits, because squash-merged
+# titles drive release-please. Non-blocking for now: the job reports failures
+# but does not fail the check. Remove `continue-on-error` to enforce it.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            chore
+            ci
+            build
+            style
+            revert

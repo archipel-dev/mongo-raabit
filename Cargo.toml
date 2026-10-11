@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/mongo-raabit-core"]
+# Being ported from the Jetthing plugin API to archipel-sdk; added back as a member by the port.
+exclude = ["crates/mongo-raabit"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+rust-version = "1.91"
+repository = "https://github.com/archipel-dev/mongo-raabit"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+url = { version = "2.5", features = ["serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

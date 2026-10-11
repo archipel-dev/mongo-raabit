@@ -1,0 +1,72 @@
+name: Release PR
+
+# Opens and maintains a release pull request from conventional commits on main:
+# it bumps [workspace.package] version in Cargo.toml, refreshes Cargo.lock and
+# updates CHANGELOG.md. It never tags or publishes; merging the PR changes the
+# version on main, and release.yml then builds and publishes. See docs/release.md.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    env:
+      # Pushes and PRs made with GITHUB_TOKEN do not trigger other workflows, so
+      # CI would not run on the release PR. Set the RELEASE_PLEASE_TOKEN secret
+      # (a PAT or GitHub App token with contents and pull-requests write) to fix that.
+      GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # release-please does not know the version in Cargo.lock, so refresh the
+      # workspace members' entries on the release PR branch.
+      - name: Check out the release PR branch
+        if: steps.release.outputs.prs_created == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.release.outputs.prs_created == 'true'
+      - name: Refresh Cargo.lock
+        if: steps.release.outputs.prs_created == 'true'
+        shell: bash
+        run: |
+          cargo update --workspace
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock is already up to date"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.lock
+            git commit -m "chore: update Cargo.lock for release"
+            git push
+          fi
+
+      # Because skip-github-release is set, release-please never moves merged
+      # release PRs from `autorelease: pending` to `autorelease: tagged`, and it
+      # refuses to open a new release PR while one is pending. release.yml does the
+      # publishing, so relabel them here.
+      - name: Mark merged release PRs as tagged
+        shell: bash
+        run: |
+          gh pr list --repo "$GITHUB_REPOSITORY" --state merged \
+            --label "autorelease: pending" --json number --jq '.[].number' |
+          while read -r pr; do
+            gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" \
+              --remove-label "autorelease: pending" --add-label "autorelease: tagged"
+          done
