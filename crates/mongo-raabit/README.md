@@ -1,8 +1,9 @@
-# mongo-raabit
+# mongo-raabit (plugin crate)
 
-A clean-room, Studio 3T Pro-class MongoDB GUI for Jetthing (issue #50). It is bundled into
-every Jetthing build as a Rust plugin: open it with Tools › MongoDB (mongo-raabit), or run it
-on its own with `jetthing --app dev.jetthing.mongo-raabit`.
+The views and the Archipel plugin of Mongo Raabit, a clean-room, Studio 3T Pro-class MongoDB
+GUI. The same code runs as an Archipel IDE plugin (`dev.archipel.mongo-raabit`: Tools ›
+MongoDB, plus the Databases tool window) and as the standalone `raabit` app
+(`crates/raabit`, `cargo run -p raabit`).
 
 Three tool tabs per collection:
 
@@ -12,8 +13,9 @@ Three tool tabs per collection:
 
 | Crate | Path | Purpose |
 |---|---|---|
-| `mongo-raabit` | `.` | egui views and the Jetthing plugin (`src/plugin.rs`): Connection Manager, connection tree, Query / Aggregation / Structure tabs with Table/Tree/JSON results; `examples/standalone.rs` runs it in its own window for scripted screenshots |
-| `mongo-raabit-core` | `core/` | headless: connection profiles, SSH tunnels, secrets, metadata, query/paging/CRUD, explain, index/user management, aggregation stages with preview, schema sampler, SQL → MQL, query code generation, import/export |
+| `mongo-raabit` | `crates/mongo-raabit` | egui views and the `archipel-sdk` plugin (`src/plugin.rs`): Connection Manager, connection tree, Query / Aggregation / Structure tabs with Table/Tree/JSON results |
+| `raabit` | `crates/raabit` | standalone desktop app (eframe) hosting the same views |
+| `mongo-raabit-core` | `crates/mongo-raabit-core` | headless: connection profiles, SSH tunnels, secrets, metadata, query/paging/CRUD, explain, index/user management, aggregation stages with preview, schema sampler, SQL → MQL, query code generation, import/export |
 
 The core is built on the official [`mongodb`](https://crates.io/crates/mongodb) driver.
 External tools (`ssh`, later `mongosh`) are discovered on `PATH` at runtime and never
@@ -23,12 +25,12 @@ bundled.
 
 ```bash
 mongod --dbpath /tmp/mongo-data --fork --logpath /tmp/mongod.log   # optional
-cargo test -p mongo-raabit-core
+cargo test --workspace
 ```
 
 Tests that need a server use `MONGO_RAABIT_TEST_URI` (default
 `mongodb://127.0.0.1:27017`) and print a skip message when it is unreachable.
 Seed the sample database used for screenshots with
-`mongosh plugins/mongo-raabit/scripts/seed-sample-data.js`.
+`mongosh crates/mongo-raabit/scripts/seed-sample-data.js`.
 
-Parity status: `docs/parity/mongo-raabit.md`.
+View tests render through wgpu: on Linux install `mesa-vulkan-drivers`.

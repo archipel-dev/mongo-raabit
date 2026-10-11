@@ -1,10 +1,10 @@
 //! Result views of a collection tab: Table (with nested drill-down), Tree and JSON.
 
 use crate::app::{CellEdit, CollectionTab};
+use crate::egui::{Align2, CornerRadius, FontId, RichText, Sense, Ui, pos2, vec2};
 use crate::icons::{self, Icon};
 use crate::style::Palette;
 use crate::values;
-use egui::{Align2, CornerRadius, FontId, RichText, Sense, Ui, pos2, vec2};
 use egui_extras::{Column, TableBuilder};
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::shell;
@@ -57,10 +57,10 @@ pub fn table_columns(rows: &[(usize, Bson)]) -> Vec<String> {
     columns
 }
 
-fn cell(ui: &mut Ui, p: &Palette, value: Option<&Bson>) -> egui::Response {
+fn cell(ui: &mut Ui, p: &Palette, value: Option<&Bson>) -> crate::egui::Response {
     match value {
         None => ui.add(
-            egui::Label::new(RichText::new("—").color(p.text_info.gamma_multiply(0.6)))
+            crate::egui::Label::new(RichText::new("—").color(p.text_info.gamma_multiply(0.6)))
                 .sense(Sense::click()),
         ),
         Some(value @ (Bson::Document(_) | Bson::Array(_))) => {
@@ -79,7 +79,7 @@ fn cell(ui: &mut Ui, p: &Palette, value: Option<&Bson>) -> egui::Response {
             ui.painter().rect_filled(rect, CornerRadius::same(5), fill);
             icons::paint(
                 ui.painter(),
-                egui::Rect::from_center_size(
+                crate::egui::Rect::from_center_size(
                     pos2(rect.left() + 9.0, rect.center().y),
                     vec2(11.0, 11.0),
                 ),
@@ -96,12 +96,13 @@ fn cell(ui: &mut Ui, p: &Palette, value: Option<&Bson>) -> egui::Response {
                 p.text_secondary,
             );
             if response.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                ui.ctx()
+                    .set_cursor_icon(crate::egui::CursorIcon::PointingHand);
             }
             response.on_hover_text("Drill down")
         }
         Some(value) => ui.add(
-            egui::Label::new(
+            crate::egui::Label::new(
                 RichText::new(values::preview(value))
                     .font(FontId::monospace(12.5))
                     .color(values::color(value, p)),
@@ -214,7 +215,7 @@ pub fn breadcrumb(ui: &mut Ui, p: &Palette, drill: &[String]) -> Option<usize> {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let root = ui.add(
-            egui::Label::new(RichText::new("documents").color(if drill.is_empty() {
+            crate::egui::Label::new(RichText::new("documents").color(if drill.is_empty() {
                 p.text
             } else {
                 p.accent_text
@@ -228,7 +229,7 @@ pub fn breadcrumb(ui: &mut Ui, p: &Palette, drill: &[String]) -> Option<usize> {
             icons::icon(ui, Icon::ChevronRight, p.text_info);
             let last = i + 1 == drill.len();
             let r = ui.add(
-                egui::Label::new(RichText::new(segment).color(if last {
+                crate::egui::Label::new(RichText::new(segment).color(if last {
                     p.text
                 } else {
                     p.accent_text
@@ -263,7 +264,7 @@ pub fn table(
     let header_bg = p.raised;
     let mut start_edit: Option<CellEdit> = None;
     let mut cancel_edit = false;
-    egui::ScrollArea::horizontal()
+    crate::egui::ScrollArea::horizontal()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let mut builder = TableBuilder::new(ui)
@@ -271,7 +272,9 @@ pub fn table(
                 .striped(true)
                 .resizable(true)
                 .sense(Sense::click())
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .cell_layout(crate::egui::Layout::left_to_right(
+                    crate::egui::Align::Center,
+                ))
                 .column(Column::exact(52.0));
             for name in &columns {
                 builder = builder.column(
@@ -338,14 +341,15 @@ pub fn table(
                                     && Some(&edit.path) == path.as_ref()
                                 {
                                     let r = ui.add(
-                                        egui::TextEdit::singleline(&mut edit.text)
+                                        crate::egui::TextEdit::singleline(&mut edit.text)
                                             .font(FontId::monospace(12.5))
                                             .desired_width(f32::INFINITY),
                                     );
                                     if edit.focus {
                                         r.request_focus();
                                         edit.focus = false;
-                                    } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                    } else if ui.input(|i| i.key_pressed(crate::egui::Key::Escape))
+                                    {
                                         cancel_edit = true;
                                     } else if r.lost_focus() {
                                         event = Some(TableEvent::CommitEdit);
@@ -519,7 +523,7 @@ pub enum TreeEvent {
 
 /// Tree view state shared by collection, aggregation and SQL result panes.
 pub struct TreeState<'a> {
-    pub id: egui::Id,
+    pub id: crate::egui::Id,
     pub open: &'a std::collections::HashSet<String>,
     pub selected: Option<usize>,
 }
@@ -539,7 +543,9 @@ pub fn tree(
         .striped(true)
         .resizable(true)
         .sense(Sense::click())
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .cell_layout(crate::egui::Layout::left_to_right(
+            crate::egui::Align::Center,
+        ))
         .column(Column::initial(300.0).at_least(120.0).clip(true))
         .column(Column::remainder().at_least(160.0).clip(true))
         .column(Column::initial(110.0).at_least(70.0))
@@ -627,11 +633,11 @@ pub fn tree(
 
 pub fn json(ui: &mut Ui, docs: &[Document], first_index: u64) {
     let p = Palette::of(ui);
-    egui::ScrollArea::both()
+    crate::egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            egui::Frame::new()
-                .inner_margin(egui::Margin::symmetric(14, 10))
+            crate::egui::Frame::new()
+                .inner_margin(crate::egui::Margin::symmetric(14, 10))
                 .show(ui, |ui| {
                     for (i, doc) in docs.iter().enumerate() {
                         let (rect, _) = ui
@@ -644,7 +650,7 @@ pub fn json(ui: &mut Ui, docs: &[Document], first_index: u64) {
                             p.text_info,
                         );
                         let job = values::document_job(doc, &p, FontId::monospace(12.5));
-                        ui.add(egui::Label::new(job).selectable(true));
+                        ui.add(crate::egui::Label::new(job).selectable(true));
                         ui.add_space(8.0);
                     }
                 });

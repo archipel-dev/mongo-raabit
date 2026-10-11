@@ -1,9 +1,9 @@
-id = "dev.jetthing.mongo-raabit"
-name = "mongo-raabit"
+id = "dev.archipel.mongo-raabit"
+name = "Mongo Raabit"
 version = "0.1.0"
 api_version = 1
 kind = "rust"
-vendor = "Jetthing"
+vendor = "Archipel"
 license = "Apache-2.0 OR MIT"
 description = "MongoDB GUI: connections, visual query and aggregation builders, SQL, schema and indexes."
 capabilities = ["view", "database"]
@@ -11,4 +11,4 @@ permissions = ["network", "process", "fs.user", "clipboard"]
 
 [app]
 view = "mongo.main"
-title = "mongo-raabit"
+title = "Mongo Raabit"

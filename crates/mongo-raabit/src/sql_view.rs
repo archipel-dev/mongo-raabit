@@ -2,11 +2,11 @@
 
 use crate::aggregation_view::result_pane;
 use crate::app::{MongoRaabit, TabId};
+use crate::egui::{CornerRadius, FontId, RichText, Stroke, Ui, vec2};
 use crate::icons::{self, Icon};
 use crate::style::Palette;
 use crate::values;
 use crate::widgets;
-use egui::{CornerRadius, FontId, RichText, Stroke, Ui, vec2};
 use mongo_raabit_core::aggregate::Pipeline;
 use mongo_raabit_core::shell::{self, ShellStyle};
 use mongo_raabit_core::sql::SqlTranslation;
@@ -18,8 +18,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     };
     let mut run = false;
     let mut to_aggregation: Option<(String, Pipeline)> = None;
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin {
             left: 14,
             right: 14,
             top: 10,
@@ -35,21 +35,24 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         .color(p.text_strong),
                 );
                 widgets::badge(ui, "SQL Query", p.keyword);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::primary_button(ui, Some(Icon::Play), "Run")
-                        .on_hover_text("Run (Ctrl+Enter)")
-                        .clicked()
-                    {
-                        run = true;
-                    }
-                });
+                ui.with_layout(
+                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                    |ui| {
+                        if widgets::primary_button(ui, Some(Icon::Play), "Run")
+                            .on_hover_text("Run (Ctrl+Enter)")
+                            .clicked()
+                        {
+                            run = true;
+                        }
+                    },
+                );
             });
         });
     widgets::separator(ui);
     let translation = tab.translation();
     let editor_height = (ui.available_height() * 0.42).max(200.0);
-    egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(14, 10))
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin::symmetric(14, 10))
         .show(ui, |ui| {
             let width = (ui.available_width() - 14.0) / 2.0;
             ui.horizontal_top(|ui| {
@@ -59,23 +62,24 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                     ui.add_space(2.0);
                     let font = FontId::monospace(13.0);
                     let palette = p;
-                    let mut layouter = |ui: &Ui, buffer: &dyn egui::TextBuffer, wrap: f32| {
-                        let mut job = values::sql_job(buffer.as_str(), &palette, font.clone());
-                        job.wrap.max_width = wrap;
-                        ui.fonts_mut(|f| f.layout_job(job))
-                    };
-                    egui::Frame::new()
+                    let mut layouter =
+                        |ui: &Ui, buffer: &dyn crate::egui::TextBuffer, wrap: f32| {
+                            let mut job = values::sql_job(buffer.as_str(), &palette, font.clone());
+                            job.wrap.max_width = wrap;
+                            ui.fonts_mut(|f| f.layout_job(job))
+                        };
+                    crate::egui::Frame::new()
                         .fill(p.field)
                         .stroke(Stroke::new(1.0_f32, p.border))
                         .corner_radius(CornerRadius::same(8))
-                        .inner_margin(egui::Margin::same(8))
+                        .inner_margin(crate::egui::Margin::same(8))
                         .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
+                            crate::egui::ScrollArea::vertical()
                                 .id_salt(("raabit-sql", tab_id))
                                 .max_height(editor_height - 30.0)
                                 .show(ui, |ui| {
                                     let response = ui.add(
-                                        egui::TextEdit::multiline(&mut tab.sql)
+                                        crate::egui::TextEdit::multiline(&mut tab.sql)
                                             .code_editor()
                                             .frame(false)
                                             .desired_rows(10)
@@ -84,7 +88,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                                     );
                                     if response.has_focus()
                                         && ui.input(|i| {
-                                            i.modifiers.command && i.key_pressed(egui::Key::Enter)
+                                            i.modifiers.command
+                                                && i.key_pressed(crate::egui::Key::Enter)
                                         })
                                     {
                                         run = true;
@@ -110,26 +115,28 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         }
                     });
                     ui.add_space(2.0);
-                    egui::Frame::new()
+                    crate::egui::Frame::new()
                         .fill(p.raised)
                         .stroke(Stroke::new(1.0_f32, p.border))
                         .corner_radius(CornerRadius::same(8))
-                        .inner_margin(egui::Margin::same(8))
+                        .inner_margin(crate::egui::Margin::same(8))
                         .show(ui, |ui| {
                             ui.set_min_height(editor_height - 70.0);
-                            egui::ScrollArea::both()
+                            crate::egui::ScrollArea::both()
                                 .id_salt(("raabit-sql-out", tab_id))
                                 .max_height(editor_height - 70.0)
                                 .show(ui, |ui| match &translation {
                                     Ok(t) => {
-                                        let mut job = egui::text::LayoutJob::default();
+                                        let mut job = crate::egui::text::LayoutJob::default();
                                         values::highlight_into(
                                             &mut job,
                                             &t.to_shell(),
                                             &p,
                                             FontId::monospace(12.5),
                                         );
-                                        ui.add(egui::Label::new(job).selectable(true).extend());
+                                        ui.add(
+                                            crate::egui::Label::new(job).selectable(true).extend(),
+                                        );
                                     }
                                     Err(err) => {
                                         ui.horizontal_wrapped(|ui| {

@@ -1,6 +1,8 @@
 //! Original 16×16 vector icons drawn with the egui painter (no bundled artwork).
 
-use egui::{Color32, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2};
+use crate::egui::{
+    Color32, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
@@ -78,13 +80,13 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 r(2.5, 2.5, 13.5, 7.0),
                 2.0 * s,
                 stroke,
-                egui::StrokeKind::Inside,
+                crate::egui::StrokeKind::Inside,
             );
             painter.rect_stroke(
                 r(2.5, 9.0, 13.5, 13.5),
                 2.0 * s,
                 stroke,
-                egui::StrokeKind::Inside,
+                crate::egui::StrokeKind::Inside,
             );
             painter.circle_filled(p(5.0, 4.8), 0.9 * s, color);
             painter.circle_filled(p(5.0, 11.2), 0.9 * s, color);
@@ -112,7 +114,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 r(2.5, 3.0, 13.5, 13.0),
                 2.0 * s,
                 stroke,
-                egui::StrokeKind::Inside,
+                crate::egui::StrokeKind::Inside,
             );
             line((2.5, 6.5), (13.5, 6.5));
             line((2.5, 9.8), (13.5, 9.8));
@@ -222,7 +224,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 r(5.5, 5.5, 13.5, 13.5),
                 1.5 * s,
                 stroke,
-                egui::StrokeKind::Inside,
+                crate::egui::StrokeKind::Inside,
             );
             poly(
                 &[
@@ -262,19 +264,19 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 r(2.0, 1.5, 6.0, 4.5),
                 1.0 * s,
                 thin,
-                egui::StrokeKind::Inside,
+                crate::egui::StrokeKind::Inside,
             );
             painter.rect_stroke(
                 r(8.5, 5.5, 13.5, 8.5),
                 1.0 * s,
                 thin,
-                egui::StrokeKind::Inside,
+                crate::egui::StrokeKind::Inside,
             );
             painter.rect_stroke(
                 r(8.5, 10.5, 13.5, 13.5),
                 1.0 * s,
                 thin,
-                egui::StrokeKind::Inside,
+                crate::egui::StrokeKind::Inside,
             );
         }
         Icon::Json | Icon::Code => {
@@ -293,7 +295,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                     r(x0, y - 1.6, x0 + w, y + 1.6),
                     1.0 * s,
                     thin,
-                    egui::StrokeKind::Inside,
+                    crate::egui::StrokeKind::Inside,
                 );
             }
         }
@@ -302,13 +304,13 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 r(2.0, 2.5, 14.0, 13.5),
                 2.0 * s,
                 stroke,
-                egui::StrokeKind::Inside,
+                crate::egui::StrokeKind::Inside,
             );
             painter.text(
                 p(8.0, 8.2),
-                egui::Align2::CENTER_CENTER,
+                crate::egui::Align2::CENTER_CENTER,
                 "SQL",
-                egui::FontId::proportional(5.5 * s),
+                crate::egui::FontId::proportional(5.5 * s),
                 color,
             );
         }
@@ -317,7 +319,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 r(1.5, 2.5, 14.5, 13.5),
                 2.0 * s,
                 stroke,
-                egui::StrokeKind::Inside,
+                crate::egui::StrokeKind::Inside,
             );
             poly(&[(4.5, 6.0), (6.5, 8.0), (4.5, 10.0)], false);
             line((8.0, 10.5), (11.5, 10.5));
@@ -379,7 +381,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 r(4.5, 5.0, 11.5, 10.0),
                 1.5 * s,
                 stroke,
-                egui::StrokeKind::Inside,
+                crate::egui::StrokeKind::Inside,
             );
             line((6.5, 5.0), (6.5, 2.0));
             line((9.5, 5.0), (9.5, 2.0));

@@ -1,8 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/mongo-raabit-core", "xtask"]
-# Being ported from the Jetthing plugin API to archipel-sdk; added back as a member by the port.
-exclude = ["crates/mongo-raabit"]
+members = ["crates/mongo-raabit-core", "crates/mongo-raabit", "crates/raabit", "xtask"]
 
 [workspace.package]
 version = "0.0.0"
@@ -12,6 +10,9 @@ rust-version = "1.91"
 repository = "https://github.com/archipel-dev/mongo-raabit"
 
 [workspace.dependencies]
+archipel-sdk = { git = "https://github.com/archipel-dev/sdk", branch = "main" }
+mongo-raabit-core = { path = "crates/mongo-raabit-core" }
+mongo-raabit = { path = "crates/mongo-raabit" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

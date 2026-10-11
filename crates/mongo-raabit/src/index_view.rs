@@ -1,10 +1,10 @@
 //! Index Manager: list with sizes, usage and properties; create, hide/unhide and drop.
 
 use crate::app::{Load, MongoRaabit, TabId};
+use crate::egui::{RichText, Sense, Ui, vec2};
 use crate::icons::{self, Icon};
 use crate::style::{self, Palette};
 use crate::widgets;
-use egui::{RichText, Sense, Ui, vec2};
 use egui_extras::{Column, TableBuilder};
 use mongo_raabit_core::shell::{self, ShellStyle};
 
@@ -27,8 +27,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     };
     let mut actions = Vec::new();
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin {
             left: 14,
             right: 14,
             top: 10,
@@ -51,14 +51,17 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 if tab.busy {
                     ui.spinner();
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::primary_button(ui, Some(Icon::Plus), "New Index").clicked() {
-                        tab.form_open = !tab.form_open;
-                    }
-                    if widgets::icon_button(ui, Icon::Refresh, "Refresh").clicked() {
-                        actions.push(Action::Refresh);
-                    }
-                });
+                ui.with_layout(
+                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                    |ui| {
+                        if widgets::primary_button(ui, Some(Icon::Plus), "New Index").clicked() {
+                            tab.form_open = !tab.form_open;
+                        }
+                        if widgets::icon_button(ui, Icon::Refresh, "Refresh").clicked() {
+                            actions.push(Action::Refresh);
+                        }
+                    },
+                );
             });
             if tab.form_open {
                 ui.add_space(10.0);
@@ -68,8 +71,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                     ui.add_space(6.0);
                     widgets::form_row(ui, "Keys", 110.0, |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut tab.form.keys)
-                                .font(egui::FontId::monospace(12.5))
+                            crate::egui::TextEdit::singleline(&mut tab.form.keys)
+                                .font(crate::egui::FontId::monospace(12.5))
                                 .desired_width(360.0),
                         )
                         .on_hover_text(
@@ -78,7 +81,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                     });
                     widgets::form_row(ui, "Name", 110.0, |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut tab.form.name)
+                            crate::egui::TextEdit::singleline(&mut tab.form.name)
                                 .hint_text(widgets::hint(ui, "generated from keys"))
                                 .desired_width(360.0),
                         );
@@ -90,16 +93,16 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                     });
                     widgets::form_row(ui, "TTL (seconds)", 110.0, |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut tab.form.ttl)
+                            crate::egui::TextEdit::singleline(&mut tab.form.ttl)
                                 .hint_text(widgets::hint(ui, "none"))
                                 .desired_width(120.0),
                         );
                     });
                     widgets::form_row(ui, "Partial filter", 110.0, |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut tab.form.partial)
+                            crate::egui::TextEdit::singleline(&mut tab.form.partial)
                                 .hint_text(widgets::hint(ui, "{ active: true }"))
-                                .font(egui::FontId::monospace(12.5))
+                                .font(crate::egui::FontId::monospace(12.5))
                                 .desired_width(360.0),
                         );
                     });
@@ -135,8 +138,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         }
         Load::Ready(indexes) => {
             let total: u64 = indexes.iter().filter_map(|i| i.size).sum();
-            egui::Frame::new()
-                .inner_margin(egui::Margin::symmetric(14, 6))
+            crate::egui::Frame::new()
+                .inner_margin(crate::egui::Margin::symmetric(14, 6))
                 .show(ui, |ui| {
                     ui.label(
                         RichText::new(format!(
@@ -159,7 +162,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             TableBuilder::new(ui)
                 .id_salt(("raabit-indexes", tab_id))
                 .striped(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .cell_layout(crate::egui::Layout::left_to_right(crate::egui::Align::Center))
                 .column(Column::initial(200.0).at_least(120.0).clip(true))
                 .column(Column::initial(260.0).at_least(140.0).clip(true))
                 .column(Column::initial(220.0).at_least(120.0))
@@ -179,10 +182,10 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         let index = &indexes[row.index()];
                         row.col(|ui| {
                             icons::icon(ui, Icon::Index, if index.hidden { p.text_info } else { p.date });
-                            ui.label(RichText::new(&index.name).font(egui::FontId::monospace(12.5)).color(if index.hidden { p.text_info } else { p.text_strong }));
+                            ui.label(RichText::new(&index.name).font(crate::egui::FontId::monospace(12.5)).color(if index.hidden { p.text_info } else { p.text_strong }));
                         });
                         row.col(|ui| {
-                            ui.label(RichText::new(shell::document_to_shell(&index.keys, ShellStyle::Compact)).font(egui::FontId::monospace(12.0)).color(p.text_secondary));
+                            ui.label(RichText::new(shell::document_to_shell(&index.keys, ShellStyle::Compact)).font(crate::egui::FontId::monospace(12.0)).color(p.text_secondary));
                         });
                         row.col(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
@@ -212,9 +215,9 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                             // Usage: thin bar relative to the most used index, with the count as text.
                             let ops = index.ops.unwrap_or(0);
                             let (rect, _) = ui.allocate_exact_size(vec2(70.0, 6.0), Sense::hover());
-                            ui.painter().rect_filled(rect, egui::CornerRadius::same(3), p.selection_inactive);
-                            let filled = egui::Rect::from_min_size(rect.min, vec2(rect.width() * ops as f32 / max_ops as f32, rect.height()));
-                            ui.painter().rect_filled(filled, egui::CornerRadius::same(3), p.chart(0));
+                            ui.painter().rect_filled(rect, crate::egui::CornerRadius::same(3), p.selection_inactive);
+                            let filled = crate::egui::Rect::from_min_size(rect.min, vec2(rect.width() * ops as f32 / max_ops as f32, rect.height()));
+                            ui.painter().rect_filled(filled, crate::egui::CornerRadius::same(3), p.chart(0));
                             ui.label(RichText::new(match index.ops {
                                 Some(n) => format!("{n} ops"),
                                 None => "—".into(),
@@ -229,7 +232,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                                 actions.push(Action::Hide(index.name.clone(), !index.hidden));
                             }
                             if confirm.as_deref() == Some(index.name.as_str()) {
-                                let drop = egui::Button::new(RichText::new("Confirm drop").color(egui::Color32::WHITE)).fill(p.error).small();
+                                let drop = crate::egui::Button::new(RichText::new("Confirm drop").color(crate::egui::Color32::WHITE)).fill(p.error).small();
                                 if ui.add(drop).clicked() {
                                     actions.push(Action::Drop(index.name.clone()));
                                     new_confirm = None;

@@ -2,12 +2,12 @@
 //! as SQL or as a mongosh script, the paging toolbar and the Table / Tree / JSON result views.
 
 use crate::app::{CollectionTab, Load, MongoRaabit, QueryMode, ResultView, TabId};
+use crate::egui::{CornerRadius, RichText, Stroke, Ui};
 use crate::icons::{self, Icon};
 use crate::results::{self, DocCommand, TableEvent, TreeEvent};
 use crate::style::{self, Palette};
 use crate::tree::ToolKind;
 use crate::widgets;
-use egui::{CornerRadius, RichText, Stroke, Ui};
 use mongo_raabit_core::connection::CollectionKind;
 
 pub const PAGE_SIZES: [u64; 5] = [20, 50, 100, 250, 1000];
@@ -41,8 +41,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     let mut actions = Vec::new();
     let mut tool = None;
     let mut sql = false;
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
+    crate::egui::Frame::new()
+        .inner_margin(crate::egui::Margin {
             left: 14,
             right: 14,
             top: 10,
@@ -204,35 +204,38 @@ fn header(
         if tab.kind == CollectionKind::View {
             widgets::badge(ui, "view", p.keyword);
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            for (icon, tip, kind) in [
-                (
-                    Icon::Schema,
-                    "Structure (schema and indexes)",
-                    ToolKind::Schema,
-                ),
-                (Icon::Pipeline, "Aggregation", ToolKind::Aggregation),
-            ] {
-                if widgets::icon_button(ui, icon, tip).clicked() {
-                    *tool = Some(kind);
+        ui.with_layout(
+            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (icon, tip, kind) in [
+                    (
+                        Icon::Schema,
+                        "Structure (schema and indexes)",
+                        ToolKind::Schema,
+                    ),
+                    (Icon::Pipeline, "Aggregation", ToolKind::Aggregation),
+                ] {
+                    if widgets::icon_button(ui, icon, tip).clicked() {
+                        *tool = Some(kind);
+                    }
                 }
-            }
-            ui.add_space(10.0);
-            ui.spacing_mut().item_spacing.x = 6.0;
-            match &tab.count {
-                Load::Ready(n) => {
-                    widgets::badge(ui, &format!("{} documents", group(*n)), p.accent_text);
+                ui.add_space(10.0);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                match &tab.count {
+                    Load::Ready(n) => {
+                        widgets::badge(ui, &format!("{} documents", group(*n)), p.accent_text);
+                    }
+                    Load::Loading => {
+                        ui.spinner();
+                    }
+                    Load::Failed(err) => {
+                        widgets::badge(ui, "count failed", p.error).on_hover_text(err);
+                    }
+                    Load::Idle => {}
                 }
-                Load::Loading => {
-                    ui.spinner();
-                }
-                Load::Failed(err) => {
-                    widgets::badge(ui, "count failed", p.error).on_hover_text(err);
-                }
-                Load::Idle => {}
-            }
-        });
+            },
+        );
     });
 }
 
@@ -258,13 +261,13 @@ fn mode_switch(ui: &mut Ui, tab: &mut CollectionTab) {
 }
 
 fn query_bar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
-    egui::Frame::new()
+    crate::egui::Frame::new()
         .fill(p.raised)
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(10))
-        .inner_margin(egui::Margin::same(8))
+        .inner_margin(crate::egui::Margin::same(8))
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            ui.spacing_mut().item_spacing = crate::egui::vec2(6.0, 6.0);
             let mut enter = false;
             ui.horizontal(|ui| {
                 let width = ui.available_width() - 110.0;
@@ -275,7 +278,7 @@ fn query_bar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut Ve
                     "{ field: \"value\" }",
                     width,
                 );
-                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
                 if widgets::primary_button(ui, Some(Icon::Play), "Run")
                     .on_hover_text("Run query (Enter)")
                     .clicked()
@@ -292,7 +295,7 @@ fn query_bar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut Ve
                     "{ name: 1 }",
                     total * 0.34,
                 );
-                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
                 let r = widgets::query_field(
                     ui,
                     "Sort",
@@ -300,11 +303,11 @@ fn query_bar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut Ve
                     "{ _id: -1 }",
                     total * 0.30,
                 );
-                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
                 let r = widgets::query_field(ui, "Skip", &mut tab.query.skip, "0", total * 0.11);
-                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
                 let r = widgets::query_field(ui, "Limit", &mut tab.query.limit, "0", total * 0.11);
-                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
                 if widgets::icon_button(ui, Icon::Close, "Reset query").clicked() {
                     tab.query = Default::default();
                     actions.push(Action::Run { recount: true });
@@ -393,59 +396,62 @@ fn result_toolbar(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &m
                 tab.drill.truncate(depth);
             }
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let page = tab.result.ready();
-            let has_more = page.is_some_and(|pg| pg.has_more);
-            if widgets::icon_button_tinted(ui, Icon::ChevronRight, "Next page", None, has_more)
+        ui.with_layout(
+            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+            |ui| {
+                let page = tab.result.ready();
+                let has_more = page.is_some_and(|pg| pg.has_more);
+                if widgets::icon_button_tinted(ui, Icon::ChevronRight, "Next page", None, has_more)
+                    .clicked()
+                {
+                    actions.push(Action::Page(tab.page + 1));
+                }
+                let first = page.map(|pg| pg.first_index()).unwrap_or(0);
+                let last = page
+                    .map(|pg| first + pg.documents.len() as u64)
+                    .unwrap_or(0)
+                    .saturating_sub(1);
+                let total = match &tab.count {
+                    Load::Ready(n) => format!(" of {}", group(*n)),
+                    _ => String::new(),
+                };
+                let range = if first == 0 {
+                    "No documents".to_owned()
+                } else {
+                    format!("{} – {}{}", group(first), group(last), total)
+                };
+                ui.label(RichText::new(range).color(p.text_secondary));
+                if widgets::icon_button_tinted(
+                    ui,
+                    Icon::ChevronLeft,
+                    "Previous page",
+                    None,
+                    tab.page > 0,
+                )
                 .clicked()
-            {
-                actions.push(Action::Page(tab.page + 1));
-            }
-            let first = page.map(|pg| pg.first_index()).unwrap_or(0);
-            let last = page
-                .map(|pg| first + pg.documents.len() as u64)
-                .unwrap_or(0)
-                .saturating_sub(1);
-            let total = match &tab.count {
-                Load::Ready(n) => format!(" of {}", group(*n)),
-                _ => String::new(),
-            };
-            let range = if first == 0 {
-                "No documents".to_owned()
-            } else {
-                format!("{} – {}{}", group(first), group(last), total)
-            };
-            ui.label(RichText::new(range).color(p.text_secondary));
-            if widgets::icon_button_tinted(
-                ui,
-                Icon::ChevronLeft,
-                "Previous page",
-                None,
-                tab.page > 0,
-            )
-            .clicked()
-            {
-                actions.push(Action::Page(tab.page.saturating_sub(1)));
-            }
-            let mut size = tab.page_size;
-            egui::ComboBox::from_id_salt(("raabit-page-size", &tab.db, &tab.collection))
-                .selected_text(format!("{size} / page"))
-                .width(96.0)
-                .show_ui(ui, |ui| {
-                    for option in PAGE_SIZES {
-                        ui.selectable_value(&mut size, option, format!("{option} / page"));
-                    }
-                });
-            if size != tab.page_size {
-                actions.push(Action::PageSize(size));
-            }
-            if let Some(page) = page {
-                ui.add_space(6.0);
-                ui.label(RichText::new(style::duration(page.elapsed)).color(p.text_info))
-                    .on_hover_text("Query time of this page");
-                icons::icon(ui, Icon::TimeSeries, p.text_info);
-            }
-        });
+                {
+                    actions.push(Action::Page(tab.page.saturating_sub(1)));
+                }
+                let mut size = tab.page_size;
+                crate::egui::ComboBox::from_id_salt(("raabit-page-size", &tab.db, &tab.collection))
+                    .selected_text(format!("{size} / page"))
+                    .width(96.0)
+                    .show_ui(ui, |ui| {
+                        for option in PAGE_SIZES {
+                            ui.selectable_value(&mut size, option, format!("{option} / page"));
+                        }
+                    });
+                if size != tab.page_size {
+                    actions.push(Action::PageSize(size));
+                }
+                if let Some(page) = page {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(style::duration(page.elapsed)).color(p.text_info))
+                        .on_hover_text("Query time of this page");
+                    icons::icon(ui, Icon::TimeSeries, p.text_info);
+                }
+            },
+        );
     });
 }
 
@@ -463,7 +469,7 @@ fn result_area(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut 
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
                 icons::icon(ui, Icon::Warning, p.error);
-                ui.add(egui::Label::new(RichText::new(err).color(p.error)).wrap());
+                ui.add(crate::egui::Label::new(RichText::new(err).color(p.error)).wrap());
             });
         }
         Load::Ready(page) => {
@@ -496,7 +502,7 @@ fn result_area(ui: &mut Ui, p: &Palette, tab: &mut CollectionTab, actions: &mut 
                 ResultView::Tree => match results::tree(
                     ui,
                     results::TreeState {
-                        id: egui::Id::new(("raabit-tree", &tab.db, &tab.collection)),
+                        id: crate::egui::Id::new(("raabit-tree", &tab.db, &tab.collection)),
                         open: &tab.open,
                         selected: tab.selected,
                     },

@@ -1,16 +1,16 @@
 //! Welcome tab: quick actions and saved connections.
 
 use crate::app::MongoRaabit;
+use crate::egui::{Align2, CornerRadius, FontId, RichText, Sense, Stroke, Ui, pos2, vec2};
 use crate::icons::{self, Icon};
 use crate::style::Palette;
 use crate::widgets;
-use egui::{Align2, CornerRadius, FontId, RichText, Sense, Stroke, Ui, pos2, vec2};
 use mongo_raabit_core::profile::ConnectionProfile;
 
 pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
     let p = Palette::of(ui);
     let mut connect: Option<ConnectionProfile> = None;
-    egui::ScrollArea::vertical()
+    crate::egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
@@ -21,7 +21,7 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
                 icons::paint(ui.painter(), rect.shrink(12.0), Icon::Leaf, p.leaf);
                 ui.add_space(12.0);
                 ui.label(
-                    RichText::new("mongo-raabit")
+                    RichText::new("Mongo Raabit")
                         .size(22.0)
                         .strong()
                         .color(p.text_strong),
@@ -61,6 +61,13 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
                         for profile in saved {
                             let (rect, response) =
                                 ui.allocate_exact_size(vec2(width, 52.0), Sense::click());
+                            response.widget_info(|| {
+                                crate::egui::WidgetInfo::labeled(
+                                    crate::egui::WidgetType::Button,
+                                    true,
+                                    &profile.name,
+                                )
+                            });
                             let fill = if response.hovered() {
                                 p.raised
                             } else {
@@ -71,11 +78,11 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
                                 CornerRadius::same(9),
                                 fill,
                                 Stroke::new(1.0_f32, p.border),
-                                egui::StrokeKind::Inside,
+                                crate::egui::StrokeKind::Inside,
                             );
                             icons::paint(
                                 ui.painter(),
-                                egui::Rect::from_center_size(
+                                crate::egui::Rect::from_center_size(
                                     pos2(rect.left() + 24.0, rect.center().y),
                                     vec2(18.0, 18.0),
                                 ),

@@ -1,11 +1,11 @@
 //! Small themed widgets shared by the views.
 
-use crate::icons::{self, Icon};
-use crate::style::Palette;
-use egui::{
+use crate::egui::{
     Color32, CornerRadius, FontId, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
     vec2,
 };
+use crate::icons::{self, Icon};
+use crate::style::Palette;
 
 /// A 26×24 icon button with a hover background and tooltip.
 pub fn icon_button(ui: &mut Ui, icon: Icon, tooltip: &str) -> Response {
@@ -26,6 +26,9 @@ pub fn icon_button_tinted(
         Sense::hover()
     };
     let (rect, response) = ui.allocate_exact_size(vec2(26.0, 24.0), sense);
+    response.widget_info(|| {
+        crate::egui::WidgetInfo::labeled(crate::egui::WidgetType::Button, enabled, tooltip)
+    });
     if enabled && (response.hovered() || response.has_focus()) {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(6), p.hover);
@@ -69,6 +72,9 @@ fn button_impl(
     let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
     let size = vec2(galley.size().x + icon_w + 24.0, 28.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    response.widget_info(|| {
+        crate::egui::WidgetInfo::labeled(crate::egui::WidgetType::Button, true, label)
+    });
     let fill = if response.is_pointer_button_down_on() {
         fill.gamma_multiply(0.85)
     } else if response.hovered() {
@@ -88,14 +94,17 @@ fn button_impl(
     if let Some(icon) = icon {
         icons::paint(
             painter,
-            Rect::from_center_size(egui::pos2(x + 7.0, rect.center().y), Vec2::splat(14.0)),
+            Rect::from_center_size(
+                crate::egui::pos2(x + 7.0, rect.center().y),
+                Vec2::splat(14.0),
+            ),
             icon,
             text,
         );
         x += icon_w;
     }
     painter.galley(
-        egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+        crate::egui::pos2(x, rect.center().y - galley.size().y / 2.0),
         galley,
         text,
     );
@@ -110,11 +119,11 @@ pub fn segmented<T: PartialEq + Copy>(
 ) -> bool {
     let p = Palette::of(ui);
     let mut changed = false;
-    let frame = egui::Frame::new()
+    let frame = crate::egui::Frame::new()
         .fill(p.field)
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(egui::Margin::same(2));
+        .inner_margin(crate::egui::Margin::same(2));
     frame.show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         ui.horizontal(|ui| {
@@ -131,6 +140,9 @@ pub fn segmented<T: PartialEq + Copy>(
                     .layout_no_wrap((*label).to_owned(), font, color);
                 let (rect, response) =
                     ui.allocate_exact_size(vec2(galley.size().x + 34.0, 22.0), Sense::click());
+                response.widget_info(|| {
+                    crate::egui::WidgetInfo::labeled(crate::egui::WidgetType::Button, true, *label)
+                });
                 if selected {
                     ui.painter().rect(
                         rect,
@@ -150,7 +162,7 @@ pub fn segmented<T: PartialEq + Copy>(
                 icons::paint(
                     ui.painter(),
                     Rect::from_center_size(
-                        egui::pos2(rect.left() + 14.0, rect.center().y),
+                        crate::egui::pos2(rect.left() + 14.0, rect.center().y),
                         Vec2::splat(13.0),
                     ),
                     *icon,
@@ -161,7 +173,7 @@ pub fn segmented<T: PartialEq + Copy>(
                     },
                 );
                 ui.painter().galley(
-                    egui::pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0),
+                    crate::egui::pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0),
                     galley,
                     color,
                 );
@@ -185,16 +197,16 @@ pub fn query_field(
 ) -> Response {
     let p = Palette::of(ui);
     let mut response = None;
-    egui::Frame::new()
+    crate::egui::Frame::new()
         .fill(p.field)
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(7))
-        .inner_margin(egui::Margin::symmetric(8, 3))
+        .inner_margin(crate::egui::Margin::symmetric(8, 3))
         .show(ui, |ui| {
             ui.set_width(width);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(caption).size(11.5).color(p.text_info));
-                let edit = egui::TextEdit::singleline(text)
+                let edit = crate::egui::TextEdit::singleline(text)
                     .hint_text(RichText::new(hint).color(p.text_info))
                     .font(FontId::monospace(12.5))
                     .frame(false)
@@ -239,7 +251,7 @@ pub fn form_row(ui: &mut Ui, label: &str, label_width: f32, add: impl FnOnce(&mu
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
             vec2(label_width, 24.0),
-            egui::Layout::right_to_left(egui::Align::Center),
+            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
             |ui| {
                 ui.label(RichText::new(label).color(p.text_secondary));
             },
@@ -274,23 +286,23 @@ pub fn code_editor_with(
 ) -> Response {
     let p = Palette::of(ui);
     let font = FontId::monospace(12.5);
-    let mut layouter = |ui: &Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
-        let mut job = egui::text::LayoutJob::default();
+    let mut layouter = |ui: &Ui, buffer: &dyn crate::egui::TextBuffer, wrap_width: f32| {
+        let mut job = crate::egui::text::LayoutJob::default();
         crate::values::highlight_into(&mut job, buffer.as_str(), &p, font.clone());
         job.wrap.max_width = wrap_width;
         ui.fonts_mut(|f| f.layout_job(job))
     };
-    egui::Frame::new()
+    crate::egui::Frame::new()
         .fill(p.field)
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(egui::Margin::same(8))
+        .inner_margin(crate::egui::Margin::same(8))
         .show(ui, |ui| {
             if fill {
                 ui.set_min_height(ui.available_height());
             }
             ui.add(
-                egui::TextEdit::multiline(text)
+                crate::egui::TextEdit::multiline(text)
                     .id_salt(id)
                     .code_editor()
                     .frame(false)
@@ -314,39 +326,39 @@ pub fn line_col(text: &str, offset: usize) -> (usize, usize) {
 /// Shared modal frame: title with icon and close button, then `body`.
 /// Returns `false` when the user closed it (✕ or Esc).
 pub fn modal(
-    ctx: &egui::Context,
+    ctx: &crate::egui::Context,
     id: &str,
     title: &str,
     icon: Icon,
     size: Vec2,
     body: impl FnOnce(&mut Ui),
 ) -> bool {
-    let p = Palette::for_dark(ctx.style().visuals.dark_mode);
+    let p = Palette::of_ctx(ctx);
     let mut open = true;
     let screen = ctx.content_rect();
     let size = vec2(
         size.x.min(screen.width() - 40.0),
         size.y.min(screen.height() - 40.0),
     );
-    let frame = egui::Frame::new()
+    let frame = crate::egui::Frame::new()
         .fill(p.island)
         .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(CornerRadius::same(12))
-        .inner_margin(egui::Margin::same(0))
-        .shadow(egui::Shadow {
+        .inner_margin(crate::egui::Margin::same(0))
+        .shadow(crate::egui::Shadow {
             offset: [0, 8],
             blur: 28,
             spread: 0,
             color: Color32::from_black_alpha(if p.dark { 120 } else { 40 }),
         });
-    let response = egui::Modal::new(egui::Id::new(id))
+    let response = crate::egui::Modal::new(crate::egui::Id::new(id))
         .frame(frame)
         .backdrop_color(Color32::from_black_alpha(if p.dark { 110 } else { 60 }))
         .show(ctx, |ui| {
             ui.set_width(size.x);
             ui.set_max_height(size.y);
-            egui::Frame::new()
-                .inner_margin(egui::Margin {
+            crate::egui::Frame::new()
+                .inner_margin(crate::egui::Margin {
                     left: 16,
                     right: 10,
                     top: 12,
@@ -361,16 +373,19 @@ pub fn modal(
                                 .strong()
                                 .color(p.text_strong),
                         );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if icon_button(ui, Icon::Close, "Close (Esc)").clicked() {
-                                open = false;
-                            }
-                        });
+                        ui.with_layout(
+                            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+                            |ui| {
+                                if icon_button(ui, Icon::Close, "Close (Esc)").clicked() {
+                                    open = false;
+                                }
+                            },
+                        );
                     });
                 });
             separator(ui);
-            egui::Frame::new()
-                .inner_margin(egui::Margin::same(16))
+            crate::egui::Frame::new()
+                .inner_margin(crate::egui::Margin::same(16))
                 .show(ui, |ui| {
                     ui.set_width(size.x - 32.0);
                     body(ui);
