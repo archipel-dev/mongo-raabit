@@ -68,13 +68,13 @@ Abbreviations: C = Compass, S3T = Studio 3T. Y = has it, N = does not, P = partl
 
 | Feature | Compass | S3T | Mongo Raabit | Evidence |
 |---|---|---|---|---|
-| Paging, total count, query time | Y | Y | done (engine); UI implemented, unverified | `live_server.rs::query_paging_crud_and_explain`, `query.rs::pages_respect_skip_and_limit` |
-| Insert, replace, delete, clone documents | Y | Y | done (engine); dialogs implemented, unverified | `live_server.rs::query_paging_crud_and_explain` |
-| Inline field edit (`$set`) | Y | Y | implemented, unverified | `app_flow.rs::edit_insert_clone_delete_explain_and_code` (not run today) |
-| Table view with nested drill-down | P (no table drill-down) | Y | implemented, unverified | `crates/mongo-raabit/src/results.rs` unit tests (not run today) |
-| Tree view | Y (list view) | Y | implemented, unverified | `results.rs` |
-| JSON view | Y | Y | implemented, unverified | `results.rs`, `values.rs` |
-| Syntax-colored document editor with live validation | Y | Y | implemented, unverified | `app_flow.rs::edit_insert_clone_delete_explain_and_code` |
+| Paging, total count, query time | Y | Y | done | `live_server.rs::query_paging_crud_and_explain`, `query.rs::pages_respect_skip_and_limit`; UI: `app_flow.rs::connect_browse_query_and_page`, `docs/screenshots/documents-table-dark.png` (1–50 of 1,200, page size, query time), `tests/documents_screens.rs::the_table_passes_the_audit` |
+| Insert, replace, delete, clone documents | Y | Y | done | `live_server.rs::query_paging_crud_and_explain`; UI: `app_flow.rs::edit_insert_clone_delete_explain_and_code`, `tests/documents_screens.rs::the_document_editor_passes_the_audit`, `::the_delete_confirmation_passes_the_audit`, `docs/screenshots/documents-editor-dark.png`, `documents-delete-dark.png` |
+| Inline field edit (`$set`) | Y | Y | done | `tests/documents_conformance.rs::editing_a_table_cell_updates_the_server`, `::editing_a_tree_value_updates_the_server` (live round trip), `::a_table_cell_edit_reports_the_set_update`, `::escape_cancels_a_table_cell_edit`, `docs/screenshots/documents-table-edit-dark.png`, `documents-tree-edit-dark.png` |
+| Table view with nested drill-down | P (no table drill-down) | Y | done | `results.rs::tests::drill_down_expands_arrays_and_documents`, `tests/documents_screens.rs::the_table_with_a_selection_and_a_drill_path_passes_the_audit`, `docs/screenshots/documents-table-drill-dark.png`, `documents-table-light.png`; sort/reorder/resize via the kit `Table`, `documents-table-sort-dark.png` |
+| Tree view | Y (list view) | Y | done | `results.rs::tests::tree_rows_follow_open_set`, `tests/documents_conformance.rs::tree_arrows_expand_and_collapse`, `tests/documents_screens.rs::the_tree_passes_the_audit`, `docs/screenshots/documents-tree-dark.png`, `documents-tree-light.png` |
+| JSON view | Y | Y | done (read-only, highlighted; folding waits on a kit fix) | `tests/documents_screens.rs::the_json_view_passes_the_audit`, `docs/screenshots/documents-json-dark.png`, `documents-json-light.png` |
+| Syntax-colored document editor with live validation | Y | Y | done | `tests/documents_screens.rs::the_document_editor_passes_the_audit`, `::the_document_editor_shows_a_parse_error`, `docs/screenshots/documents-editor-dark.png`, `documents-editor-light.png` |
 | Shell literal syntax (ObjectId, ISODate, regex, Extended JSON) | Y | Y | done | `crates/mongo-raabit-core/src/shell.rs::parses_shell_syntax`, `::accepts_extended_json`, `::round_trips_through_printer`, `::reports_errors_with_offsets` |
 | Multi-row selection, bulk edit / delete | P | Y | missing | none |
 | Array / subdocument element editing (add/remove field in place) | Y | Y | missing | edit via whole-document editor only |
@@ -123,8 +123,8 @@ Abbreviations: C = Compass, S3T = Studio 3T. Y = has it, N = does not, P = partl
 
 | Feature | Compass | S3T | Mongo Raabit | Evidence |
 |---|---|---|---|---|
-| Explain a find (stats, winning plan, COLLSCAN flag) | Y | Y | done (engine); dialog implemented, unverified | `crates/mongo-raabit-core/src/query.rs::summarizes_explain_reply`, `live_server.rs::query_paging_crud_and_explain` |
-| Visual stage tree with per-stage counts | Y | Y | implemented, unverified | `app_flow.rs::edit_insert_clone_delete_explain_and_code` |
+| Explain a find (stats, winning plan, COLLSCAN flag) | Y | Y | done | `crates/mongo-raabit-core/src/query.rs::summarizes_explain_reply`, `live_server.rs::query_paging_crud_and_explain`, `tests/documents_screens.rs::the_explain_plan_passes_the_audit` (COLLSCAN banner), `docs/screenshots/documents-explain-dark.png`, `documents-explain-light.png` |
+| Visual stage tree with per-stage counts | Y | Y | done | `tests/documents_screens.rs::the_explain_plan_passes_the_audit`, `docs/screenshots/documents-explain-dark.png` |
 | Explain an aggregation | Y | Y | missing | find only |
 | Raw explain output | Y | Y | implemented, unverified | `crates/mongo-raabit/src/dialogs.rs` |
 | Rejected plans, execution time breakdown by shard | Y | P | missing | none |
@@ -196,7 +196,7 @@ Abbreviations: C = Compass, S3T = Studio 3T. Y = has it, N = does not, P = partl
 
 | Feature | Compass | S3T | Mongo Raabit | Evidence |
 |---|---|---|---|---|
-| Export find to driver code (JS, Python, Java, C#, Go, Rust, PHP, Ruby, shell) | Y (fewer languages) | Y | done (engine) | `crates/mongo-raabit-core/src/codegen.rs::every_language_renders_find_and_aggregate`, `::language_specific_literals`, `::strings_are_escaped` |
+| Export find to driver code (JS, Python, Java, C#, Go, Rust, PHP, Ruby, shell) | Y (fewer languages) | Y | done | `tests/documents_screens.rs::the_query_code_dialog_passes_the_audit`, `docs/screenshots/documents-code-python-dark.png`; engine: | `crates/mongo-raabit-core/src/codegen.rs::every_language_renders_find_and_aggregate`, `::language_specific_literals`, `::strings_are_escaped` |
 | Export aggregation to driver code | Y | Y | done (engine); UI entry for aggregation implemented, unverified | `codegen.rs::every_language_renders_find_and_aggregate` |
 | Generated snippets compile / run in CI | P | n/a | missing | syntax was checked by hand during development only |
 | Password masked in snippets | n/a | n/a | implemented, unverified | `app_flow.rs::edit_insert_clone_delete_explain_and_code` |
@@ -230,7 +230,7 @@ Things Compass does not do. Status is `planned`, `partial` or `done` by the same
 | SSH tunnel through the system `ssh` (agent, hardware keys, `~/.ssh/config` honoured) | partial | `tunnel.rs` tests; no live sshd test |
 | Built-in shell evaluator that works without mongosh | partial | `live_server.rs::builtin_shell_and_mongosh` |
 | One code base as standalone app and IDE plugin | partial | plugin done on the old API, `raabit` app planned |
-| Table view with nested drill-down (one row per array element) | implemented, unverified | `results.rs` |
+| Table view with nested drill-down (one row per array element) | done | `results.rs::tests::drill_down_expands_arrays_and_documents`, `docs/screenshots/documents-table-drill-dark.png` |
 | BSON and SQL-INSERT import/export | done (engine) | `transfer.rs` tests above |
 
 ## Sources

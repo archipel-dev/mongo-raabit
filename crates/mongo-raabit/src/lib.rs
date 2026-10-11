@@ -14,7 +14,7 @@ pub mod jobs;
 pub mod manager;
 pub mod plugin;
 pub mod query_builder;
-mod results;
+pub mod results;
 mod schema_view;
 mod shell_view;
 mod sql_view;
