@@ -265,42 +265,43 @@ fn unix_ms() -> u128 {
 /// screenshot (`import -window root shot.png` under Xvfb) and update them here.
 mod at {
     pub type Point = (u32, u32);
+    // Measured with the host's 40 pt main toolbar above the islands.
     pub const WELCOME_HOVER: [Point; 6] = [
-        (700, 163),
-        (796, 163),
-        (796, 213),
-        (850, 213),
-        (700, 110),
-        (400, 400),
+        (700, 203),
+        (796, 203),
+        (796, 253),
+        (850, 253),
+        (700, 150),
+        (400, 440),
     ];
     /// The "Connect…" button of the empty Connections tool window.
-    pub const OPEN_DIALOG: Point = (177, 169);
+    pub const OPEN_DIALOG: Point = (177, 209);
     pub const DIALOG_HOVER: [Point; 6] = [
-        (330, 220),
-        (576, 276),
-        (672, 276),
-        (760, 276),
-        (740, 192),
-        (958, 644),
+        (330, 260),
+        (576, 316),
+        (672, 316),
+        (760, 316),
+        (740, 232),
+        (958, 684),
     ];
     /// The dialog's "Close" button (its secondary button, at the bottom right).
-    pub const DIALOG_CLOSE: Point = (958, 644);
+    pub const DIALOG_CLOSE: Point = (958, 684);
     /// The welcome screen's "Connect to localhost".
-    pub const CONNECT_LOCALHOST: Point = (796, 213);
-    pub const TREE_HOVER: [Point; 5] = [(150, 88), (150, 112), (150, 136), (150, 160), (150, 184)];
+    pub const CONNECT_LOCALHOST: Point = (796, 253);
+    pub const TREE_HOVER: [Point; 5] = [(150, 128), (150, 152), (150, 176), (150, 200), (150, 224)];
     /// Expander arrow of the `raabit_perf` database row (the fourth database).
-    pub const DB_ARROW: Point = (80, 184);
+    pub const DB_ARROW: Point = (80, 224);
     /// The `customers` collection row below it.
-    pub const COLLECTION: Point = (165, 208);
+    pub const COLLECTION: Point = (165, 248);
     pub const TABLE_HOVER: [Point; 6] = [
-        (500, 385),
-        (500, 441),
-        (700, 500),
-        (900, 560),
-        (1100, 620),
-        (600, 700),
+        (500, 425),
+        (500, 481),
+        (700, 540),
+        (900, 600),
+        (1100, 660),
+        (600, 740),
     ];
-    pub const TABLE_SCROLL: Point = (700, 500);
+    pub const TABLE_SCROLL: Point = (700, 540);
 }
 
 struct Driver<'a> {
