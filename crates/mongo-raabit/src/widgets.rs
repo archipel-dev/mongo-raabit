@@ -9,7 +9,7 @@ use crate::icons::{self, Icon};
 use archipel_sdk::kit::Tone;
 use archipel_sdk::kit::components::code::{Highlighter, Span, TokenKind};
 use archipel_sdk::kit::components::{
-    Dialog, DialogAction, Dropdown, FieldLabel, Separator, Spinner, Tag, TextField, TextFieldOutput,
+    Dropdown, FieldLabel, Separator, Spinner, Tag, TextField, TextFieldOutput,
 };
 use archipel_sdk::kit::tokens::{size, typography};
 use mongo_raabit_core::sql_syntax::{SqlToken, tokenize_line};
@@ -23,6 +23,15 @@ pub fn caption(ui: &mut Ui, text: &str) {
 /// A label in the color of `tone`.
 pub fn label(ui: &mut Ui, tone: Tone, text: impl Into<String>) -> Response {
     ui.label(RichText::new(text.into()).color(tone.resolve(ui.ctx())))
+}
+
+/// A monospace label in the color of `tone`.
+pub fn mono_label(ui: &mut Ui, tone: Tone, text: impl Into<String>) -> Response {
+    ui.label(
+        RichText::new(text.into())
+            .monospace()
+            .color(tone.resolve(ui.ctx())),
+    )
 }
 
 /// A small note (comment size) in the color of `tone`, wrapping at the available width.
@@ -240,22 +249,4 @@ pub fn line_col(text: &str, offset: usize) -> (usize, usize) {
     let line = before.matches('\n').count() + 1;
     let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
     (line, col)
-}
-
-/// A kit [`Dialog`] around `body`, for dialogs that lay out their own buttons.
-/// Returns `false` once the user dismissed it (Esc or a click outside).
-pub fn modal(
-    ctx: &crate::egui::Context,
-    title: &str,
-    icon: Icon,
-    width: f32,
-    body: impl FnOnce(&mut Ui),
-) -> bool {
-    let width = width.min(ctx.content_rect().width() - 40.0);
-    let action = Dialog::new(title)
-        .icon(icon.glyph())
-        .width(width)
-        .content(body)
-        .show(ctx);
-    !matches!(action, Some(DialogAction::Dismissed))
 }

@@ -68,20 +68,13 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                     (SampleMethod::Random, "Random"),
                 ],
             ));
-            // Allocated at its own width: a field in a right-to-left row would take all
-            // the room that is left.
-            ui.allocate_ui(
-                crate::egui::vec2(SAMPLE_WIDTH, size::CONTROL_HEIGHT),
-                |ui| {
-                    ui.add(
-                        NumberField::new(sample)
-                            .id(ui.id().with(("raabit-schema-sample", tab_id)))
-                            .name("Sample size")
-                            .range(1..=MAX_SAMPLE_SIZE)
-                            .step(100)
-                            .width(SAMPLE_WIDTH),
-                    )
-                },
+            ui.add(
+                NumberField::new(sample)
+                    .id(ui.id().with(("raabit-schema-sample", tab_id)))
+                    .name("Sample size")
+                    .range(1..=MAX_SAMPLE_SIZE)
+                    .step(100)
+                    .width(SAMPLE_WIDTH),
             );
             ui.add(FieldLabel::new("Sample"));
         },

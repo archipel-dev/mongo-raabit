@@ -7,6 +7,7 @@ use crate::app::{Load, MongoRaabit, NodeKey, SessionId, SessionState};
 use crate::egui::Ui;
 use crate::icons::Icon;
 use archipel_sdk::kit::Glyph;
+use archipel_sdk::kit::behaviour::ContextMenu;
 use archipel_sdk::kit::components::{
     Banner, EmptyState, IconButton, MenuItem, MenuSeparator, Severity, TextField, Tree, TreeRow,
 };
@@ -192,6 +193,9 @@ fn flatten(app: &MongoRaabit) -> Flat {
 
 /// The actions of the node at row `i`, as a menu on the header's "more" button.
 fn node_menu(ui: &mut Ui, flat: &Flat, i: usize, actions: &mut Vec<Action>) {
+    // A popup is as wide as the window; its items fill it unless told otherwise (see "Kit
+    // gaps": menus should size to their items).
+    ui.set_max_width(size::SUBMENU_WIDTH);
     let mut item = |ui: &mut Ui, label: &str, icon: Icon, action: Action| {
         if ui.add(MenuItem::new(label).icon(icon)).clicked() {
             actions.push(action);
@@ -332,10 +336,18 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
             .show(ui);
         open_manager = connect.clicked();
     } else {
+        // Right click opens the node's menu, as the header's "more" button does.
+        let menu_actions = std::cell::RefCell::new(Vec::new());
+        let (flat_ref, menu_ref) = (&flat, &menu_actions);
         let out = Tree::new("raabit-tree", &flat.rows, &mut selected)
             .name("Connections")
             .height(ui.available_height())
-            .show(ui);
+            .show_with(ui, |i, row| {
+                row.with(ContextMenu::new(move |ui| {
+                    node_menu(ui, flat_ref, i, &mut menu_ref.borrow_mut());
+                }))
+            });
+        actions.extend(menu_actions.into_inner());
         if out.selection_changed
             && let Some(i) = selected
         {

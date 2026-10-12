@@ -5,7 +5,6 @@
 //! `mongo_raabit_core`; this module lays them out.
 
 use crate::app::{MongoRaabit, TabId};
-use crate::egui::text::CCursorRange;
 use crate::egui::{Id, RichText, Ui};
 use crate::icons::{self, Icon};
 use crate::results;
@@ -20,7 +19,7 @@ use archipel_sdk::kit::components::{
 use archipel_sdk::kit::parts::scroll_vertical;
 use archipel_sdk::kit::tokens::size;
 use mongo_raabit_core::format;
-use mongo_raabit_core::shell::{char_slice, script_summary};
+use mongo_raabit_core::shell::script_summary;
 use mongo_raabit_core::shell_eval;
 use std::collections::HashSet;
 
@@ -151,27 +150,23 @@ fn editor(
     };
     let hint = crate::egui::vec2(0.0, size::COMMENT_LINE_HEIGHT + size::SECTION_SPACING);
     let height = (ui.available_height() - hint.y).max(size::CODE_LINE_HEIGHT * 3.0);
-    ui.add(
-        CodeEditor::new(script)
-            .label("Script")
-            .highlighter(&JavaScript)
-            .completer(&completer)
-            .id(id)
-            .height(height),
-    );
+    let output = CodeEditor::new(script)
+        .label("Script")
+        .highlighter(&JavaScript)
+        .completer(&completer)
+        .id(id)
+        .height(height)
+        .show(ui);
     widgets::caption(ui, HINT);
     let focused = ui.memory(|m| m.has_focus(id));
     if !focused || !ui.input(|i| i.modifiers.command && i.key_pressed(crate::egui::Key::Enter)) {
         return None;
     }
     // Run the selection when there is one, otherwise the whole script.
-    let selection = crate::egui::TextEdit::load_state(ui.ctx(), id)
-        .and_then(|state| state.cursor.char_range())
-        .filter(|range: &CCursorRange| !range.is_empty())
-        .map(|range| {
-            let [from, to] = range.sorted_cursors();
-            char_slice(script, from.index, to.index)
-        });
+    let selection = output
+        .selection
+        .and_then(|range| script.get(range))
+        .map(str::to_owned);
     Some(selection)
 }
 

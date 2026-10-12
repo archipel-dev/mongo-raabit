@@ -22,6 +22,7 @@ fn toolbar_icon_buttons() {
         (Icon::Plug, "Connection Manager… (Ctrl+N)"),
         (Icon::Plus, "New connection"),
         (Icon::Import, "Import from connection string"),
+        (Icon::Save, "Save connection"),
         (Icon::Copy, "Duplicate"),
     ] {
         testing::conformance(label, |ui, enabled| {
@@ -45,32 +46,12 @@ fn destructive_icon_button() {
 
 #[test]
 fn buttons() {
-    testing::conformance("Connect", |ui, enabled| {
-        ui.add(
-            Button::secondary("Connect")
-                .icon(Icon::Plug)
-                .enabled(enabled),
-        )
-    })
-    .run();
-    testing::conformance("Test Connection", |ui, enabled| {
-        ui.add(
-            Button::secondary("Test Connection")
-                .icon(Icon::Pulse)
-                .enabled(enabled),
-        )
-    })
-    .run();
     testing::conformance("Connect…", |ui, enabled| {
         ui.add(
             Button::primary("Connect…")
                 .icon(Icon::Plug)
                 .enabled(enabled),
         )
-    })
-    .run();
-    testing::conformance("Close", |ui, enabled| {
-        ui.add(Button::ghost("Close").enabled(enabled))
     })
     .run();
 }

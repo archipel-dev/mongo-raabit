@@ -6,7 +6,7 @@ mod common;
 
 use archipel_sdk::kit::components::code::JavaScript;
 use archipel_sdk::kit::components::{
-    Banner, Button, Checkbox, CodeEditor, Dropdown, IconButton, SegmentedControl, Severity,
+    Banner, Checkbox, CodeEditor, Dropdown, IconButton, SegmentedControl, Severity,
 };
 use archipel_sdk::kit::egui::{Key, Modifiers, vec2};
 use archipel_sdk::kit::testing::{self, Queryable};
@@ -48,36 +48,6 @@ fn toolbar_icon_buttons() {
                 .tone(Tone::Error)
                 .enabled(enabled),
         )
-    })
-    .run();
-}
-
-#[test]
-fn dialog_buttons() {
-    testing::conformance("Format", |ui, enabled| {
-        ui.add(
-            Button::secondary("Format")
-                .icon(Icon::Json)
-                .enabled(enabled),
-        )
-    })
-    .run();
-    for label in ["Insert", "Save"] {
-        testing::conformance(label, |ui, enabled| {
-            ui.add(Button::primary(label).icon(Icon::Check).enabled(enabled))
-        })
-        .run();
-    }
-    testing::conformance("Cancel", |ui, enabled| {
-        ui.add(Button::secondary("Cancel").enabled(enabled))
-    })
-    .run();
-    testing::conformance("Copy", |ui, enabled| {
-        ui.add(Button::primary("Copy").icon(Icon::Copy).enabled(enabled))
-    })
-    .run();
-    testing::conformance("Delete", |ui, enabled| {
-        ui.add(Button::danger("Delete").enabled(enabled))
     })
     .run();
 }

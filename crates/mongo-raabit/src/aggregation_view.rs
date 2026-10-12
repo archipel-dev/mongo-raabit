@@ -152,21 +152,12 @@ fn header(ui: &mut Ui, server: &str, tab: &mut AggregationTab, actions: &mut Vec
                 ui.add_space(size::SECONDARY_GAP);
                 widgets::label(ui, Tone::Muted, "docs");
                 let id = ui.id().with("raabit-sample");
-                // Allocated at its own width: a field in a right-to-left row would take
-                // all the room that is left.
-                let field = ui
-                    .allocate_ui(
-                        crate::egui::vec2(SAMPLE_WIDTH, size::CONTROL_HEIGHT),
-                        |ui| {
-                            ui.add(
-                                NumberField::new(&mut tab.sample)
-                                    .id(id)
-                                    .name("Preview sample size")
-                                    .width(SAMPLE_WIDTH),
-                            )
-                        },
-                    )
-                    .inner;
+                let field = ui.add(
+                    NumberField::new(&mut tab.sample)
+                        .id(id)
+                        .name("Preview sample size")
+                        .width(SAMPLE_WIDTH),
+                );
                 // The preview runs when the user leaves the field after changing it.
                 let dirty = id.with("dirty");
                 if field.changed() {

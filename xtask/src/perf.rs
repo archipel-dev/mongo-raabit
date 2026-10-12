@@ -276,15 +276,15 @@ mod at {
     /// The "Connect…" button of the empty Connections tool window.
     pub const OPEN_DIALOG: Point = (177, 169);
     pub const DIALOG_HOVER: [Point; 6] = [
-        (330, 196),
-        (583, 276),
-        (681, 276),
-        (580, 334),
-        (740, 182),
-        (958, 671),
+        (330, 220),
+        (576, 276),
+        (672, 276),
+        (760, 276),
+        (740, 192),
+        (958, 644),
     ];
-    /// The dialog's "Close" button.
-    pub const DIALOG_CLOSE: Point = (390, 627);
+    /// The dialog's "Close" button (its secondary button, at the bottom right).
+    pub const DIALOG_CLOSE: Point = (958, 644);
     /// The welcome screen's "Connect to localhost".
     pub const CONNECT_LOCALHOST: Point = (796, 213);
     pub const TREE_HOVER: [Point; 5] = [(150, 88), (150, 112), (150, 136), (150, 160), (150, 184)];

@@ -132,8 +132,8 @@ fn every_connection_manager_tab_passes_the_audit() {
                 let manager = app.manager.as_mut().unwrap();
                 manager.page = page;
                 // Show the optional fields of the page.
-                manager.draft.tls.enabled = true;
-                manager.draft.auth.mechanism =
+                manager.form.draft.tls.enabled = true;
+                manager.form.draft.auth.mechanism =
                     mongo_raabit::core::profile::AuthMechanism::ScramSha256;
             }
             // The dialog on its own: behind a modal, the window is not reachable anyway.
