@@ -43,6 +43,9 @@ pub enum DocumentMode {
 pub struct DocumentEditor {
     pub tab: TabId,
     pub mode: DocumentMode,
+    /// The document as it was loaded (edits only): Save replaces it only while the
+    /// stored document is still exactly this.
+    pub original: Option<Document>,
     pub text: String,
     pub error: Option<String>,
     pub saving: bool,
@@ -53,6 +56,7 @@ impl DocumentEditor {
         Self {
             tab,
             mode: DocumentMode::Edit(document.get("_id").cloned().unwrap_or(Bson::Null)),
+            original: Some(document.clone()),
             text: shell::document_to_shell(document, ShellStyle::Pretty(2)),
             error: None,
             saving: false,
@@ -63,6 +67,7 @@ impl DocumentEditor {
         Self {
             tab,
             mode: DocumentMode::Insert,
+            original: None,
             text: template
                 .map(|d| shell::document_to_shell(d, ShellStyle::Pretty(2)))
                 .unwrap_or_else(|| "{\n  \n}".into()),
@@ -119,6 +124,8 @@ pub struct ConfirmWrite {
     pub destructive: bool,
     /// What the write affects ("2 documents will be modified"), counted in the background.
     pub summary: Load<String>,
+    /// The count behind `summary`; the outcome is checked against it after the run.
+    pub affected: Option<mongo_raabit_core::Affected>,
     /// "Don't ask again": turns the confirmation off when Run is picked.
     pub dont_ask: bool,
     /// The write runs; the dialog closes when it finishes.
@@ -162,8 +169,8 @@ pub fn show(app: &mut MongoRaabit, ctx: &crate::egui::Context) {
         }
         Some(_) => {}
     }
-    if let Some(pending) = app.confirmed.take() {
-        app.run_write(pending);
+    if let Some((pending, expected)) = app.confirmed.take() {
+        app.run_write_checked(pending, expected);
     }
 }
 
@@ -239,8 +246,9 @@ fn confirm_write(
                 Confirmed::Write(pending) => {
                     // Runs once this dialog is back in place (see `show`), so the outcome
                     // finds it there.
+                    // The stored write itself runs: nothing is rebuilt from the views.
                     confirm.running = true;
-                    app.confirmed = Some((**pending).clone());
+                    app.confirmed = Some(((**pending).clone(), confirm.affected.clone()));
                     true
                 }
                 Confirmed::Script { tab, script } => {
@@ -333,7 +341,12 @@ fn document_editor(
                 Ok(doc) => {
                     editor.saving = true;
                     editor.error = None;
-                    app.save_document(editor.tab, editor.mode.clone(), doc);
+                    app.save_document(
+                        editor.tab,
+                        editor.mode.clone(),
+                        editor.original.clone(),
+                        doc,
+                    );
                 }
                 Err(err) => editor.error = Some(err),
             }

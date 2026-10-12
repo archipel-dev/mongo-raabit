@@ -14,7 +14,7 @@ use mongo_raabit_core::connection::{
 use mongo_raabit_core::profile::{ConnectionProfile, ProfileStore};
 use mongo_raabit_core::query::{Page, Query, QueryText};
 use mongo_raabit_core::secrets::{MemorySecretStore, SecretStore};
-use mongo_raabit_core::{ConnectOptions, Connection, RaabitError, Settings, Write};
+use mongo_raabit_core::{Affected, ConnectOptions, Connection, RaabitError, Settings, Write};
 use mongo_raabit_core::{documents, status, tabs};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -234,17 +234,29 @@ pub struct MongoRaabit {
     pub settings: Settings,
     /// Requests for the host (store a setting, open Settings), taken by the plugin.
     pub host_requests: Vec<HostRequest>,
-    /// A write the user just confirmed, run after the dialogs of this frame.
-    pub confirmed: Option<PendingWrite>,
+    /// A write the user just confirmed, run after the dialogs of this frame, with the
+    /// count its confirmation showed (to check the outcome against).
+    pub confirmed: Option<(PendingWrite, Option<Affected>)>,
+    /// When `Some`, every write handed to execution is appended here, exactly as it is
+    /// executed. Off (`None`) unless a test turns it on: it observes the write path, it
+    /// does not change it.
+    pub write_log: Option<Vec<Write>>,
     next_id: u64,
 }
 
-/// Run `future`, failing when it takes longer than `limit` (the query timeout setting).
+/// Extra time the views give a read beyond the query timeout: the server stops it at the
+/// timeout (`maxTimeMS`) and reports that; this only covers a server that does not answer.
+const BOUND_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `future`, failing when it takes longer than `limit` (the query timeout setting) and
+/// a grace period. Reads also carry `limit` to the server as `maxTimeMS`
+/// ([`Connection::set_query_timeout`]), so the server stops them first and nothing keeps
+/// running after the view gave up.
 pub(crate) async fn bounded<T>(
     limit: std::time::Duration,
     future: impl std::future::Future<Output = mongo_raabit_core::Result<T>>,
 ) -> mongo_raabit_core::Result<T> {
-    tokio::time::timeout(limit, future)
+    tokio::time::timeout(limit + BOUND_GRACE, future)
         .await
         .unwrap_or_else(|_| {
             Err(RaabitError::Invalid(format!(
@@ -263,13 +275,12 @@ impl Default for MongoRaabit {
 impl MongoRaabit {
     /// Create the app, loading saved connections from `store_path` (none = in memory).
     pub fn new(store_path: Option<PathBuf>) -> Self {
-        let (store, status) = match store_path.as_deref().map(ProfileStore::load) {
-            Some(Ok(store)) => (store, String::new()),
-            Some(Err(err)) => (
-                ProfileStore::default(),
-                format!("Could not load connections: {err}"),
-            ),
-            None => (ProfileStore::default(), String::new()),
+        // A connections file that cannot be read is backed up and never saved over: the
+        // store stays in memory for this run (`store_path` is dropped).
+        let (store, status, store_path) = match store_path.as_deref().map(ProfileStore::open) {
+            Some(opened) if opened.writable => (opened.store, String::new(), store_path),
+            Some(opened) => (opened.store, opened.problem.unwrap_or_default(), None),
+            None => (ProfileStore::default(), String::new(), None),
         };
         Self {
             jobs: Jobs::new(),
@@ -292,6 +303,7 @@ impl MongoRaabit {
             settings: Settings::default(),
             host_requests: Vec::new(),
             confirmed: None,
+            write_log: None,
             next_id: 1,
         }
     }
@@ -331,6 +343,17 @@ impl MongoRaabit {
         }
     }
 
+    /// Give every open connection the query timeout setting: its queries, counts and
+    /// aggregations carry it to the server as `maxTimeMS`.
+    pub fn sync_query_timeout(&mut self) {
+        let limit = self.settings.query_timeout();
+        for conn in self.sessions.iter().filter_map(Session::connection) {
+            if conn.query_timeout() != limit {
+                conn.set_query_timeout(limit);
+            }
+        }
+    }
+
     pub fn session(&self, id: SessionId) -> Option<&Session> {
         self.sessions.iter().find(|s| s.id == id)
     }
@@ -362,6 +385,7 @@ impl MongoRaabit {
         let secrets = self.secrets.clone();
         let options = ConnectOptions {
             read_only: self.settings.new_connections_read_only,
+            query_timeout: Some(self.settings.query_timeout()),
         };
         self.jobs.spawn(
             async move { Connection::connect_with(&profile, secrets.as_ref(), options).await },
@@ -655,6 +679,16 @@ impl MongoRaabit {
     }
 
     pub fn edit_selected(&mut self, tab_id: TabId) {
+        // A projected document is not the whole document: saving it would replace the
+        // stored one with a part of it (the Save's guard would refuse it as changed).
+        if self
+            .collection_tab_mut(tab_id)
+            .and_then(|tab| tab.ran.as_ref())
+            .is_some_and(|query| query.projection.is_some())
+        {
+            self.status = "Clear the projection to edit whole documents".into();
+            return;
+        }
         if let Some(doc) = self.selected_document(tab_id) {
             self.dialog = Some(Dialog::Document(DocumentEditor::edit(tab_id, &doc)));
         }
@@ -697,18 +731,34 @@ impl MongoRaabit {
     }
 
     /// Save the document editor's content (replace or insert), then refresh the page.
-    pub fn save_document(&mut self, tab_id: TabId, mode: DocumentMode, doc: Document) {
+    /// `original` is the document as the editor loaded it: a replace only applies while
+    /// the stored document is still exactly that (see `write::replace_filter`).
+    pub fn save_document(
+        &mut self,
+        tab_id: TabId,
+        mode: DocumentMode,
+        original: Option<Document>,
+        doc: Document,
+    ) {
         let Some((session, db, collection)) = self.tab_namespace(tab_id) else {
             return;
         };
-        let write = match mode {
-            DocumentMode::Edit(id) => Write::ReplaceDocument {
+        let write = match (mode, original) {
+            (DocumentMode::Edit(id), Some(original)) => Write::ReplaceDocument {
                 db,
                 collection,
                 id,
+                original,
                 replacement: doc,
             },
-            DocumentMode::Insert => Write::InsertDocuments {
+            (DocumentMode::Edit(_), None) => {
+                let error = RaabitError::Invalid(
+                    "the document as it was loaded is unknown; reopen it to edit".into(),
+                );
+                self.write_done(WriteOrigin::Document(tab_id), None, None, Err(error));
+                return;
+            }
+            (DocumentMode::Insert, _) => Write::InsertDocuments {
                 db,
                 collection,
                 documents: vec![doc],
@@ -736,7 +786,8 @@ impl MongoRaabit {
         });
     }
 
-    /// Commit an inline cell edit: a `$set` of the field on the document's `_id`.
+    /// Commit an inline cell edit: a `$set` of the field on the document's `_id`, only
+    /// while the field still has the value that was loaded (see `write::set_field_filter`).
     pub fn commit_cell_edit(&mut self, tab_id: TabId) {
         let Some(tab) = self.collection_tab_mut(tab_id) else {
             return;
@@ -744,14 +795,18 @@ impl MongoRaabit {
         let Some(edit) = tab.editing.take() else {
             return;
         };
-        let Some(id) = tab
+        let Some(loaded) = tab
             .result
             .ready()
             .and_then(|page| page.documents.get(edit.doc_index))
-            .and_then(|doc| doc.get("_id").cloned())
         else {
             return;
         };
+        let Some(id) = loaded.get("_id").cloned() else {
+            return;
+        };
+        // The guard compares with the value as the page loaded it.
+        let original = documents::value_at(loaded, &edit.path).cloned();
         let value = match documents::cell_edit_value(edit.original.as_ref(), &edit.text) {
             Ok(Some(value)) => value,
             Ok(None) => return,
@@ -771,6 +826,7 @@ impl MongoRaabit {
                 id,
                 path: edit.path,
                 value: Some(value),
+                original,
             },
             origin: WriteOrigin::Cell(tab_id),
         });

@@ -175,9 +175,11 @@ fn edit_insert_clone_delete_explain_and_code() {
         editor.mode,
         DocumentMode::Edit(mongo_raabit::core::bson::Bson::Int32(1))
     );
+    let original = editor.original.clone();
     app.save_document(
         tab,
         DocumentMode::Edit(1.into()),
+        original,
         doc! {"_id": 1, "name": "Ada L.", "tier": "pro"},
     );
     app.wait_idle(Duration::from_secs(10));
@@ -189,9 +191,11 @@ fn edit_insert_clone_delete_explain_and_code() {
 
     // A failing save keeps the editor open with the error.
     app.edit_selected(tab);
+    let original = app.selected_document(tab);
     app.save_document(
         tab,
         DocumentMode::Edit(1.into()),
+        original,
         doc! {"_id": 99, "name": "x"},
     );
     app.wait_idle(Duration::from_secs(10));
@@ -231,7 +235,7 @@ fn edit_insert_clone_delete_explain_and_code() {
     assert_eq!(doc.get_f64("score").unwrap(), 41.5);
 
     // Insert and clone.
-    app.save_document(tab, DocumentMode::Insert, doc! {"name": "Grace"});
+    app.save_document(tab, DocumentMode::Insert, None, doc! {"name": "Grace"});
     app.wait_idle(Duration::from_secs(10));
     app.clone_selected(tab);
     let Some(Dialog::Document(editor)) = &app.dialog else {
@@ -240,7 +244,7 @@ fn edit_insert_clone_delete_explain_and_code() {
     assert_eq!(editor.mode, DocumentMode::Insert);
     assert!(!editor.text.contains("_id"));
     let cloned = editor.parse().unwrap();
-    app.save_document(tab, DocumentMode::Insert, cloned);
+    app.save_document(tab, DocumentMode::Insert, None, cloned);
     app.wait_idle(Duration::from_secs(10));
     assert_eq!(app.collection_tab_mut(tab).unwrap().count, Load::Ready(4));
 
@@ -688,7 +692,7 @@ fn confirmed_inline_edit_and_read_only_session() {
         };
         assert_eq!(
             confirm.shell,
-            "db.getCollection(\"people\").updateOne({ _id: 1 }, { $set: { name: \"Ada L.\" } })"
+            "db.getCollection(\"people\").updateOne({\n  _id: 1,\n  name: {\n    $eq: \"Ada\",\n    $type: \"string\",\n    $not: {\n      $type: \"array\"\n    }\n  }\n}, {\n  $set: {\n    name: \"Ada L.\"\n  }\n})"
         );
         assert_eq!(
             confirm.summary,

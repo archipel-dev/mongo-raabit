@@ -4,13 +4,17 @@
 //! dialog (the query in mongosh syntax and what it affects) before it runs; otherwise it
 //! runs at once. Read-only connections refuse it here, and `Connection::execute` refuses
 //! it again in the core.
+//!
+//! What is confirmed is what runs: the confirmation holds the `Write` itself and Run hands
+//! that value to `execute`; nothing is rebuilt from the views in between. Afterwards the
+//! outcome is checked against the count the confirmation showed.
 
 use crate::app::{Load, MongoRaabit, SessionId, TabId};
 use crate::dialogs::{ConfirmWrite, Confirmed, Dialog};
 use crate::tools::RunResult;
 use mongo_raabit_core::settings;
 use mongo_raabit_core::shell_eval;
-use mongo_raabit_core::{Write, WriteOutcome, status};
+use mongo_raabit_core::{Affected, Write, WriteOutcome, status};
 
 /// What the views do with a write's outcome.
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +92,7 @@ impl MongoRaabit {
             } else {
                 Load::Failed(NOT_CONNECTED.into())
             },
+            affected: None,
             dont_ask: false,
             running: false,
             back: self.dialog.take().map(Box::new),
@@ -99,14 +104,17 @@ impl MongoRaabit {
         self.jobs.spawn(
             async move {
                 let preview = conn.preview(&write).await;
-                preview.map(|p| write.summary(&p.affected))
+                preview.map(|p| (write.summary(&p.affected), p.affected))
             },
             move |app: &mut MongoRaabit, result| {
                 if let Some(Dialog::ConfirmWrite(confirm)) = &mut app.dialog
                     && confirm.id == id
                 {
                     confirm.summary = match result {
-                        Ok(summary) => Load::Ready(summary),
+                        Ok((summary, affected)) => {
+                            confirm.affected = Some(affected);
+                            Load::Ready(summary)
+                        }
                         Err(err) => Load::Failed(format!("Could not count: {err}")),
                     };
                 }
@@ -131,6 +139,7 @@ impl MongoRaabit {
                 "The script calls {}: it can modify data",
                 writes.join(", ")
             )),
+            affected: None,
             dont_ask: false,
             running: false,
             back: self.dialog.take().map(Box::new),
@@ -151,11 +160,20 @@ impl MongoRaabit {
         ));
     }
 
-    /// Run `pending` now (confirmed, or confirmation off).
+    /// Run `pending` now (confirmation off).
     pub fn run_write(&mut self, pending: PendingWrite) {
+        self.run_write_checked(pending, None);
+    }
+
+    /// Run `pending` now, exactly as given (the confirmed write), and check the outcome
+    /// against `expected`, the count its confirmation showed.
+    pub fn run_write_checked(&mut self, pending: PendingWrite, expected: Option<Affected>) {
+        if let Some(log) = &mut self.write_log {
+            log.push(pending.write.clone());
+        }
         let Some(conn) = self.connection_for(pending.session) else {
             let error = mongo_raabit_core::RaabitError::Invalid(NOT_CONNECTED.into());
-            self.write_done(pending.origin, Err(error));
+            self.write_done(pending.origin, None, None, Err(error));
             return;
         };
         match &pending.origin {
@@ -181,16 +199,21 @@ impl MongoRaabit {
         let origin = pending.origin;
         let limit = self.settings.query_timeout();
         let is_pipeline = matches!(origin, WriteOrigin::Pipeline(_));
+        let write = pending.write.clone();
         self.jobs.spawn(
             async move {
                 let run = conn.execute(pending.write);
                 if is_pipeline {
+                    // The pipeline carries the timeout to the server (`maxTimeMS`); this
+                    // only covers a server that stops answering.
                     crate::app::bounded(limit, run).await
                 } else {
                     run.await
                 }
             },
-            move |app: &mut MongoRaabit, result| app.write_done(origin, result),
+            move |app: &mut MongoRaabit, result| {
+                app.write_done(origin, Some(write), expected, result)
+            },
         );
     }
 
@@ -223,8 +246,35 @@ impl MongoRaabit {
         }
     }
 
-    /// Apply a write's outcome to the view that asked for it.
-    fn write_done(&mut self, origin: WriteOrigin, result: mongo_raabit_core::Result<WriteOutcome>) {
+    /// Apply a write's outcome to the view that asked for it; a warning joins the status
+    /// line when the outcome differs from what `write` expected (see
+    /// `Write::check_outcome`).
+    pub fn write_done(
+        &mut self,
+        origin: WriteOrigin,
+        write: Option<Write>,
+        expected: Option<Affected>,
+        result: mongo_raabit_core::Result<WriteOutcome>,
+    ) {
+        let warning = match (&write, &result) {
+            (Some(write), Ok(outcome)) => write.check_outcome(expected.as_ref(), outcome),
+            _ => None,
+        };
+        self.apply_write_result(origin, result);
+        if let Some(warning) = warning {
+            self.status = if self.status.is_empty() {
+                format!("Warning: {warning}")
+            } else {
+                format!("{}. Warning: {warning}", self.status)
+            };
+        }
+    }
+
+    fn apply_write_result(
+        &mut self,
+        origin: WriteOrigin,
+        result: mongo_raabit_core::Result<WriteOutcome>,
+    ) {
         // The confirmation (still open while the write ran) gives way to what it covered.
         if let Some(Dialog::ConfirmWrite(_)) = &self.dialog
             && let Some(Dialog::ConfirmWrite(confirm)) = self.dialog.take()
@@ -237,7 +287,13 @@ impl MongoRaabit {
                     self.status = outcome.message();
                     self.run_query(tab, false);
                 }
-                Err(err) => self.status = format!("Update failed: {err}"),
+                Err(err) => {
+                    // A conflict wrote nothing: show the value that is stored now.
+                    if matches!(err, mongo_raabit_core::RaabitError::Conflict(_)) {
+                        self.run_query(tab, false);
+                    }
+                    self.status = format!("Update failed: {err}");
+                }
             },
             WriteOrigin::Document(tab) => match result {
                 Ok(outcome) => {

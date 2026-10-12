@@ -12,9 +12,10 @@ use archipel_sdk::testing::{Harness, Queryable, audit};
 use common::app_with_documents;
 use mongo_raabit::MongoRaabit;
 use mongo_raabit::app::{CellEdit, Load, ResultView, Session, SessionState};
-use mongo_raabit::core::bson::doc;
+use mongo_raabit::core::bson::{Bson, doc, oid::ObjectId};
 use mongo_raabit::core::profile::ConnectionProfile;
-use mongo_raabit::core::{Write, settings};
+use mongo_raabit::core::write::CONFLICT;
+use mongo_raabit::core::{Affected, RaabitError, Write, WriteOutcome, settings};
 use mongo_raabit::dialogs::{ConfirmWrite, Confirmed, Dialog};
 use mongo_raabit::writes::{HostRequest, PendingWrite, WriteOrigin};
 
@@ -57,7 +58,7 @@ fn an_inline_edit_asks_first_with_its_set_query() {
     assert_eq!(confirm.title, "Update 1 document in shop.people");
     assert_eq!(
         confirm.shell,
-        "db.getCollection(\"people\").updateOne({\n  _id: ObjectId(\"000000000000000000000000\")\n}, {\n  $set: {\n    name: \"Ada\"\n  }\n})"
+        "db.getCollection(\"people\").updateOne({\n  _id: ObjectId(\"000000000000000000000000\"),\n  name: {\n    $eq: \"Person 0\",\n    $type: \"string\",\n    $not: {\n      $type: \"array\"\n    }\n  }\n}, {\n  $set: {\n    name: \"Ada\"\n  }\n})"
     );
     assert!(!confirm.destructive);
     let Confirmed::Write(pending) = &confirm.action else {
@@ -295,4 +296,171 @@ fn the_open_read_only_setting_applies_to_new_sessions() {
     assert!(!app.session_read_only(1));
     app.settings.new_connections_read_only = true;
     assert!(app.session_read_only(1));
+}
+
+#[test]
+fn what_is_confirmed_is_what_runs() {
+    let (mut app, tab) = app_with_documents(ResultView::Table);
+    app.write_log = Some(Vec::new());
+    edit_name(&mut app, tab);
+    let confirm = confirmation(&app);
+    let Confirmed::Write(pending) = &confirm.action else {
+        panic!("a write");
+    };
+    let previewed = pending.write.clone();
+    assert_eq!(
+        confirm.shell,
+        previewed.shell(),
+        "the dialog shows the stored write"
+    );
+
+    // While the dialog is open the grid changes under it: the page reloads with other
+    // values in another order, and another cell edit starts.
+    {
+        let tab = app.collection_tab_mut(tab).unwrap();
+        let Load::Ready(page) = &mut tab.result else {
+            panic!("a loaded page");
+        };
+        page.documents.reverse();
+        for document in &mut page.documents {
+            document.insert("name", "Changed");
+        }
+        tab.editing = Some(CellEdit {
+            doc_index: 0,
+            path: "age".into(),
+            text: "99".into(),
+            original: Some(Bson::Int32(69)),
+            focus: false,
+        });
+    }
+    let mut harness = dialog(Theme::dark(), app);
+    harness.get_by_label("Run").click();
+    harness.run();
+    // Exactly the previewed write went to execution, once.
+    assert_eq!(harness.state().write_log, Some(vec![previewed.clone()]));
+    assert_eq!(
+        previewed,
+        Write::SetField {
+            db: "shop".into(),
+            collection: "people".into(),
+            id: Bson::ObjectId(ObjectId::from_bytes([0; 12])),
+            path: "name".into(),
+            value: Some(Bson::String("Ada".into())),
+            original: Some(Bson::String("Person 0".into())),
+        }
+    );
+}
+
+#[test]
+fn a_save_runs_the_document_as_it_was_confirmed() {
+    let (mut app, tab) = app_with_documents(ResultView::Table);
+    app.write_log = Some(Vec::new());
+    app.collection_tab_mut(tab).unwrap().selected = Some(0);
+    app.edit_selected(tab);
+    let mut harness = dialog(Theme::dark(), app);
+    harness.get_by_label("Save").click();
+    harness.run();
+    let Confirmed::Write(pending) = &confirmation(harness.state()).action else {
+        panic!("a write");
+    };
+    let previewed = pending.write.clone();
+    let Write::ReplaceDocument { original, .. } = &previewed else {
+        panic!("a Save replaces: {previewed:?}");
+    };
+    assert_eq!(
+        original,
+        &common::documents()[0],
+        "guarded by the loaded document"
+    );
+    // The page reloads with other documents while the dialog is open.
+    if let Some(tab) = harness.state_mut().collection_tab_mut(tab)
+        && let Load::Ready(page) = &mut tab.result
+    {
+        page.documents.truncate(1);
+        page.documents[0].insert("name", "Changed");
+    }
+    harness.get_by_label("Run").click();
+    harness.run();
+    assert_eq!(harness.state().write_log, Some(vec![previewed]));
+}
+
+#[test]
+fn an_outcome_that_differs_from_the_preview_is_reported() {
+    let (mut app, tab) = app_with_documents(ResultView::Table);
+    let update = Write::UpdateMany {
+        db: "shop".into(),
+        collection: "people".into(),
+        filter: doc! {"active": true},
+        update: doc! {"$set": {"x": 1}},
+    };
+    app.write_done(
+        WriteOrigin::Cell(tab),
+        Some(update.clone()),
+        Some(Affected::Documents(12)),
+        Ok(WriteOutcome::Updated {
+            matched: 14,
+            modified: 14,
+        }),
+    );
+    assert_eq!(
+        app.status,
+        "Updated 14 documents. Warning: Expected 12 documents, 14 were matched — the data changed between preview and run"
+    );
+    app.write_done(
+        WriteOrigin::Cell(tab),
+        Some(update),
+        Some(Affected::Documents(14)),
+        Ok(WriteOutcome::Updated {
+            matched: 14,
+            modified: 14,
+        }),
+    );
+    assert_eq!(app.status, "Updated 14 documents");
+    // Fewer deleted than selected.
+    app.write_done(
+        WriteOrigin::Delete(tab),
+        Some(Write::DeleteDocuments {
+            db: "shop".into(),
+            collection: "people".into(),
+            ids: vec![Bson::Int32(1), Bson::Int32(2)],
+        }),
+        None,
+        Ok(WriteOutcome::Deleted(1)),
+    );
+    assert!(
+        app.status
+            .ends_with("Warning: Deleted 1 of 2 selected documents: 1 no longer existed"),
+        "{}",
+        app.status
+    );
+}
+
+#[test]
+fn a_conflicting_edit_says_so_and_writes_nothing() {
+    let (mut app, tab) = app_with_documents(ResultView::Table);
+    app.write_done(
+        WriteOrigin::Cell(tab),
+        None,
+        None,
+        Err(RaabitError::Conflict(CONFLICT.into())),
+    );
+    assert_eq!(
+        app.status,
+        "Update failed: The document changed (or was deleted) since it was loaded. Reload and try again."
+    );
+}
+
+#[test]
+fn projected_documents_are_not_edited_whole() {
+    let (mut app, tab) = app_with_documents(ResultView::Table);
+    let query = mongo_raabit::core::query::Query {
+        projection: Some(doc! {"name": 1}),
+        ..Default::default()
+    };
+    let tab_state = app.collection_tab_mut(tab).unwrap();
+    tab_state.ran = Some(query);
+    tab_state.selected = Some(0);
+    app.edit_selected(tab);
+    assert!(app.dialog.is_none());
+    assert_eq!(app.status, "Clear the projection to edit whole documents");
 }

@@ -82,6 +82,7 @@ pub fn settings_page() -> SettingsPage {
 /// Read the settings from the host before a frame.
 fn read_settings(app: &mut MongoRaabit, host: &dyn PluginHost) {
     app.settings = Settings::from_values(|key| host.setting(key));
+    app.sync_query_timeout();
 }
 
 /// Apply what the views asked of the host during a frame.
