@@ -20,6 +20,8 @@ pub struct MongoRaabitPlugin {
     manifest: PluginManifest,
     /// Created on first render, once the host's data directory is known.
     app: Option<MongoRaabit>,
+    /// The status line last sent to the host: the host repaints on every update.
+    status: String,
 }
 
 impl Default for MongoRaabitPlugin {
@@ -34,6 +36,7 @@ impl MongoRaabitPlugin {
             manifest: PluginManifest::parse(include_str!("../archipel-plugin.toml"))
                 .expect("bundled manifest is valid"),
             app: None,
+            status: String::new(),
         }
     }
 
@@ -97,9 +100,12 @@ impl Plugin for MongoRaabitPlugin {
         if view.view == VIEW {
             let app = self.app(host);
             app.ui(ui);
-            // One status bar: the host's.
+            // One status bar: the host's. It repaints on every update, so send changes only.
             let line = app.status_line();
-            host.show_status(&line);
+            if line != self.status {
+                host.show_status(&line);
+                self.status = line;
+            }
         } else if view.view == DATABASES_VIEW {
             let app = self.app(host);
             app.jobs.set_context(ui.ctx());
