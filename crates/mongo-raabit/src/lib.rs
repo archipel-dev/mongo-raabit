@@ -59,6 +59,7 @@ impl MongoRaabit {
         self.tool = app::ToolTab::from_index(layout.tool_tab(WorkbenchRegion::Right));
         self.tool_request = None;
         Workbench::new("raabit", &mut layout)
+            .frame_background(false)
             .tool(WorkbenchRegion::Left, "Connections", Icon::Database)
             .tool(WorkbenchRegion::Right, tool_window::TITLE, Icon::Filter)
             .center_padded(false)
