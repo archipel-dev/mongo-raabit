@@ -8,8 +8,10 @@
 //! | Windows | `raabit-<version>-windows-<arch>.msi` | WiX Toolset v5 (`wix`) |
 //! | macOS | `raabit-<version>-macos-<arch>.dmg` | `codesign`, `hdiutil` |
 //!
-//! Every artifact gets a `sha256sum`-format `<file>.sha256`.
+//! Every artifact gets a `sha256sum`-format `<file>.sha256`. Both installers carry the app
+//! icon from `assets/logo/icon/` (`cargo xtask icons` regenerates it).
 
+mod icons;
 mod perf;
 
 use anyhow::{Context, Result, bail};
@@ -23,14 +25,17 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Cargo package that builds the `raabit` binary.
 const PACKAGE: &str = "raabit";
 const BUNDLE_ID: &str = "dev.archipel.raabit";
+/// The app icon in `Contents/Resources` of the macOS bundle.
+const ICNS_NAME: &str = "raabit.icns";
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("dist") => dist(Options::parse(args)?),
         Some("perf") => perf::run(args),
+        Some("icons") => icons::run(args),
         _ => bail!(
-            "usage: cargo xtask dist [--installer] [--target <triple>]\n       cargo xtask perf [--runs N] [--uri URI] [--no-build] [--bin PATH] [--budgets FILE] [--json FILE]"
+            "usage: cargo xtask dist [--installer] [--target <triple>]\n       cargo xtask icons\n       cargo xtask perf [--runs N] [--uri URI] [--no-build] [--bin PATH] [--budgets FILE] [--json FILE]"
         ),
     }
 }
@@ -286,6 +291,11 @@ fn msi(stage: &Path, platform: &Platform, dist: &Path) -> Result<PathBuf> {
             .arg(format!("Version={}", numeric_version(VERSION)))
             .arg("-d")
             .arg(format!("Stage={}", absolute(stage)?.display()))
+            .arg("-d")
+            .arg(format!(
+                "Icon={}",
+                absolute(icons::require(icons::ICO)?)?.display()
+            ))
             .arg("-o")
             .arg(&out)
             .arg("xtask/packaging/windows/raabit.wxs"),
@@ -308,6 +318,7 @@ fn info_plist(version: &str) -> String {
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>Mongo Raabit</string>
   <key>CFBundleExecutable</key><string>raabit</string>
+  <key>CFBundleIconFile</key><string>{ICNS_NAME}</string>
   <key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Mongo Raabit</string>
@@ -343,6 +354,7 @@ fn dmg(stage: &Path, platform: &Platform, dist: &Path) -> Result<PathBuf> {
     for file in ["README.md", "LICENSE-APACHE", "LICENSE-MIT"] {
         copy(&stage.join(file), &resources.join(file))?;
     }
+    copy(icons::require(icons::ICNS)?, &resources.join(ICNS_NAME))?;
     #[cfg(unix)]
     std::os::unix::fs::symlink("/Applications", image_root.join("Applications"))?;
 
@@ -399,6 +411,36 @@ mod tests {
         let p = Platform::from_triple("aarch64-apple-darwin").unwrap();
         assert_eq!((p.os, p.arch.as_str()), ("macos", "aarch64"));
         assert!(Platform::from_triple("wasm32-unknown-unknown").is_err());
+    }
+
+    #[test]
+    fn info_plist_names_the_bundled_icon() {
+        let plist = info_plist("1.2.3-beta.1");
+        assert!(plist.contains("<key>CFBundleIconFile</key><string>raabit.icns</string>"));
+        assert!(plist.contains("<key>CFBundleVersion</key><string>1.2.3</string>"));
+        assert!(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(icons::ICNS)
+                .is_file()
+        );
+    }
+
+    /// The icon must be declared, shown in Add/Remove Programs and used by the shortcut.
+    #[test]
+    fn wix_source_uses_the_icon() {
+        let wxs = include_str!("../packaging/windows/raabit.wxs");
+        assert!(wxs.contains(r#"<Icon Id="RaabitIcon.ico" SourceFile="$(var.Icon)" />"#));
+        assert!(wxs.contains(r#"<Property Id="ARPPRODUCTICON" Value="RaabitIcon.ico" />"#));
+        let shortcut = &wxs[wxs.find("<Shortcut").expect("shortcut")..];
+        let shortcut = &shortcut[..shortcut.find("/>").expect("shortcut end")];
+        assert!(shortcut.contains(r#"Icon="RaabitIcon.ico""#), "{shortcut}");
+        assert!(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(icons::ICO)
+                .is_file()
+        );
     }
 
     /// WiX rejects the whole source on an XML comment with `--` in it (WIX0104), and only

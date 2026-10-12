@@ -55,6 +55,7 @@ impl MongoRaabit {
         let mut ui = ui.new_child(crate::egui::UiBuilder::new().max_rect(area));
         let ui = &mut ui;
         Workbench::new("raabit", &mut layout)
+            .frame_background(false)
             .tool(WorkbenchRegion::Left, "Connections", Icon::Database)
             .center_padded(false)
             .show_inside_with(ui, self, |place, ui, app| match place {
