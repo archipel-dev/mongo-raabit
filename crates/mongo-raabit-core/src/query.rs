@@ -31,6 +31,33 @@ pub struct Query {
 }
 
 impl QueryText {
+    /// The query in shell syntax (`find({...}, {...}).sort(...)`), as the builder previews it.
+    pub fn preview(&self) -> String {
+        let or_empty = |s: &str| {
+            if s.is_empty() {
+                "{}".to_owned()
+            } else {
+                s.to_owned()
+            }
+        };
+        let mut out = format!("find({}", or_empty(&self.filter));
+        if !self.projection.is_empty() {
+            out.push_str(", ");
+            out.push_str(&self.projection);
+        }
+        out.push(')');
+        if !self.sort.is_empty() {
+            out.push_str(&format!(".sort({})", self.sort));
+        }
+        if !self.skip.is_empty() {
+            out.push_str(&format!(".skip({})", self.skip));
+        }
+        if !self.limit.is_empty() {
+            out.push_str(&format!(".limit({})", self.limit));
+        }
+        out
+    }
+
     pub fn parse(&self) -> Result<Query> {
         let optional = |text: &str, what: &'static str| -> Result<Option<Document>> {
             let doc = shell::parse_document(text).map_err(|e| RaabitError::parse(what, e))?;
@@ -443,6 +470,22 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn previews_the_query_in_shell_syntax() {
+        assert_eq!(QueryText::default().preview(), "find({})");
+        let text = QueryText {
+            filter: "{ a: 1 }".into(),
+            projection: "{ a: 1 }".into(),
+            sort: "{ a: -1 }".into(),
+            skip: "5".into(),
+            limit: "10".into(),
+        };
+        assert_eq!(
+            text.preview(),
+            "find({ a: 1 }, { a: 1 }).sort({ a: -1 }).skip(5).limit(10)"
+        );
+    }
     use super::*;
 
     #[test]

@@ -311,6 +311,11 @@ impl Stage {
         }
     }
 
+    /// The body on one line, for lists.
+    pub fn summary(&self) -> String {
+        self.body.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
     /// The stage as a pipeline document.
     pub fn to_document(&self) -> Result<Document> {
         if !self.operator.starts_with('$') || self.operator.len() < 2 {
@@ -542,6 +547,16 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn summarizes_a_body_on_one_line() {
+        let stage = Stage {
+            operator: "$match".into(),
+            body: "{\n  a:   1,\n  b: 2\n}".into(),
+            enabled: true,
+        };
+        assert_eq!(stage.summary(), "{ a: 1, b: 2 }");
+    }
     use super::*;
 
     #[test]

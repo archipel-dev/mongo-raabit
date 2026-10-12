@@ -9,6 +9,7 @@ pub mod builder;
 pub mod codegen;
 pub mod connection;
 pub mod error;
+pub mod fields;
 pub mod mongosh;
 pub mod profile;
 pub mod query;

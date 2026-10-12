@@ -69,12 +69,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                         .ready()
                         .map(|page| crate::query_builder::field_names(&page.documents))
                         .unwrap_or_default();
-                    match crate::query_builder::show(
-                        ui,
-                        &crate::style::Palette::of(ui),
-                        &mut tab.builder,
-                        &fields,
-                    ) {
+                    match crate::query_builder::show(ui, &mut tab.builder, &fields) {
                         crate::query_builder::Event::None => {}
                         crate::query_builder::Event::Changed => {
                             tab.query = tab.builder.to_query_text();

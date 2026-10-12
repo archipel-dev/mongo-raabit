@@ -179,7 +179,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             });
         });
     ui.add(Separator);
-    result_pane(ui, &p, tab_id, &mut tab.view, &mut tab.open, &tab.result);
+    result_pane(ui, tab_id, &mut tab.view, &mut tab.open, &tab.result);
     let (session, db) = (tab.session, tab.db.clone());
     if run {
         app.run_sql(tab_id);

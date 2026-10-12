@@ -2,20 +2,27 @@
 //! input/output preview and full pipeline runs.
 
 use crate::app::{Load, MongoRaabit, ResultView, TabId, TabKind};
-use crate::egui::{CornerRadius, FontId, RichText, Sense, Stroke, Ui, vec2};
+use crate::egui::{Id, Ui, vec2};
 use crate::icons::{self, Icon};
 use crate::results;
 use crate::stage_builder::{self, Mode, Suggestions};
-use crate::style::{self, Palette};
-use crate::tools::RunResult;
+use crate::style;
+use crate::tools::{AggregationTab, RunResult};
 use crate::values;
 use crate::widgets;
 use archipel_sdk::kit::Tone;
-use archipel_sdk::kit::components::{Button, SegmentedControl, Separator, Tag};
+use archipel_sdk::kit::components::code::JavaScript;
+use archipel_sdk::kit::components::{
+    Banner, Button, Checkbox, CodeEditor, Counter, Dropdown, IconButton, ListRow, MenuItem,
+    MenuSeparator, SegmentedControl, Separator, Severity, Spinner, SplitPane, Tag, TooltipExt,
+};
+use archipel_sdk::kit::parts::{Slot, Surface, scroll_vertical};
+use archipel_sdk::kit::tokens::{size, typography};
 use mongo_raabit_core::aggregate::{RunOptions, STAGE_OPERATORS, Stage, stage_operator};
 use mongo_raabit_core::bson::Document;
 use mongo_raabit_core::codegen::{CodeRequest, Operation};
 use mongo_raabit_core::stage_form;
+use std::cell::RefCell;
 
 enum Action {
     Preview,
@@ -23,8 +30,15 @@ enum Action {
     Code,
 }
 
+/// Default share of the width the stage list gets.
+const LIST_RATIO: f32 = 0.28;
+/// Default share of the height the stage editor gets while results are shown.
+const BODY_RATIO: f32 = 0.62;
+const LIST_MIN_WIDTH: f32 = 240.0;
+const SAMPLE_WIDTH: f32 = 80.0;
+const OPERATOR_WIDTH: f32 = 180.0;
+
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
-    let p = Palette::of(ui);
     let server = app
         .aggregation_tab_mut(tab_id)
         .map(|t| t.session)
@@ -36,102 +50,65 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     };
     let mut actions = Vec::new();
-    crate::egui::Frame::new()
-        .inner_margin(crate::egui::Margin {
-            left: 14,
-            right: 14,
-            top: 10,
-            bottom: 8,
-        })
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                icons::icon(ui, Icon::Pipeline, p.accent_text);
-                ui.label(RichText::new(&server).color(p.text_info));
-                icons::icon(ui, Icon::ChevronRight, p.text_info);
-                ui.label(RichText::new(&tab.db).color(p.text_secondary));
-                icons::icon(ui, Icon::ChevronRight, p.text_info);
-                ui.label(
-                    RichText::new(&tab.collection)
-                        .size(15.0)
-                        .strong()
-                        .color(p.text_strong),
-                );
-                ui.add(Tag::new("Aggregation").tone(Tone::Accent));
-                ui.with_layout(
-                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                    |ui| {
-                        if ui
-                            .add(Button::primary("Run Pipeline").icon(Icon::Play))
-                            .clicked()
-                        {
-                            actions.push(Action::Run);
-                        }
-                        if ui
-                            .add(Button::secondary("Query Code").icon(Icon::Code))
-                            .clicked()
-                        {
-                            actions.push(Action::Code);
-                        }
-                        ui.add_space(8.0);
-                        ui.label(RichText::new("docs").color(p.text_info));
-                        let mut sample = tab.sample.to_string();
-                        if ui
-                            .add(crate::egui::TextEdit::singleline(&mut sample).desired_width(56.0))
-                            .lost_focus()
-                            && let Ok(v) = sample.trim().parse()
-                            && v != tab.sample
-                        {
-                            tab.sample = v;
-                            actions.push(Action::Preview);
-                        }
-                        ui.label(RichText::new("Preview on first").color(p.text_info))
-                            .on_hover_text(
-                                "Stage previews read only this many input documents (0 = all)",
-                            );
-                    },
-                );
-            });
-        });
+    widgets::padded(ui, |ui| header(ui, &server, tab, &mut actions));
     ui.add(Separator);
-    let results_height = if matches!(tab.result, Load::Idle) {
-        0.0
-    } else {
-        (ui.available_height() * 0.38).max(180.0)
+    let idle = matches!(tab.result, Load::Idle);
+    let size = ui.available_size();
+    let tab_cell = RefCell::new(&mut *tab);
+    let actions_cell = RefCell::new(&mut actions);
+    let body = |ui: &mut Ui| {
+        let ratio_id = ui.id().with("raabit-agg-list-ratio");
+        let mut ratio = ui
+            .data(|d| d.get_temp::<f32>(ratio_id))
+            .unwrap_or(LIST_RATIO);
+        SplitPane::horizontal(("raabit-agg-list", tab_id), &mut ratio)
+            .default_ratio(LIST_RATIO)
+            .min_size(LIST_MIN_WIDTH)
+            .label("Resize stage list")
+            .show(
+                ui,
+                |ui| {
+                    widgets::padded(ui, |ui| {
+                        stage_list(
+                            ui,
+                            &mut tab_cell.borrow_mut(),
+                            &mut actions_cell.borrow_mut(),
+                        );
+                    });
+                },
+                |ui| {
+                    widgets::padded(ui, |ui| {
+                        stage_editor(
+                            ui,
+                            &mut tab_cell.borrow_mut(),
+                            &collections,
+                            &mut actions_cell.borrow_mut(),
+                        );
+                    });
+                },
+            );
+        ui.data_mut(|d| d.insert_temp(ratio_id, ratio));
     };
-    let body_height = ui.available_height() - results_height;
-    ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), body_height),
-        crate::egui::Layout::left_to_right(crate::egui::Align::Min),
-        |ui| {
-            // ---- stage list
-            crate::egui::Frame::new()
-                .fill(p.raised)
-                .inner_margin(crate::egui::Margin::same(10))
-                .show(ui, |ui| {
-                    ui.set_width(270.0);
-                    ui.set_height(body_height - 20.0);
-                    ui.vertical(|ui| stage_list(ui, &p, tab, &mut actions));
-                });
-            // ---- stage editor and preview
-            crate::egui::Frame::new()
-                .inner_margin(crate::egui::Margin {
-                    left: 14,
-                    right: 14,
-                    top: 10,
-                    bottom: 6,
-                })
-                .show(ui, |ui| {
-                    let width = ui.available_width() - 28.0;
-                    ui.set_width(width);
-                    ui.set_height(body_height - 16.0);
-                    ui.vertical(|ui| stage_editor(ui, &p, tab, &collections, &mut actions));
-                });
-        },
-    );
-    if !matches!(tab.result, Load::Idle) {
-        ui.add(Separator);
-        result_pane(ui, &p, tab_id, &mut tab.view, &mut tab.open, &tab.result);
-    }
+    ui.allocate_ui(size, |ui| {
+        if idle {
+            body(ui);
+            return;
+        }
+        let ratio_id = ui.id().with("raabit-agg-body-ratio");
+        let mut ratio = ui
+            .data(|d| d.get_temp::<f32>(ratio_id))
+            .unwrap_or(BODY_RATIO);
+        SplitPane::vertical(("raabit-agg-body", tab_id), &mut ratio)
+            .default_ratio(BODY_RATIO)
+            .min_sizes(size::CODE_LINE_HEIGHT * 8.0, size::CODE_LINE_HEIGHT * 6.0)
+            .label("Resize results")
+            .show(ui, body, |ui| {
+                let mut tab = tab_cell.borrow_mut();
+                let tab = &mut *tab;
+                result_pane(ui, tab_id, &mut tab.view, &mut tab.open, &tab.result);
+            });
+        ui.data_mut(|d| d.insert_temp(ratio_id, ratio));
+    });
     let mut code = None;
     for action in actions {
         match action {
@@ -143,6 +120,52 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     if code.is_some() {
         open_code(app, tab_id);
     }
+}
+
+/// Breadcrumb of the collection, the sample size of previews and the Run buttons.
+fn header(ui: &mut Ui, server: &str, tab: &mut AggregationTab, actions: &mut Vec<Action>) {
+    let muted = Tone::Muted.resolve(ui.ctx());
+    ui.horizontal(|ui| {
+        icons::icon(ui, Icon::Pipeline, Tone::Accent.resolve(ui.ctx()));
+        widgets::label(ui, Tone::Muted, server);
+        icons::icon(ui, Icon::ChevronRight, muted);
+        widgets::label(ui, Tone::Secondary, &tab.db);
+        icons::icon(ui, Icon::ChevronRight, muted);
+        widgets::title(ui, &tab.collection);
+        ui.add(Tag::new("Aggregation").tone(Tone::Accent));
+        ui.with_layout(
+            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+            |ui| {
+                if ui
+                    .add(Button::primary("Run Pipeline").icon(Icon::Play))
+                    .clicked()
+                {
+                    actions.push(Action::Run);
+                }
+                if ui
+                    .add(Button::secondary("Query Code").icon(Icon::Code))
+                    .clicked()
+                {
+                    actions.push(Action::Code);
+                }
+                ui.add_space(size::SECONDARY_GAP);
+                widgets::label(ui, Tone::Muted, "docs");
+                let id = ui.id().with("raabit-sample");
+                let edit = widgets::number_field(
+                    ui,
+                    id,
+                    "Preview sample size",
+                    &mut tab.sample,
+                    SAMPLE_WIDTH,
+                );
+                if edit.committed {
+                    actions.push(Action::Preview);
+                }
+                widgets::label(ui, Tone::Muted, "Preview on first")
+                    .tooltip("Stage previews read only this many input documents (0 = all)");
+            },
+        );
+    });
 }
 
 /// Collection names of the tab's database, from the loaded tree (for `$lookup`).
@@ -192,181 +215,82 @@ fn open_code(app: &mut MongoRaabit, tab_id: TabId) {
     }));
 }
 
-fn stage_list(
-    ui: &mut Ui,
-    p: &Palette,
-    tab: &mut crate::tools::AggregationTab,
-    actions: &mut Vec<Action>,
-) {
+fn stage_list(ui: &mut Ui, tab: &mut AggregationTab, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Pipeline").strong());
+        widgets::title(ui, "Pipeline");
         ui.add(Tag::new(format!("{} stages", tab.pipeline.stages.len())).tone(Tone::Secondary));
     });
-    ui.add_space(6.0);
     let mut select = None;
     let mut toggle = None;
     let mut remove = None;
     let mut move_by: Option<(usize, isize)> = None;
-    crate::egui::ScrollArea::vertical()
-        .max_height(ui.available_height() - 40.0)
+    scroll_vertical()
+        .max_height(ui.available_height() - size::CONTROL_HEIGHT - size::SECTION_SPACING)
         .auto_shrink([false, true])
         .show(ui, |ui| {
             for (i, stage) in tab.pipeline.stages.iter().enumerate() {
                 let selected = i == tab.selected;
-                let (rect, response) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 54.0), Sense::click());
-                let fill = if selected {
-                    p.selection
-                } else if response.hovered() {
-                    p.hover
+                let mut enabled = stage.enabled;
+                let tone = if stage.enabled {
+                    Tone::Strong
                 } else {
-                    p.island
+                    Tone::Muted
                 };
-                ui.painter().rect(
-                    rect,
-                    CornerRadius::same(8),
-                    fill,
-                    Stroke::new(1.0_f32, if selected { p.accent } else { p.border }),
-                    crate::egui::StrokeKind::Inside,
-                );
-                // Index bubble.
-                let bubble = crate::egui::Rect::from_center_size(
-                    crate::egui::pos2(rect.left() + 18.0, rect.top() + 18.0),
-                    vec2(20.0, 20.0),
-                );
-                ui.painter().circle_filled(
-                    bubble.center(),
-                    10.0,
-                    if stage.enabled {
-                        p.accent.gamma_multiply(0.25)
-                    } else {
-                        p.selection_inactive
-                    },
-                );
-                ui.painter().text(
-                    bubble.center(),
-                    crate::egui::Align2::CENTER_CENTER,
-                    (i + 1).to_string(),
-                    FontId::proportional(11.0),
-                    if stage.enabled {
-                        p.accent_text
-                    } else {
-                        p.text_info
-                    },
-                );
-                let name_color = if stage.enabled {
-                    p.text_strong
-                } else {
-                    p.text_info
-                };
-                ui.painter().text(
-                    crate::egui::pos2(rect.left() + 36.0, rect.top() + 18.0),
-                    crate::egui::Align2::LEFT_CENTER,
-                    &stage.operator,
-                    FontId::monospace(13.0),
-                    name_color,
-                );
-                let max_chars = ((rect.width() - 36.0 - 30.0) / 6.8).max(8.0) as usize;
-                let summary = values::truncate(
-                    &stage.body.split_whitespace().collect::<Vec<_>>().join(" "),
-                    max_chars,
-                );
-                ui.painter().text(
-                    crate::egui::pos2(rect.left() + 36.0, rect.top() + 37.0),
-                    crate::egui::Align2::LEFT_CENTER,
-                    summary,
-                    FontId::monospace(11.0),
-                    p.text_info,
-                );
-                // Row buttons.
-                let button = |offset: f32, icon: Icon, tip: &str| -> bool {
-                    let r = crate::egui::Rect::from_center_size(
-                        crate::egui::pos2(rect.right() - offset, rect.top() + 18.0),
-                        vec2(20.0, 20.0),
-                    );
-                    let resp = ui.interact(r, ui.id().with(("stage-btn", i, tip)), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(r, CornerRadius::same(5), p.hover);
-                    }
-                    icons::paint(ui.painter(), r.shrink(3.0), icon, p.text_secondary);
-                    resp.on_hover_text(tip).clicked()
-                };
-                if selected || response.hovered() {
-                    if button(14.0, Icon::Trash, "Remove stage") {
-                        remove = Some(i);
-                    }
-                    if button(36.0, Icon::ChevronDown, "Move down") {
-                        move_by = Some((i, 1));
-                    }
-                    if button(58.0, Icon::ChevronUp, "Move up") {
-                        move_by = Some((i, -1));
-                    }
-                }
-                let check = crate::egui::Rect::from_center_size(
-                    crate::egui::pos2(rect.right() - 14.0, rect.top() + 39.0),
-                    vec2(14.0, 14.0),
-                );
-                let check_resp =
-                    ui.interact(check, ui.id().with(("stage-enable", i)), Sense::click());
-                ui.painter().rect(
-                    check,
-                    CornerRadius::same(3),
-                    if stage.enabled { p.accent } else { p.field },
-                    Stroke::new(1.0_f32, p.border),
-                    crate::egui::StrokeKind::Inside,
-                );
-                if stage.enabled {
-                    icons::paint(
-                        ui.painter(),
-                        check.shrink(1.0),
-                        Icon::Check,
-                        crate::egui::Color32::WHITE,
-                    );
-                }
-                if check_resp
-                    .on_hover_text(if stage.enabled {
-                        "Disable stage"
-                    } else {
-                        "Enable stage"
-                    })
-                    .clicked()
-                {
+                let leading_width = size::ICON + size::ICON_TEXT_GAP + size::ROW_HEIGHT;
+                let trailing_width = 3.0 * size::ICON_BUTTON_SMALL + 2.0 * size::TOOLBAR_GAP;
+                let row = ListRow::new(&stage.operator)
+                    .secondary(stage.summary())
+                    .label_tone(tone)
+                    .selected(selected)
+                    .leading(Slot::ui_width(leading_width, |ui| {
+                        // Laid out right to left: the checkbox first.
+                        ui.add(
+                            Checkbox::new(&mut enabled, format!("Enable stage {}", i + 1))
+                                .label_visible(false),
+                        );
+                        ui.add(Counter::new(i + 1).accent(stage.enabled));
+                    }))
+                    .trailing_on_hover(true)
+                    .trailing(Slot::ui_width(trailing_width, |ui| {
+                        if stage_button(ui, Icon::Trash, "Remove stage") {
+                            remove = Some(i);
+                        }
+                        if stage_button(ui, Icon::ChevronDown, "Move down") {
+                            move_by = Some((i, 1));
+                        }
+                        if stage_button(ui, Icon::ChevronUp, "Move up") {
+                            move_by = Some((i, -1));
+                        }
+                    }))
+                    .show(ui);
+                if enabled != stage.enabled {
                     toggle = Some(i);
-                } else if response.clicked() {
+                } else if row.response.clicked() {
                     select = Some(i);
                 }
-                ui.add_space(6.0);
             }
         });
-    ui.add_space(4.0);
+    ui.add_space(size::SECTION_SPACING / 2.0);
     let mut add = None;
     let add_button = ui.add_sized(
-        vec2(ui.available_width(), 26.0),
-        crate::egui::Button::new(RichText::new("+  Add stage").color(p.accent_text)),
+        vec2(ui.available_width(), size::CONTROL_HEIGHT),
+        Button::secondary("Add stage").icon(Icon::Plus),
     );
     crate::egui::Popup::menu(&add_button).show(|ui| {
-        ui.set_min_width(260.0);
+        ui.set_min_width(size::COMPLETION_WIDTH);
         for (name, label, description) in stage_builder::FRIENDLY_STAGES {
-            let mut job = crate::egui::text::LayoutJob::default();
-            job.append(
-                label,
-                0.0,
-                crate::egui::TextFormat::simple(FontId::proportional(13.0), p.text_strong),
-            );
-            job.append(
-                &format!("\n{description}"),
-                0.0,
-                crate::egui::TextFormat::simple(FontId::proportional(11.5), p.text_info),
-            );
-            if ui.selectable_label(false, job).clicked() {
+            if ui
+                .add(MenuItem::new(*label).description(*description))
+                .clicked()
+            {
                 add = Some(*name);
             }
         }
-        ui.separator();
-        ui.menu_button("More stages…", |ui| {
-            ui.set_min_width(320.0);
-            crate::egui::ScrollArea::vertical()
-                .max_height(380.0)
+        ui.add(MenuSeparator);
+        let more = MenuItem::new("More stages…").submenu(|ui| {
+            ui.set_min_width(size::COMPLETION_WIDTH);
+            scroll_vertical()
+                .max_height(ui.ctx().content_rect().height() / 2.0)
                 .show(ui, |ui| {
                     for op in STAGE_OPERATORS {
                         if stage_builder::FRIENDLY_STAGES
@@ -375,12 +299,8 @@ fn stage_list(
                         {
                             continue;
                         }
-                        let label = format!("{:<16} {}", op.name, op.description);
                         if ui
-                            .selectable_label(
-                                false,
-                                RichText::new(label).font(FontId::monospace(12.0)),
-                            )
+                            .add(MenuItem::new(op.name).description(op.description))
                             .clicked()
                         {
                             add = Some(op.name);
@@ -388,6 +308,7 @@ fn stage_list(
                     }
                 });
         });
+        ui.add(more);
     });
     if let Some(name) = add {
         let at = (tab.selected + 1).min(tab.pipeline.stages.len());
@@ -420,10 +341,14 @@ fn stage_list(
     }
 }
 
+/// A small action button in a stage row.
+fn stage_button(ui: &mut Ui, icon: Icon, name: &str) -> bool {
+    ui.add(IconButton::new(icon, name).small(true)).clicked()
+}
+
 fn stage_editor(
     ui: &mut Ui,
-    p: &Palette,
-    tab: &mut crate::tools::AggregationTab,
+    tab: &mut AggregationTab,
     collections: &[String],
     actions: &mut Vec<Action>,
 ) {
@@ -437,17 +362,17 @@ fn stage_editor(
     };
     let index = tab.selected;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("Stage {}", index + 1)).strong());
+        widgets::title(ui, format!("Stage {}", index + 1));
         let before = stage.operator.clone();
-        crate::egui::ComboBox::from_id_salt(("raabit-stage-op", index))
-            .selected_text(RichText::new(&stage.operator).font(FontId::monospace(13.0)))
-            .width(180.0)
-            .height(420.0)
-            .show_ui(ui, |ui| {
-                for op in STAGE_OPERATORS {
-                    ui.selectable_value(&mut stage.operator, op.name.to_owned(), op.name);
-                }
-            });
+        ui.add(
+            Dropdown::new(
+                ("raabit-stage-op", index),
+                &mut stage.operator,
+                STAGE_OPERATORS.iter().map(|op| op.name.to_owned()),
+            )
+            .label("Stage operator")
+            .width(OPERATOR_WIDTH),
+        );
         if stage.operator != before {
             // Switching operator loads its template when the body was untouched.
             if stage_operator(&before).is_some_and(|o| o.template == stage.body) {
@@ -458,10 +383,9 @@ fn stage_editor(
             actions.push(Action::Preview);
         }
         if let Some(op) = stage_operator(&stage.operator) {
-            ui.label(RichText::new(op.description).color(p.text_info));
+            widgets::label(ui, Tone::Muted, op.description);
         }
     });
-    ui.add_space(6.0);
     let form_id = ui.make_persistent_id(("raabit-stage-form", index));
     let formable = stage_form::has_form(&stage.operator);
     let mut mode = if formable
@@ -505,28 +429,25 @@ fn stage_editor(
             }
         });
         if tab.form_hint == Some(index) && mode == Mode::Code {
-            ui.horizontal(|ui| {
-                icons::icon(ui, Icon::Warning, p.warning);
-                ui.label(
-                    RichText::new(
-                        "This stage uses features the form cannot show; edit it in Code.",
-                    )
-                    .color(p.warning),
-                );
-            });
+            Banner::new(
+                Severity::Warning,
+                "This stage uses features the form cannot show; edit it in Code.",
+            )
+            .show(ui);
         }
-        ui.add_space(4.0);
     }
     let editor_height = if mode == Mode::Form {
-        (ui.available_height() * 0.45).clamp(140.0, 340.0)
+        (ui.available_height() * 0.45)
+            .clamp(size::CODE_LINE_HEIGHT * 7.0, size::CODE_LINE_HEIGHT * 17.0)
     } else {
-        (ui.available_height() * 0.36).clamp(110.0, 260.0)
+        (ui.available_height() * 0.36)
+            .clamp(size::CODE_LINE_HEIGHT * 5.5, size::CODE_LINE_HEIGHT * 13.0)
     };
-    crate::egui::ScrollArea::vertical()
-        .id_salt(("raabit-stage-body", index, mode == Mode::Form))
-        .max_height(editor_height)
-        .show(ui, |ui| {
-            if mode == Mode::Form {
+    if mode == Mode::Form {
+        scroll_vertical()
+            .id_salt(("raabit-stage-body", index))
+            .max_height(editor_height)
+            .show(ui, |ui| {
                 let suggest = Suggestions {
                     fields: &fields,
                     collections,
@@ -536,41 +457,43 @@ fn stage_editor(
                 {
                     actions.push(Action::Preview);
                 }
-            } else if widgets::code_editor(ui, &mut stage.body, 7, ("raabit-stage-editor", index))
-                .changed()
-            {
-                // Typing in the editor keeps the stage in Code mode.
-                tab.stage_code.insert(index);
-                if stage.to_document().is_ok() {
-                    actions.push(Action::Preview);
-                }
-            }
-        });
-    if let Some(err) = &tab.stage_error {
-        ui.horizontal(|ui| {
-            icons::icon(ui, Icon::Warning, p.error);
-            ui.label(RichText::new(err).color(p.error));
-        });
+            });
+    } else if ui
+        .add(
+            CodeEditor::new(&mut stage.body)
+                .label("Stage body")
+                .highlighter(&JavaScript)
+                .id(Id::new(("raabit-stage-editor", index)))
+                .height(editor_height),
+        )
+        .changed()
+    {
+        // Typing in the editor keeps the stage in Code mode.
+        tab.stage_code.insert(index);
+        if stage.to_document().is_ok() {
+            actions.push(Action::Preview);
+        }
     }
-    ui.add_space(8.0);
+    if let Some(err) = &tab.stage_error {
+        Banner::new(Severity::Error, err).show(ui);
+    }
     match &tab.preview {
         Load::Idle => {}
         Load::Loading => {
             ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(RichText::new("Previewing…").color(p.text_secondary));
+                ui.add(Spinner::new().label("Previewing"));
+                widgets::label(ui, Tone::Secondary, "Previewing…");
             });
         }
         Load::Failed(err) => {
-            ui.add(crate::egui::Label::new(RichText::new(err).color(p.error)).wrap());
+            Banner::new(Severity::Error, err).show(ui);
         }
         Load::Ready(preview) => {
-            let width = (ui.available_width() - 12.0) / 2.0;
+            let width = (ui.available_width() - size::CONTENT_INSET) / 2.0;
             let height = ui.available_height();
             ui.horizontal_top(|ui| {
                 preview_column(
                     ui,
-                    p,
                     "Stage input",
                     &preview.input,
                     None,
@@ -578,10 +501,9 @@ fn stage_editor(
                     height,
                     ("in", index),
                 );
-                ui.add_space(12.0);
+                ui.add_space(size::CONTENT_INSET);
                 preview_column(
                     ui,
-                    p,
                     "Stage output",
                     &preview.output,
                     preview.skipped_reason.as_deref(),
@@ -595,10 +517,8 @@ fn stage_editor(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn preview_column(
     ui: &mut Ui,
-    p: &Palette,
     title: &str,
     docs: &[Document],
     note: Option<&str>,
@@ -609,38 +529,32 @@ fn preview_column(
     ui.vertical(|ui| {
         ui.set_width(width);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(title).strong());
+            widgets::title(ui, title);
             ui.add(Tag::new(format!("{} docs", docs.len())).tone(Tone::Secondary));
         });
-        ui.add_space(4.0);
         if let Some(note) = note {
-            crate::egui::Frame::new()
-                .fill(p.warning.gamma_multiply(0.14))
-                .corner_radius(CornerRadius::same(7))
-                .inner_margin(crate::egui::Margin::symmetric(10, 6))
-                .show(ui, |ui| {
-                    ui.set_width(width - 20.0);
-                    ui.label(RichText::new(note).color(p.warning));
-                });
+            Banner::new(Severity::Warning, note).show(ui);
             return;
         }
-        crate::egui::ScrollArea::vertical()
+        let palette = crate::style::Palette::of(ui);
+        scroll_vertical()
             .id_salt(id)
-            .max_height(height - 30.0)
+            .max_height(height - size::CONTROL_HEIGHT)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for doc in docs {
-                    crate::egui::Frame::new()
-                        .fill(p.field)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(7))
-                        .inner_margin(crate::egui::Margin::symmetric(10, 6))
+                    Surface::Field
+                        .frame(ui.ctx())
+                        .inner_margin(crate::egui::Margin::symmetric(
+                            size::SECONDARY_GAP as i8,
+                            size::ISLAND_GAP as i8,
+                        ))
                         .show(ui, |ui| {
-                            ui.set_width(width - 22.0);
-                            let job = values::document_job(doc, p, FontId::monospace(11.5));
+                            ui.set_width(ui.available_width());
+                            let font = crate::egui::FontId::monospace(typography::COMMENT);
+                            let job = values::document_job(doc, &palette, font);
                             ui.add(crate::egui::Label::new(job).wrap());
                         });
-                    ui.add_space(6.0);
                 }
                 if docs.is_empty() {
                     widgets::caption(ui, "No documents");
@@ -652,53 +566,42 @@ fn preview_column(
 /// Results of a full run, shared with the SQL tab.
 pub fn result_pane(
     ui: &mut Ui,
-    p: &Palette,
     id: TabId,
     view: &mut ResultView,
     open: &mut std::collections::HashSet<String>,
     result: &Load<RunResult>,
 ) {
-    crate::egui::Frame::new()
-        .inner_margin(crate::egui::Margin {
-            left: 14,
-            right: 14,
-            top: 8,
-            bottom: 6,
-        })
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Results").strong());
-                ui.add(SegmentedControl::new(
-                    view,
-                    [(ResultView::Tree, "Tree"), (ResultView::Json, "JSON")],
-                ));
-                match result {
-                    Load::Ready(r) => {
-                        ui.add(
-                            Tag::new(format!("{} documents", r.documents.len())).tone(Tone::Accent),
+    widgets::padded(ui, |ui| {
+        ui.horizontal(|ui| {
+            widgets::title(ui, "Results");
+            ui.add(SegmentedControl::new(
+                view,
+                [(ResultView::Tree, "Tree"), (ResultView::Json, "JSON")],
+            ));
+            match result {
+                Load::Ready(r) => {
+                    ui.add(Tag::new(format!("{} documents", r.documents.len())).tone(Tone::Accent));
+                    widgets::label(ui, Tone::Muted, style::duration(r.elapsed));
+                    if r.documents.len() as u64 >= crate::tools::RUN_LIMIT {
+                        widgets::label(
+                            ui,
+                            Tone::Muted,
+                            format!("first {} shown", crate::tools::RUN_LIMIT),
                         );
-                        ui.label(RichText::new(style::duration(r.elapsed)).color(p.text_info));
-                        if r.documents.len() as u64 >= crate::tools::RUN_LIMIT {
-                            ui.label(
-                                RichText::new(format!("first {} shown", crate::tools::RUN_LIMIT))
-                                    .color(p.text_info),
-                            );
-                        }
                     }
-                    Load::Loading => {
-                        ui.spinner();
-                    }
-                    _ => {}
                 }
-            });
+                Load::Loading => {
+                    ui.add(Spinner::new().label("Running"));
+                }
+                _ => {}
+            }
         });
+    });
     match result {
         Load::Failed(err) => {
-            crate::egui::Frame::new()
-                .inner_margin(crate::egui::Margin::symmetric(14, 4))
-                .show(ui, |ui| {
-                    ui.add(crate::egui::Label::new(RichText::new(err).color(p.error)).wrap());
-                });
+            widgets::padded(ui, |ui| {
+                Banner::new(Severity::Error, err).show(ui);
+            });
         }
         Load::Ready(r) => match view {
             ResultView::Json => results::json(ui, &r.documents, 1),
