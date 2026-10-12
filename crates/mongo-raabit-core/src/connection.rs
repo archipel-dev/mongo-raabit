@@ -11,9 +11,14 @@ use mongodb::options::{ClientOptions, IndexOptions};
 use mongodb::{Client, IndexModel};
 use serde::Serialize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a read may run on the server until the query timeout setting is applied
+/// ([`Connection::set_query_timeout`]); the default of that setting.
+pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Facts about the server shown after "Test connection" and in the status bar.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -36,6 +41,10 @@ pub struct Connection {
     server: ServerInfo,
     /// Every change is refused (see [`Connection::execute`]). Fixed at connect.
     read_only: bool,
+    /// `maxTimeMS` of every query, count and aggregation, in milliseconds: the server
+    /// stops a read that takes longer. Shared by clones; the views keep it equal to the
+    /// query timeout setting.
+    query_timeout_ms: Arc<AtomicU64>,
     _tunnel: Option<Arc<SshTunnel>>,
 }
 
@@ -45,6 +54,9 @@ pub struct ConnectOptions {
     /// Open read-only even when the profile is not (the "open connections read-only"
     /// setting). A read-only profile is always opened read-only.
     pub read_only: bool,
+    /// The server-side time limit of reads (`maxTimeMS`); `None` is
+    /// [`DEFAULT_QUERY_TIMEOUT`]. Changed later with [`Connection::set_query_timeout`].
+    pub query_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for Connection {
@@ -229,6 +241,7 @@ impl Connection {
     ) -> Result<Self> {
         profile.validate()?;
         let read_only = profile.read_only || options.read_only;
+        let query_timeout = options.query_timeout.unwrap_or(DEFAULT_QUERY_TIMEOUT);
         let password = if profile.auth.mechanism.needs_password() {
             secrets.get(&profile.password_key())?
         } else {
@@ -285,6 +298,9 @@ impl Connection {
             profile: Arc::new(profile.clone()),
             server,
             read_only,
+            query_timeout_ms: Arc::new(AtomicU64::new(
+                u64::try_from(query_timeout.as_millis()).unwrap_or(u64::MAX),
+            )),
             _tunnel: tunnel,
         })
     }
@@ -334,6 +350,17 @@ impl Connection {
     }
 
     /// Fails with [`RaabitError::ReadOnly`] on a read-only connection.
+    /// The server-side time limit of every query, count and aggregation (`maxTimeMS`).
+    pub fn query_timeout(&self) -> Duration {
+        Duration::from_millis(self.query_timeout_ms.load(Ordering::Relaxed).max(1))
+    }
+
+    /// Change the time limit of reads, for this connection and its clones.
+    pub fn set_query_timeout(&self, limit: Duration) {
+        let ms = u64::try_from(limit.as_millis()).unwrap_or(u64::MAX).max(1);
+        self.query_timeout_ms.store(ms, Ordering::Relaxed);
+    }
+
     pub(crate) fn ensure_writable(&self, what: impl FnOnce() -> String) -> Result<()> {
         if self.read_only {
             Err(RaabitError::ReadOnly(what()))

@@ -67,6 +67,7 @@ async fn previews_count_what_a_write_touches() {
         id: Bson::Int32(404),
         path: "n".into(),
         value: Some(Bson::Int32(1)),
+        original: Some(Bson::Int32(404)),
     };
     assert_eq!(
         conn.preview(&edit).await.unwrap().affected,
@@ -130,6 +131,7 @@ async fn a_read_only_connection_changes_nothing() {
             id: Bson::Int32(1),
             path: "n".into(),
             value: Some(Bson::Int32(100)),
+            original: Some(Bson::Int32(1)),
         },
         Write::InsertDocuments {
             db: d.clone(),

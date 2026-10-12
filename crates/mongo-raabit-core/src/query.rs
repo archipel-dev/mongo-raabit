@@ -305,6 +305,7 @@ impl Connection {
         let handle = self.collection(db, collection);
         let mut find = handle
             .find(query.filter.clone())
+            .max_time(self.query_timeout())
             .skip(skip)
             .limit(i64::try_from(fetch).unwrap_or(i64::MAX));
         if let Some(projection) = &query.projection {
@@ -329,7 +330,9 @@ impl Connection {
     /// Number of documents the query matches (respecting its skip and limit).
     pub async fn count(&self, db: &str, collection: &str, query: &Query) -> Result<u64> {
         let handle = self.collection(db, collection);
-        let mut count = handle.count_documents(query.filter.clone());
+        let mut count = handle
+            .count_documents(query.filter.clone())
+            .max_time(self.query_timeout());
         if query.skip > 0 {
             count = count.skip(query.skip);
         }
@@ -341,7 +344,12 @@ impl Connection {
 
     /// Explain the query with `executionStats` verbosity.
     pub async fn explain(&self, db: &str, collection: &str, query: &Query) -> Result<Explain> {
-        let mut find = doc! {"find": collection, "filter": query.filter.clone()};
+        let max_time = i64::try_from(self.query_timeout().as_millis()).unwrap_or(i64::MAX);
+        let mut find = doc! {
+            "find": collection,
+            "filter": query.filter.clone(),
+            "maxTimeMS": max_time,
+        };
         if let Some(projection) = &query.projection {
             find.insert("projection", projection.clone());
         }
@@ -386,59 +394,6 @@ impl Connection {
             .insert_many(documents)
             .await?;
         Ok(ids)
-    }
-
-    /// Replace a whole document (the document editor's Save). The `_id` must not change.
-    pub(crate) async fn replace_document(
-        &self,
-        db: &str,
-        collection: &str,
-        original_id: &Bson,
-        replacement: Document,
-    ) -> Result<()> {
-        if let Some(new_id) = replacement.get("_id")
-            && new_id != original_id
-        {
-            return Err(RaabitError::Invalid(
-                "_id cannot be changed; clone the document instead".into(),
-            ));
-        }
-        let result = self
-            .collection(db, collection)
-            .replace_one(doc! {"_id": original_id.clone()}, replacement)
-            .await?;
-        if result.matched_count == 0 {
-            return Err(RaabitError::Invalid(
-                "the document no longer exists (deleted by someone else?)".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Set (or with `None`, unset) one field path of a document — inline table edits.
-    pub(crate) async fn set_field(
-        &self,
-        db: &str,
-        collection: &str,
-        id: &Bson,
-        path: &str,
-        value: Option<Bson>,
-    ) -> Result<()> {
-        if path.is_empty() || path == "_id" || path.starts_with("_id.") {
-            return Err(RaabitError::Invalid("_id cannot be edited in place".into()));
-        }
-        let update = match value {
-            Some(value) => doc! {"$set": {path: value}},
-            None => doc! {"$unset": {path: ""}},
-        };
-        let result = self
-            .collection(db, collection)
-            .update_one(doc! {"_id": id.clone()}, update)
-            .await?;
-        if result.matched_count == 0 {
-            return Err(RaabitError::Invalid("the document no longer exists".into()));
-        }
-        Ok(())
     }
 
     /// Delete documents by `_id`. Returns how many were removed.

@@ -121,6 +121,21 @@ pub fn editable_prefix(doc: &Document, drill: &[String]) -> Option<String> {
     Some(drill.join("."))
 }
 
+/// The value at dotted `path` in `doc`, through embedded documents and array positions
+/// (`tags.0`), as `$set` reads the path; `None` when the field is missing.
+pub fn value_at<'a>(doc: &'a Document, path: &str) -> Option<&'a Bson> {
+    let mut segments = path.split('.');
+    let mut current = doc.get(segments.next()?)?;
+    for segment in segments {
+        current = match current {
+            Bson::Document(d) => d.get(segment)?,
+            Bson::Array(items) => items.get(segment.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(current)
+}
+
 /// `name` below `prefix` as a dotted path.
 pub fn join_path(prefix: &str, name: &str) -> String {
     if prefix.is_empty() {
@@ -343,6 +358,17 @@ mod tests {
         assert_eq!(inline_text(&Bson::String("a".into())), Some("a".into()));
         assert_eq!(inline_text(&Bson::String("a\nb".into())), None);
         assert_eq!(inline_text(&Bson::DateTime(DateTime::from_millis(0))), None);
+    }
+
+    #[test]
+    fn values_at_dotted_paths() {
+        let doc = doc! {"a": {"b": 1}, "l": [{"x": 2}, 3]};
+        assert_eq!(value_at(&doc, "a.b"), Some(&Bson::Int32(1)));
+        assert_eq!(value_at(&doc, "l.0.x"), Some(&Bson::Int32(2)));
+        assert_eq!(value_at(&doc, "l.1"), Some(&Bson::Int32(3)));
+        assert_eq!(value_at(&doc, "a.c"), None);
+        assert_eq!(value_at(&doc, "a.b.c"), None);
+        assert_eq!(value_at(&doc, "l.x"), None);
     }
 
     #[test]

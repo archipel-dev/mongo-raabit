@@ -463,13 +463,19 @@ impl Connection {
                     pipeline.push(doc! {"$match": filter});
                 }
                 pipeline.push(doc! {"$sample": {"size": size}});
-                handle.aggregate(pipeline).await?.try_collect().await?
+                handle
+                    .aggregate(pipeline)
+                    .max_time(self.query_timeout())
+                    .await?
+                    .try_collect()
+                    .await?
             }
             // `$natural` order is only available to find, not to `$sort`.
             SampleMethod::First | SampleMethod::Last => {
                 let direction = if method == SampleMethod::First { 1 } else { -1 };
                 handle
                     .find(filter)
+                    .max_time(self.query_timeout())
                     .sort(doc! {"$natural": direction})
                     .limit(size)
                     .await?

@@ -7,12 +7,12 @@
 //! `Write` with [`crate::RaabitError::ReadOnly`] before anything reaches the server.
 
 use crate::connection::{Connection, NewIndex, RoleRef};
-use crate::error::Result;
+use crate::error::{RaabitError, Result};
 use crate::format;
 use crate::shell::{self, ShellStyle};
 use crate::transfer::{ImportMode, ImportReport};
 use futures_util::TryStreamExt;
-use mongodb::bson::{Bson, Document, doc};
+use mongodb::bson::{Bson, DateTime, Document, doc};
 use std::future::IntoFuture;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -41,20 +41,26 @@ pub enum Write {
         collection: String,
         document: Document,
     },
-    /// The document editor's Save: replace the document with this `_id`.
+    /// The document editor's Save: replace the document with this `_id`, only if it is
+    /// still exactly `original` (the document as it was loaded; see [`replace_filter`]).
     ReplaceDocument {
         db: String,
         collection: String,
         id: Bson,
+        /// The whole document as it was loaded into the editor.
+        original: Document,
         replacement: Document,
     },
-    /// An inline edit: `$set` (or with `None`, `$unset`) one field of one document.
+    /// An inline edit: `$set` (or with `None`, `$unset`) one field of one document, only
+    /// if the field still has the value that was loaded (see [`set_field_filter`]).
     SetField {
         db: String,
         collection: String,
         id: Bson,
         path: String,
         value: Option<Bson>,
+        /// The field's value as it was loaded; `None` when the field was missing.
+        original: Option<Bson>,
     },
     UpdateOne {
         db: String,
@@ -409,7 +415,241 @@ fn index_options(index: &NewIndex) -> Document {
     options
 }
 
+/// The message of [`crate::RaabitError::Conflict`]: a single-document write found the
+/// document changed or gone, and wrote nothing.
+pub const CONFLICT: &str =
+    "The document changed (or was deleted) since it was loaded. Reload and try again.";
+
+/// The filter of an inline edit ([`Write::SetField`]): the document's `_id`, and the field
+/// at `path` still holding exactly `original`, the value that was loaded (`None`: the
+/// field was missing, so it must still be missing).
+///
+/// A value is matched with `$eq` (a document is a value, not operators; a regular
+/// expression is a value, not a pattern), its BSON type with `$type` (`1` that became
+/// `1.0` or `"1"` changed; `null` does not match a missing field), and `$not: { $type:
+/// "array" }` (an array that now merely contains the value changed). An original that is
+/// itself an array is matched with `$eq` and `$type: "array"`.
+pub fn set_field_filter(id: &Bson, path: &str, original: Option<&Bson>) -> Document {
+    let condition = match original {
+        None => doc! {"$exists": false},
+        Some(value @ Bson::Array(_)) => doc! {"$eq": value.clone(), "$type": "array"},
+        Some(value) => doc! {
+            "$eq": value.clone(),
+            "$type": type_alias(value),
+            "$not": {"$type": "array"},
+        },
+    };
+    let mut filter = doc! {"_id": id.clone()};
+    filter.insert(path, condition);
+    filter
+}
+
+/// The `$type` alias of a value's BSON type.
+fn type_alias(value: &Bson) -> &'static str {
+    match value {
+        Bson::Double(_) => "double",
+        Bson::String(_) => "string",
+        Bson::Document(_) => "object",
+        Bson::Array(_) => "array",
+        Bson::Binary(_) => "binData",
+        Bson::Undefined => "undefined",
+        Bson::ObjectId(_) => "objectId",
+        Bson::Boolean(_) => "bool",
+        Bson::DateTime(_) => "date",
+        Bson::Null => "null",
+        Bson::RegularExpression(_) => "regex",
+        Bson::DbPointer(_) => "dbPointer",
+        Bson::JavaScriptCode(_) => "javascript",
+        Bson::Symbol(_) => "symbol",
+        Bson::JavaScriptCodeWithScope(_) => "javascriptWithScope",
+        Bson::Int32(_) => "int",
+        Bson::Timestamp(_) => "timestamp",
+        Bson::Int64(_) => "long",
+        Bson::Decimal128(_) => "decimal",
+        Bson::MinKey => "minKey",
+        Bson::MaxKey => "maxKey",
+    }
+}
+
+/// The filter of the document editor's Save ([`Write::ReplaceDocument`]): the `_id`, and
+/// the whole stored document still equal to `original`, the document that was loaded.
+///
+/// Comparing the whole document (`$$ROOT`) is the simplest check that is complete: it
+/// also notices fields that someone else added or removed, which a filter on the loaded
+/// top-level fields would miss (replacing would silently drop them). `$literal` keeps the
+/// server from reading strings that start with `$` as expressions. `$eq` compares numbers
+/// by value, so the stored size (`$bsonSize`) must match too: a number stored with another
+/// type of a different width (`1` that became `1.0`) is a change.
+pub fn replace_filter(id: &Bson, original: &Document) -> Document {
+    let size = mongodb::bson::to_vec(original).map_or(0, |bytes| bytes.len());
+    doc! {
+        "_id": id.clone(),
+        "$expr": {"$and": [
+            {"$eq": ["$$ROOT", {"$literal": original.clone()}]},
+            {"$eq": [{"$bsonSize": "$$ROOT"}, i32::try_from(size).unwrap_or(i32::MAX)]},
+        ]},
+    }
+}
+
+/// The update of an inline edit: `$set` of the value, or `$unset` without one.
+fn set_field_update(path: &str, value: Option<&Bson>) -> Document {
+    match value {
+        Some(value) => doc! {"$set": {path: value.clone()}},
+        None => doc! {"$unset": {path: ""}},
+    }
+}
+
+/// Every variant of [`Write`], by name, in declaration order (what [`Write::kind`]
+/// returns). The contract tests check that each one has a sample, a live test, a
+/// read-only test and a round-trip test.
+pub const KINDS: &[&str] = &[
+    "InsertDocuments",
+    "CloneDocument",
+    "ReplaceDocument",
+    "SetField",
+    "UpdateOne",
+    "UpdateMany",
+    "ReplaceOne",
+    "DeleteDocuments",
+    "DeleteOne",
+    "DeleteMany",
+    "CreateDatabase",
+    "DropDatabase",
+    "CreateCollection",
+    "CreateView",
+    "DropCollection",
+    "RenameCollection",
+    "CreateIndex",
+    "DropIndex",
+    "SetIndexHidden",
+    "CreateUser",
+    "DropUser",
+    "KillOp",
+    "Import",
+    "Aggregate",
+    "RunCommand",
+];
+
 impl Write {
+    /// The variant's name (one of [`KINDS`]).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::InsertDocuments { .. } => "InsertDocuments",
+            Self::CloneDocument { .. } => "CloneDocument",
+            Self::ReplaceDocument { .. } => "ReplaceDocument",
+            Self::SetField { .. } => "SetField",
+            Self::UpdateOne { .. } => "UpdateOne",
+            Self::UpdateMany { .. } => "UpdateMany",
+            Self::ReplaceOne { .. } => "ReplaceOne",
+            Self::DeleteDocuments { .. } => "DeleteDocuments",
+            Self::DeleteOne { .. } => "DeleteOne",
+            Self::DeleteMany { .. } => "DeleteMany",
+            Self::CreateDatabase { .. } => "CreateDatabase",
+            Self::DropDatabase { .. } => "DropDatabase",
+            Self::CreateCollection { .. } => "CreateCollection",
+            Self::CreateView { .. } => "CreateView",
+            Self::DropCollection { .. } => "DropCollection",
+            Self::RenameCollection { .. } => "RenameCollection",
+            Self::CreateIndex { .. } => "CreateIndex",
+            Self::DropIndex { .. } => "DropIndex",
+            Self::SetIndexHidden { .. } => "SetIndexHidden",
+            Self::CreateUser { .. } => "CreateUser",
+            Self::DropUser { .. } => "DropUser",
+            Self::KillOp { .. } => "KillOp",
+            Self::Import { .. } => "Import",
+            Self::Aggregate { .. } => "Aggregate",
+            Self::RunCommand { .. } => "RunCommand",
+        }
+    }
+
+    /// The write as the plain mongosh statement it runs, which is what [`Write::shell`]
+    /// prints and what the built-in shell reads back
+    /// ([`crate::shell_eval::statement_write`]). The variants the views build for one
+    /// purpose become the general call that runs on the server: an inline edit is an
+    /// `updateOne` with its guard filter, a Save a `replaceOne` with its guard filter, a
+    /// delete of selected documents a `deleteOne`/`deleteMany` by `_id`, a clone an
+    /// `insertOne` without `_id`, and creating a database the `createCollection` of its
+    /// first collection. Every other write is returned as it is.
+    pub fn canonical(&self) -> Write {
+        match self.clone() {
+            Self::CloneDocument {
+                db,
+                collection,
+                mut document,
+            } => {
+                document.remove("_id");
+                Self::InsertDocuments {
+                    db,
+                    collection,
+                    documents: vec![document],
+                }
+            }
+            Self::ReplaceDocument {
+                db,
+                collection,
+                id,
+                original,
+                replacement,
+            } => Self::ReplaceOne {
+                db,
+                collection,
+                filter: replace_filter(&id, &original),
+                replacement,
+            },
+            Self::SetField {
+                db,
+                collection,
+                id,
+                path,
+                value,
+                original,
+            } => Self::UpdateOne {
+                db,
+                collection,
+                filter: set_field_filter(&id, &path, original.as_ref()),
+                update: set_field_update(&path, value.as_ref()),
+            },
+            Self::DeleteDocuments {
+                db,
+                collection,
+                ids,
+            } => match <[Bson; 1]>::try_from(ids) {
+                Ok([id]) => Self::DeleteOne {
+                    db,
+                    collection,
+                    filter: doc! {"_id": id},
+                },
+                Err(ids) => Self::DeleteMany {
+                    db,
+                    collection,
+                    filter: doc! {"_id": {"$in": ids}},
+                },
+            },
+            Self::CreateDatabase {
+                db,
+                first_collection,
+            } => Self::CreateCollection {
+                db,
+                name: first_collection,
+                options: Document::new(),
+            },
+            Self::CreateIndex {
+                db,
+                collection,
+                mut index,
+            } => {
+                index.name = index.name.filter(|n| !n.trim().is_empty());
+                index.ttl_seconds = index.ttl_seconds.map(|t| t.min(i64::MAX as u64));
+                Self::CreateIndex {
+                    db,
+                    collection,
+                    index,
+                }
+            }
+            other => other,
+        }
+    }
+
     /// The database the write changes.
     pub fn db(&self) -> &str {
         match self {
@@ -480,8 +720,14 @@ impl Write {
     /// relative to the write's database (`db.getCollection(…)`), database-level ones name
     /// it (`db.getSiblingDB(…)`). Passwords are never printed (`passwordPrompt()`).
     pub fn shell(&self) -> String {
-        let id_filter = |id: &Bson| Bson::Document(doc! {"_id": id.clone()});
         match self {
+            // Printed as the general call they run (see `canonical`), so the text shown is
+            // the text the shell reads back.
+            Self::CloneDocument { .. }
+            | Self::ReplaceDocument { .. }
+            | Self::SetField { .. }
+            | Self::DeleteDocuments { .. }
+            | Self::CreateDatabase { .. } => self.canonical().shell(),
             Self::InsertDocuments {
                 collection,
                 documents,
@@ -494,42 +740,6 @@ impl Write {
                 ),
                 many => format!("{}.insertMany({})", coll(collection), document_list(many)),
             },
-            Self::CloneDocument {
-                collection,
-                document,
-                ..
-            } => {
-                let mut copy = document.clone();
-                copy.remove("_id");
-                call(&coll(collection), "insertOne", &[Bson::Document(copy)])
-            }
-            Self::ReplaceDocument {
-                collection,
-                id,
-                replacement,
-                ..
-            } => call(
-                &coll(collection),
-                "replaceOne",
-                &[id_filter(id), Bson::Document(replacement.clone())],
-            ),
-            Self::SetField {
-                collection,
-                id,
-                path,
-                value,
-                ..
-            } => {
-                let update = match value {
-                    Some(value) => doc! {"$set": {path.as_str(): value.clone()}},
-                    None => doc! {"$unset": {path.as_str(): ""}},
-                };
-                call(
-                    &coll(collection),
-                    "updateOne",
-                    &[id_filter(id), Bson::Document(update)],
-                )
-            }
             Self::UpdateOne {
                 collection,
                 filter,
@@ -569,16 +779,6 @@ impl Write {
                     Bson::Document(replacement.clone()),
                 ],
             ),
-            Self::DeleteDocuments {
-                collection, ids, ..
-            } => match ids.as_slice() {
-                [id] => call(&coll(collection), "deleteOne", &[id_filter(id)]),
-                many => call(
-                    &coll(collection),
-                    "deleteMany",
-                    &[Bson::Document(doc! {"_id": {"$in": many.to_vec()}})],
-                ),
-            },
             Self::DeleteOne {
                 collection, filter, ..
             } => call(
@@ -592,14 +792,6 @@ impl Write {
                 &coll(collection),
                 "deleteMany",
                 &[Bson::Document(filter.clone())],
-            ),
-            Self::CreateDatabase {
-                db,
-                first_collection,
-            } => call(
-                &sibling(db),
-                "createCollection",
-                &[Bson::String(first_collection.clone())],
             ),
             Self::DropDatabase { db } => format!("{}.dropDatabase()", sibling(db)),
             Self::CreateCollection { db, name, options } => {
@@ -899,6 +1091,68 @@ impl Write {
     }
 }
 
+impl Write {
+    /// Compare what ran with what was expected: the count the confirmation showed
+    /// (`expected`, from [`Connection::preview`]) and, for a delete of selected documents,
+    /// how many were selected. A warning when they differ, e.g. "Expected 12 documents,
+    /// 14 were matched — the data changed between preview and run"; `None` when they
+    /// agree or nothing was counted.
+    pub fn check_outcome(
+        &self,
+        expected: Option<&Affected>,
+        outcome: &WriteOutcome,
+    ) -> Option<String> {
+        let (actual, verb) = match outcome {
+            WriteOutcome::Updated { matched, .. } => (*matched, "matched"),
+            WriteOutcome::Deleted(n) => (*n, "deleted"),
+            WriteOutcome::Inserted(ids) => (ids.len() as u64, "inserted"),
+            _ => return None,
+        };
+        if let Self::DeleteDocuments { ids, .. } = self
+            && actual < ids.len() as u64
+        {
+            let selected = ids.len() as u64;
+            return Some(format!(
+                "Deleted {} of {} selected {}: {} no longer existed",
+                format::group(actual),
+                format::group(selected),
+                if selected == 1 {
+                    "document"
+                } else {
+                    "documents"
+                },
+                format::group(selected - actual)
+            ));
+        }
+        let expected = match (self, expected) {
+            (
+                Self::UpdateOne { .. }
+                | Self::UpdateMany { .. }
+                | Self::ReplaceOne { .. }
+                | Self::DeleteOne { .. }
+                | Self::DeleteMany { .. }
+                | Self::DeleteDocuments { .. }
+                | Self::SetField { .. }
+                | Self::ReplaceDocument { .. },
+                Some(Affected::Documents(n)),
+            ) => *n,
+            (
+                Self::InsertDocuments { .. } | Self::CloneDocument { .. },
+                Some(Affected::Inserted(n)),
+            ) => *n,
+            _ => return None,
+        };
+        (actual != expected).then(|| {
+            format!(
+                "Expected {}, {} {} {verb} — the data changed between preview and run",
+                documents(expected),
+                format::group(actual),
+                if actual == 1 { "was" } else { "were" }
+            )
+        })
+    }
+}
+
 impl WriteOutcome {
     /// A status line for the outcome.
     pub fn message(&self) -> String {
@@ -932,6 +1186,15 @@ impl WriteOutcome {
             Self::Command(_) | Self::Done => "Done".to_owned(),
         }
     }
+}
+
+/// The outcome of a guarded single-document write: exactly one document matched, or the
+/// document changed since it was loaded ([`RaabitError::Conflict`]; nothing was written).
+fn single_document(matched: u64, modified: u64) -> Result<WriteOutcome> {
+    if matched != 1 {
+        return Err(RaabitError::Conflict(CONFLICT.into()));
+    }
+    Ok(WriteOutcome::Updated { matched, modified })
 }
 
 /// Run `count` with [`PREVIEW_TIMEOUT`]; a failure or timeout is `None`.
@@ -977,15 +1240,15 @@ impl Connection {
             Write::InsertDocuments { documents, .. } => Affected::Inserted(documents.len() as u64),
             Write::Import { documents, .. } => Affected::Inserted(documents.len() as u64),
             Write::CloneDocument { .. } => Affected::Inserted(1),
-            Write::ReplaceDocument {
-                db, collection, id, ..
-            }
-            | Write::SetField {
-                db, collection, id, ..
-            } => {
-                self.preview_count(db, collection, doc! {"_id": id.clone()}, 1)
-                    .await
-            }
+            // Counted with the guard filter: a document that already changed shows as
+            // "No document matches" before anything runs.
+            Write::ReplaceDocument { db, collection, .. }
+            | Write::SetField { db, collection, .. } => match write.canonical() {
+                Write::ReplaceOne { filter, .. } | Write::UpdateOne { filter, .. } => {
+                    self.preview_count(db, collection, filter, 1).await
+                }
+                _ => Affected::Unknown,
+            },
             Write::UpdateOne {
                 db,
                 collection,
@@ -1127,30 +1390,52 @@ impl Connection {
                 self.clone_document(&db, &collection, &document).await?,
             ]),
             Write::ReplaceDocument {
-                db,
-                collection,
-                id,
-                replacement,
+                ref db,
+                ref collection,
+                ref id,
+                ref replacement,
+                ..
             } => {
-                self.replace_document(&db, &collection, &id, replacement)
-                    .await?;
-                WriteOutcome::Updated {
-                    matched: 1,
-                    modified: 1,
+                if let Some(new_id) = replacement.get("_id")
+                    && new_id != id
+                {
+                    return Err(RaabitError::Invalid(
+                        "_id cannot be changed; clone the document instead".into(),
+                    ));
                 }
+                // Runs the `replaceOne` that `shell()` printed, guard filter included.
+                let Write::ReplaceOne {
+                    filter,
+                    replacement,
+                    ..
+                } = write.canonical()
+                else {
+                    unreachable!("a ReplaceDocument is a replaceOne");
+                };
+                let r = self
+                    .collection(db, collection)
+                    .replace_one(filter, replacement)
+                    .await?;
+                single_document(r.matched_count, r.modified_count)?
             }
             Write::SetField {
-                db,
-                collection,
-                id,
-                path,
-                value,
+                ref db,
+                ref collection,
+                ref path,
+                ..
             } => {
-                self.set_field(&db, &collection, &id, &path, value).await?;
-                WriteOutcome::Updated {
-                    matched: 1,
-                    modified: 1,
+                if path.is_empty() || path == "_id" || path.starts_with("_id.") {
+                    return Err(RaabitError::Invalid("_id cannot be edited in place".into()));
                 }
+                // Runs the `updateOne` that `shell()` printed, guard filter included.
+                let Write::UpdateOne { filter, update, .. } = write.canonical() else {
+                    unreachable!("a SetField is an updateOne");
+                };
+                let r = self
+                    .collection(db, collection)
+                    .update_one(filter, update)
+                    .await?;
+                single_document(r.matched_count, r.modified_count)?
             }
             Write::UpdateOne {
                 db,
@@ -1316,10 +1601,14 @@ impl Connection {
                 pipeline,
             } => {
                 let start = Instant::now();
+                // Bounded on the server, so a pipeline that runs too long stops there
+                // (`$out` then leaves its target as it was) instead of finishing after the
+                // view gave up on it.
                 let cursor = self
                     .collection(&db, &collection)
                     .aggregate(pipeline)
                     .allow_disk_use(true)
+                    .max_time(self.query_timeout())
                     .await?;
                 let documents: Vec<Document> = cursor.try_collect().await?;
                 WriteOutcome::Aggregated {
@@ -1332,6 +1621,171 @@ impl Connection {
             }
         })
     }
+}
+
+/// The documents of `orders` the [`samples`] expect: `_id` 1 to 3, an index `n_1`.
+pub fn sample_seed() -> Vec<Document> {
+    vec![
+        doc! {"_id": 1, "status": "open", "n": 1, "tags": ["a", "b"]},
+        doc! {"_id": 2, "status": "open", "n": 2, "address": {"city": "Oslo"}},
+        doc! {"_id": 3, "status": "done", "n": 3},
+    ]
+}
+
+/// One write of every [`Write`] variant on `db`, written against [`sample_seed`] (the
+/// collection `orders` with its index `n_1`, and a user `reporter`). The contract tests
+/// run each of them: the round trip through the shell, the live test of its exact
+/// result, and the read-only refusal. `tests/write_contract.rs` fails when a variant of
+/// the enum has no sample here.
+pub fn samples(db: &str) -> Vec<Write> {
+    let db = db.to_owned();
+    let orders = "orders".to_owned();
+    let seed = sample_seed();
+    vec![
+        Write::InsertDocuments {
+            db: db.clone(),
+            collection: orders.clone(),
+            documents: vec![
+                doc! {"_id": 10, "name": "Ada \"the first\" Lovelace"},
+                doc! {"_id": 11, "when": DateTime::from_millis(1_700_000_000_123)},
+            ],
+        },
+        Write::CloneDocument {
+            db: db.clone(),
+            collection: orders.clone(),
+            document: seed[0].clone(),
+        },
+        Write::ReplaceDocument {
+            db: db.clone(),
+            collection: orders.clone(),
+            id: Bson::Int32(1),
+            original: seed[0].clone(),
+            replacement: doc! {"_id": 1, "status": "done", "n": 1},
+        },
+        Write::SetField {
+            db: db.clone(),
+            collection: orders.clone(),
+            id: Bson::Int32(2),
+            path: "address.city".into(),
+            value: Some(Bson::String("Bergen".into())),
+            original: Some(Bson::String("Oslo".into())),
+        },
+        Write::UpdateOne {
+            db: db.clone(),
+            collection: orders.clone(),
+            filter: doc! {"_id": 3},
+            update: doc! {"$inc": {"n": 10}},
+        },
+        Write::UpdateMany {
+            db: db.clone(),
+            collection: orders.clone(),
+            filter: doc! {"status": "open"},
+            update: doc! {"$set": {"flag": true}},
+        },
+        Write::ReplaceOne {
+            db: db.clone(),
+            collection: orders.clone(),
+            filter: doc! {"_id": 2},
+            replacement: doc! {"_id": 2, "status": "replaced"},
+        },
+        Write::DeleteDocuments {
+            db: db.clone(),
+            collection: orders.clone(),
+            ids: vec![Bson::Int32(1), Bson::Int32(2)],
+        },
+        Write::DeleteOne {
+            db: db.clone(),
+            collection: orders.clone(),
+            filter: doc! {"_id": 3},
+        },
+        Write::DeleteMany {
+            db: db.clone(),
+            collection: orders.clone(),
+            filter: doc! {"status": "open"},
+        },
+        Write::CreateDatabase {
+            db: db.clone(),
+            first_collection: "fresh".into(),
+        },
+        Write::DropDatabase { db: db.clone() },
+        Write::CreateCollection {
+            db: db.clone(),
+            name: "logs".into(),
+            options: doc! {"capped": true, "size": 4096},
+        },
+        Write::CreateView {
+            db: db.clone(),
+            name: "open_orders".into(),
+            view_on: orders.clone(),
+            pipeline: vec![doc! {"$match": {"status": "open"}}],
+        },
+        Write::DropCollection {
+            db: db.clone(),
+            collection: orders.clone(),
+        },
+        Write::RenameCollection {
+            db: db.clone(),
+            from: orders.clone(),
+            to_db: db.clone(),
+            to: "archive".into(),
+            drop_target: false,
+        },
+        Write::CreateIndex {
+            db: db.clone(),
+            collection: orders.clone(),
+            index: NewIndex {
+                keys: doc! {"status": 1, "n": -1},
+                name: Some("by_status".into()),
+                sparse: true,
+                ..NewIndex::default()
+            },
+        },
+        Write::DropIndex {
+            db: db.clone(),
+            collection: orders.clone(),
+            name: "n_1".into(),
+        },
+        Write::SetIndexHidden {
+            db: db.clone(),
+            collection: orders.clone(),
+            name: "n_1".into(),
+            hidden: true,
+        },
+        Write::CreateUser {
+            db: db.clone(),
+            user: "auditor".into(),
+            password: "s3cret".into(),
+            roles: vec![RoleRef {
+                role: "read".into(),
+                db: db.clone(),
+            }],
+        },
+        Write::DropUser {
+            db: db.clone(),
+            user: "reporter".into(),
+        },
+        Write::KillOp {
+            opid: Bson::Int32(2_000_000_000),
+        },
+        Write::Import {
+            db: db.clone(),
+            collection: orders.clone(),
+            documents: vec![doc! {"_id": 3, "status": "imported"}, doc! {"_id": 20}],
+            mode: ImportMode::Upsert,
+        },
+        Write::Aggregate {
+            db: db.clone(),
+            collection: orders.clone(),
+            pipeline: vec![
+                doc! {"$match": {"status": "open"}},
+                doc! {"$out": "open_copy"},
+            ],
+        },
+        Write::RunCommand {
+            db,
+            command: doc! {"collMod": orders, "validator": {"n": {"$gte": 0}}},
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -1354,10 +1808,11 @@ mod tests {
             id: Bson::ObjectId(id),
             path: "price".into(),
             value: Some(Bson::Double(12.5)),
+            original: Some(Bson::Double(10.0)),
         };
         assert_eq!(
             write.shell(),
-            "db.getCollection(\"orders\").updateOne({\n  _id: ObjectId(\"65f000000000000000000001\")\n}, {\n  $set: {\n    price: 12.5\n  }\n})"
+            "db.getCollection(\"orders\").updateOne({\n  _id: ObjectId(\"65f000000000000000000001\"),\n  price: {\n    $eq: 10.0,\n    $type: \"double\",\n    $not: {\n      $type: \"array\"\n    }\n  }\n}, {\n  $set: {\n    price: 12.5\n  }\n})"
         );
         assert_eq!(write.title(), "Update 1 document in shop.orders");
         assert!(!write.is_destructive());
@@ -1367,10 +1822,60 @@ mod tests {
             id: Bson::Int32(7),
             path: "a.b c".into(),
             value: None,
+            original: Some(Bson::Int32(3)),
         };
         assert_eq!(
             unset.shell(),
-            "db.getCollection(\"orders\").updateOne({ _id: 7 }, { $unset: { \"a.b c\": \"\" } })"
+            "db.getCollection(\"orders\").updateOne({\n  _id: 7,\n  \"a.b c\": {\n    $eq: 3,\n    $type: \"int\",\n    $not: {\n      $type: \"array\"\n    }\n  }\n}, {\n  $unset: {\n    \"a.b c\": \"\"\n  }\n})"
+        );
+    }
+
+    #[test]
+    fn edits_only_apply_to_the_value_that_was_loaded() {
+        let id = Bson::Int32(1);
+        assert_eq!(
+            set_field_filter(&id, "a.b", Some(&Bson::String("x".into()))),
+            doc! {"_id": 1, "a.b": {"$eq": "x", "$type": "string", "$not": {"$type": "array"}}}
+        );
+        assert_eq!(
+            set_field_filter(&id, "a", None),
+            doc! {"_id": 1, "a": {"$exists": false}},
+            "a missing field must still be missing"
+        );
+        assert_eq!(
+            set_field_filter(&id, "a", Some(&Bson::Null)),
+            doc! {"_id": 1, "a": {"$eq": Bson::Null, "$type": "null", "$not": {"$type": "array"}}},
+            "{{ a: null }} alone would also match a missing field"
+        );
+        assert_eq!(
+            set_field_filter(&id, "a", Some(&Bson::Int64(1))),
+            doc! {"_id": 1, "a": {"$eq": 1_i64, "$type": "long", "$not": {"$type": "array"}}},
+            "1 that became 1.0 is a change"
+        );
+        assert_eq!(
+            set_field_filter(&id, "a", Some(&Bson::Document(doc! {"$gt": 1}))),
+            doc! {"_id": 1, "a": {"$eq": {"$gt": 1}, "$type": "object", "$not": {"$type": "array"}}},
+            "a document is a value, not an operator"
+        );
+        let regex = Bson::RegularExpression(mongodb::bson::Regex {
+            pattern: "^a".into(),
+            options: String::new(),
+        });
+        assert_eq!(
+            set_field_filter(&id, "a", Some(&regex)),
+            doc! {"_id": 1, "a": {"$eq": regex.clone(), "$type": "regex", "$not": {"$type": "array"}}},
+            "a regular expression is a value, not a pattern"
+        );
+        assert_eq!(
+            set_field_filter(&id, "a", Some(&Bson::Array(vec![Bson::Int32(1)]))),
+            doc! {"_id": 1, "a": {"$eq": [1], "$type": "array"}}
+        );
+        assert_eq!(
+            replace_filter(&id, &doc! {"_id": 1, "s": "$x"}),
+            doc! {"_id": 1, "$expr": {"$and": [
+                {"$eq": ["$$ROOT", {"$literal": {"_id": 1, "s": "$x"}}]},
+                {"$eq": [{"$bsonSize": "$$ROOT"}, 24]},
+            ]}}
         );
     }
 
@@ -1414,11 +1919,12 @@ mod tests {
             db: db.clone(),
             collection: collection.clone(),
             id: Bson::Int32(1),
+            original: doc! {"_id": 1, "a": 1},
             replacement: doc! {"_id": 1, "a": 2},
         };
         assert_eq!(
             replace.shell(),
-            "db.getCollection(\"orders\").replaceOne({ _id: 1 }, { _id: 1, a: 2 })"
+            "db.getCollection(\"orders\").replaceOne({\n  _id: 1,\n  $expr: {\n    $and: [\n      {\n        $eq: [\n          \"$$ROOT\",\n          {\n            $literal: {\n              _id: 1,\n              a: 1\n            }\n          }\n        ]\n      },\n      {\n        $eq: [\n          {\n            $bsonSize: \"$$ROOT\"\n          },\n          21\n        ]\n      }\n    ]\n  }\n}, {\n  _id: 1,\n  a: 2\n})"
         );
         assert!(replace.is_destructive());
 

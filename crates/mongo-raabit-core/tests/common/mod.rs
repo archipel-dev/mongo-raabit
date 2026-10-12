@@ -63,7 +63,10 @@ pub async fn connect_read_only() -> Option<Connection> {
         use mongo_raabit_core::secrets::SecretStore;
         secrets.set(&profile.password_key(), &password).ok()?;
     }
-    let options = mongo_raabit_core::ConnectOptions { read_only: true };
+    let options = mongo_raabit_core::ConnectOptions {
+        read_only: true,
+        ..Default::default()
+    };
     Connection::connect_with(&profile, &secrets, options)
         .await
         .ok()

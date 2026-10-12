@@ -41,21 +41,31 @@ fn drop_index(db: &str, collection: &str, name: &str) -> Write {
     }
 }
 
-fn set_field(db: &str, id: &Bson, path: &str, value: Option<Bson>) -> Write {
+/// An inline edit of `path` from its loaded value `original` (`None`: missing).
+fn set_field(
+    db: &str,
+    id: &Bson,
+    path: &str,
+    original: Option<Bson>,
+    value: Option<Bson>,
+) -> Write {
     Write::SetField {
         db: db.to_owned(),
         collection: "items".into(),
         id: id.clone(),
         path: path.into(),
         value,
+        original,
     }
 }
 
-fn replace(db: &str, id: &Bson, replacement: Document) -> Write {
+/// The editor's Save of `original` (the document as loaded) as `replacement`.
+fn replace(db: &str, original: &Document, replacement: Document) -> Write {
     Write::ReplaceDocument {
         db: db.to_owned(),
         collection: "items".into(),
-        id: id.clone(),
+        id: original.get("_id").cloned().unwrap_or(Bson::Null),
+        original: original.clone(),
         replacement,
     }
 }
@@ -302,15 +312,16 @@ async fn query_paging_crud_and_explain() {
         &db,
         &id,
         "nested.v",
+        Some(Bson::Int32(0)),
         Some(Bson::String("edited".into())),
     ))
     .await
     .unwrap();
-    conn.execute(set_field(&db, &id, "even", None))
+    conn.execute(set_field(&db, &id, "even", Some(Bson::Boolean(true)), None))
         .await
         .unwrap();
     assert!(
-        conn.execute(set_field(&db, &id, "_id", None))
+        conn.execute(set_field(&db, &id, "_id", None, None))
             .await
             .is_err()
     );
@@ -338,10 +349,16 @@ async fn query_paging_crud_and_explain() {
     assert_ne!(clone_id, id);
     let mut replacement = edited.clone();
     replacement.insert("i", -1);
-    conn.execute(replace(&db, &id, replacement)).await.unwrap();
+    conn.execute(replace(&db, &edited, replacement.clone()))
+        .await
+        .unwrap();
     let mut wrong = edited.clone();
     wrong.insert("_id", 12345);
-    assert!(conn.execute(replace(&db, &id, wrong)).await.is_err());
+    assert!(
+        conn.execute(replace(&db, &replacement, wrong))
+            .await
+            .is_err()
+    );
     assert_eq!(
         conn.execute(Write::DeleteDocuments {
             db: db.clone(),
@@ -353,7 +370,7 @@ async fn query_paging_crud_and_explain() {
         WriteOutcome::Deleted(2)
     );
     assert!(
-        conn.execute(replace(&db, &id, doc! {"x": 1}))
+        conn.execute(replace(&db, &replacement, doc! {"x": 1}))
             .await
             .is_err()
     );

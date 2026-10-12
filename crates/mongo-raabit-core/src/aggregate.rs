@@ -457,8 +457,12 @@ fn sampled(mut stages: Vec<Document>, options: RunOptions) -> Vec<Document> {
     stages
 }
 
+/// Most documents an aggregation run from the views loads into memory.
+pub const MAX_RESULTS: u64 = 10_000;
+
 impl Connection {
-    /// Run an aggregation and collect at most `max_results` documents.
+    /// Run an aggregation and collect at most `max_results` documents (0, and anything
+    /// above [`MAX_RESULTS`], is [`MAX_RESULTS`]), bounded by the query timeout.
     pub async fn aggregate(
         &self,
         db: &str,
@@ -482,14 +486,18 @@ impl Connection {
                 _ => Ok((Vec::new(), Duration::ZERO)),
             };
         }
-        if max_results > 0 {
-            stages.push(doc! {"$limit": i64::try_from(max_results).unwrap_or(i64::MAX)});
-        }
+        // Never unbounded: 0 ("all") and larger limits load at most `MAX_RESULTS`.
+        let max_results = match max_results {
+            0 => MAX_RESULTS,
+            n => n.min(MAX_RESULTS),
+        };
+        stages.push(doc! {"$limit": i64::try_from(max_results).unwrap_or(i64::MAX)});
         let start = Instant::now();
         let cursor = self
             .collection(db, collection)
             .aggregate(stages)
             .allow_disk_use(options.allow_disk_use)
+            .max_time(self.query_timeout())
             .await?;
         let docs: Vec<Document> = cursor.try_collect().await?;
         Ok((docs, start.elapsed()))

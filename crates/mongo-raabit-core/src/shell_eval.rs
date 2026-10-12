@@ -4,9 +4,10 @@
 //! [`crate::shell`]; arbitrary JavaScript is not supported.
 
 use crate::connection::Connection;
+use crate::connection::NewIndex;
 use crate::error::{RaabitError, Result};
 use crate::shell;
-use crate::write::{Write, WriteOutcome};
+use crate::write::{Write, WriteOutcome, is_read_command, pipeline_writes};
 use futures_util::TryStreamExt;
 use mongodb::bson::{Bson, Document, doc};
 
@@ -185,7 +186,22 @@ fn parse_args(text: &str) -> Result<Vec<Bson>> {
     }
 }
 
+/// A parsed statement: the database it names (`db.getSiblingDB("x")…`), the collection
+/// (`db.orders`, `db["a.b"]`, `db.getCollection("x")`) and the calls that follow.
+#[derive(Debug, Clone, PartialEq)]
+struct Target {
+    db: Option<String>,
+    collection: Option<String>,
+    calls: Vec<Call>,
+}
+
+#[cfg(test)]
 fn parse_chain(statement: &str) -> Result<(Option<String>, Vec<Call>)> {
+    let target = parse_target(statement)?;
+    Ok((target.collection, target.calls))
+}
+
+fn parse_target(statement: &str) -> Result<Target> {
     let s = statement.trim();
     let Some(mut rest) = s.strip_prefix("db") else {
         return Err(invalid(format!(
@@ -193,14 +209,22 @@ fn parse_chain(statement: &str) -> Result<(Option<String>, Vec<Call>)> {
             s.split_whitespace().next().unwrap_or("")
         )));
     };
-    let mut calls = Vec::new();
+    let mut calls: Vec<Call> = Vec::new();
     let mut collection = None;
+    // `db.getSiblingDB("x")` may be followed by a collection, like `db` itself.
+    let after_database = |calls: &[Call], collection: &Option<String>| {
+        collection.is_none()
+            && (calls.is_empty() || (calls.len() == 1 && calls[0].name == "getSiblingDB"))
+    };
     loop {
         rest = rest.trim_start();
         if rest.is_empty() {
             break;
         }
         if let Some(after) = rest.strip_prefix('[') {
+            if !after_database(&calls, &collection) {
+                return Err(invalid("`[…]` must name a collection right after `db`"));
+            }
             let end = matching(rest, 0).ok_or_else(|| invalid("unclosed ["))?;
             let name = shell::parse_value(&after[..end - 1])
                 .map_err(|e| RaabitError::parse("collection name", e))?;
@@ -234,12 +258,21 @@ fn parse_chain(statement: &str) -> Result<(Option<String>, Vec<Call>)> {
             });
             rest = &rest[close + 1..];
         } else {
-            if !calls.is_empty() || collection.is_some() {
+            if !after_database(&calls, &collection) {
                 return Err(invalid(format!("`{name}` is not a method call")));
             }
             collection = Some(name.to_owned());
             rest = after_name;
         }
+    }
+    let mut db = None;
+    if calls.first().is_some_and(|c| c.name == "getSiblingDB") {
+        let first = calls.remove(0);
+        let name = first
+            .args
+            .and_then(|a| a.into_iter().next())
+            .and_then(|b| b.as_str().map(str::to_owned));
+        db = Some(name.ok_or_else(|| invalid("getSiblingDB expects a database name"))?);
     }
     // `db.getCollection("x")` is the same as `db.x`.
     if collection.is_none() && calls.first().is_some_and(|c| c.name == "getCollection") {
@@ -250,7 +283,11 @@ fn parse_chain(statement: &str) -> Result<(Option<String>, Vec<Call>)> {
             .and_then(|b| b.as_str().map(str::to_owned));
         collection = Some(name.ok_or_else(|| invalid("getCollection expects a name"))?);
     }
-    Ok((collection, calls))
+    Ok(Target {
+        db,
+        collection,
+        calls,
+    })
 }
 
 fn arg_doc(args: &[Bson], i: usize) -> Result<Document> {
@@ -263,6 +300,380 @@ fn arg_doc(args: &[Bson], i: usize) -> Result<Document> {
             shell::type_name(other)
         ))),
     }
+}
+
+/// A document argument a write cannot do without (a filter, an update): `{}` must be
+/// typed, a missing one is an error rather than "everything".
+fn required_doc(method: &str, args: &[Bson], i: usize) -> Result<Document> {
+    match args.get(i) {
+        Some(Bson::Document(d)) => Ok(d.clone()),
+        Some(other) => Err(invalid(format!(
+            "{method}: argument {} must be a document, found {}",
+            i + 1,
+            shell::type_name(other)
+        ))),
+        None => Err(invalid(format!(
+            "{method}: argument {} is missing (use {{}} for all documents)",
+            i + 1
+        ))),
+    }
+}
+
+fn required_string(method: &str, args: &[Bson], i: usize) -> Result<String> {
+    match args.get(i) {
+        Some(Bson::String(s)) => Ok(s.clone()),
+        _ => Err(invalid(format!(
+            "{method}: argument {} must be a string",
+            i + 1
+        ))),
+    }
+}
+
+/// An array of documents; any other element is an error (nothing is dropped silently).
+fn document_array(method: &str, value: Option<&Bson>) -> Result<Vec<Document>> {
+    match value {
+        Some(Bson::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                item.as_document().cloned().ok_or_else(|| {
+                    invalid(format!(
+                        "{method}: element {i} must be a document, found {}",
+                        shell::type_name(item)
+                    ))
+                })
+            })
+            .collect(),
+        _ => Err(invalid(format!("{method} expects an array of documents"))),
+    }
+}
+
+/// The arguments of a write call, at most `max` of them: options the built-in shell does
+/// not apply are an error, never ignored.
+fn write_args(call: &Call, max: usize) -> Result<&[Bson]> {
+    let args = call.args.as_deref().unwrap_or_default();
+    if args.len() > max {
+        return Err(invalid(format!(
+            "`{}` takes {max} argument{} in the built-in shell; options are not supported (install mongosh)",
+            call.name,
+            if max == 1 { "" } else { "s" }
+        )));
+    }
+    Ok(args)
+}
+
+/// `createIndex(keys, options)`: the options the Index Manager knows.
+fn new_index(args: &[Bson]) -> Result<NewIndex> {
+    let keys = required_doc("createIndex", args, 0)?;
+    let options = arg_doc(args, 1)?;
+    let mut index = NewIndex {
+        keys,
+        ..NewIndex::default()
+    };
+    let flag = |name: &str, value: &Bson| match value {
+        Bson::Boolean(b) => Ok(*b),
+        _ => Err(invalid(format!(
+            "createIndex: {name} must be true or false"
+        ))),
+    };
+    for (name, value) in options {
+        match name.as_str() {
+            "name" => {
+                index.name = Some(
+                    value
+                        .as_str()
+                        .ok_or_else(|| invalid("createIndex: name must be a string"))?
+                        .to_owned(),
+                )
+            }
+            "unique" => index.unique = flag(&name, &value)?,
+            "sparse" => index.sparse = flag(&name, &value)?,
+            "hidden" => index.hidden = flag(&name, &value)?,
+            "expireAfterSeconds" => {
+                let seconds = match value {
+                    Bson::Int32(v) => u64::try_from(v).ok(),
+                    Bson::Int64(v) => u64::try_from(v).ok(),
+                    _ => None,
+                };
+                index.ttl_seconds = Some(seconds.ok_or_else(|| {
+                    invalid("createIndex: expireAfterSeconds must be a non-negative integer")
+                })?);
+            }
+            "partialFilterExpression" => {
+                index.partial_filter = Some(value.as_document().cloned().ok_or_else(|| {
+                    invalid("createIndex: partialFilterExpression must be a document")
+                })?)
+            }
+            other => {
+                return Err(invalid(format!(
+                    "createIndex: the option `{other}` is not supported by the built-in shell (install mongosh)"
+                )));
+            }
+        }
+    }
+    Ok(index)
+}
+
+/// `db.adminCommand({ renameCollection: "a.b", to: "c.d", dropTarget })` as the
+/// [`Write::RenameCollection`] it is; `None` for any other command.
+fn rename_command(command: &Document) -> Option<Write> {
+    if command
+        .keys()
+        .any(|k| !matches!(k.as_str(), "renameCollection" | "to" | "dropTarget"))
+    {
+        return None;
+    }
+    let (db, from) = command.get_str("renameCollection").ok()?.split_once('.')?;
+    let (to_db, to) = command.get_str("to").ok()?.split_once('.')?;
+    let drop_target = match command.get("dropTarget") {
+        None => false,
+        Some(Bson::Boolean(b)) => *b,
+        Some(_) => return None,
+    };
+    Some(Write::RenameCollection {
+        db: db.to_owned(),
+        from: from.to_owned(),
+        to_db: to_db.to_owned(),
+        to: to.to_owned(),
+        drop_target,
+    })
+}
+
+/// Collection methods that only read.
+const READ_METHODS: &[&str] = &[
+    "find",
+    "findOne",
+    "countDocuments",
+    "count",
+    "estimatedDocumentCount",
+    "distinct",
+    "getIndexes",
+    "stats",
+];
+
+/// Database methods that only read.
+const DB_READ_METHODS: &[&str] = &["getCollectionNames", "getName", "stats"];
+
+/// The [`Write`] a parsed statement runs on database `db`, without running it: `None`
+/// for a statement that only reads, an error for one the built-in shell cannot run.
+fn target_write(db: &str, target: &Target) -> Result<Option<Write>> {
+    let write = call_write(db, target)?;
+    if write.is_some()
+        && let [call, next, ..] = target.calls.as_slice()
+    {
+        return Err(invalid(format!(
+            "`.{}` cannot follow `{}` in the built-in shell",
+            next.name, call.name
+        )));
+    }
+    Ok(write)
+}
+
+fn call_write(db: &str, target: &Target) -> Result<Option<Write>> {
+    let db = target.db.as_deref().unwrap_or(db).to_owned();
+    let Some(call) = target.calls.first() else {
+        return Ok(None);
+    };
+    let name = call.name.as_str();
+    let Some(collection) = target.collection.clone() else {
+        let write = match name {
+            "runCommand" => {
+                let command = required_doc(name, write_args(call, 1)?, 0)?;
+                (!is_read_command(&command)).then_some(Write::RunCommand { db, command })
+            }
+            "adminCommand" => {
+                let command = required_doc(name, write_args(call, 1)?, 0)?;
+                rename_command(&command).or_else(|| {
+                    (!is_read_command(&command)).then(|| Write::RunCommand {
+                        db: "admin".into(),
+                        command,
+                    })
+                })
+            }
+            "createCollection" => {
+                let args = write_args(call, 2)?;
+                Some(Write::CreateCollection {
+                    db,
+                    name: required_string(name, args, 0)?,
+                    options: arg_doc(args, 1)?,
+                })
+            }
+            "createView" => {
+                let args = write_args(call, 3)?;
+                Some(Write::CreateView {
+                    db,
+                    name: required_string(name, args, 0)?,
+                    view_on: required_string(name, args, 1)?,
+                    pipeline: document_array(name, args.get(2))?,
+                })
+            }
+            "dropDatabase" => {
+                write_args(call, 0)?;
+                Some(Write::DropDatabase { db })
+            }
+            "dropUser" => Some(Write::DropUser {
+                db,
+                user: required_string(name, write_args(call, 1)?, 0)?,
+            }),
+            "killOp" => match write_args(call, 1)?.first() {
+                Some(opid) => Some(Write::KillOp { opid: opid.clone() }),
+                None => return Err(invalid("killOp expects an operation id")),
+            },
+            read if DB_READ_METHODS.contains(&read) => None,
+            other => {
+                return Err(invalid(format!(
+                    "`db.{other}()` is not supported by the built-in shell; install mongosh for full JavaScript"
+                )));
+            }
+        };
+        return Ok(write);
+    };
+    let write = match name {
+        "insertOne" => Write::InsertDocuments {
+            db,
+            collection,
+            documents: vec![required_doc(name, write_args(call, 1)?, 0)?],
+        },
+        "insertMany" => Write::InsertDocuments {
+            db,
+            collection,
+            documents: document_array(name, write_args(call, 1)?.first())?,
+        },
+        "updateOne" | "updateMany" => {
+            let args = write_args(call, 2)?;
+            let (filter, update) = (required_doc(name, args, 0)?, required_doc(name, args, 1)?);
+            if name == "updateOne" {
+                Write::UpdateOne {
+                    db,
+                    collection,
+                    filter,
+                    update,
+                }
+            } else {
+                Write::UpdateMany {
+                    db,
+                    collection,
+                    filter,
+                    update,
+                }
+            }
+        }
+        "replaceOne" => {
+            let args = write_args(call, 2)?;
+            Write::ReplaceOne {
+                db,
+                collection,
+                filter: required_doc(name, args, 0)?,
+                replacement: required_doc(name, args, 1)?,
+            }
+        }
+        "deleteOne" | "deleteMany" => {
+            let filter = required_doc(name, write_args(call, 1)?, 0)?;
+            if name == "deleteOne" {
+                Write::DeleteOne {
+                    db,
+                    collection,
+                    filter,
+                }
+            } else {
+                Write::DeleteMany {
+                    db,
+                    collection,
+                    filter,
+                }
+            }
+        }
+        "createIndex" => Write::CreateIndex {
+            db,
+            collection,
+            index: new_index(write_args(call, 2)?)?,
+        },
+        "dropIndex" => Write::DropIndex {
+            db,
+            collection,
+            name: required_string(name, write_args(call, 1)?, 0)?,
+        },
+        "hideIndex" | "unhideIndex" => Write::SetIndexHidden {
+            db,
+            collection,
+            name: required_string(name, write_args(call, 1)?, 0)?,
+            hidden: name == "hideIndex",
+        },
+        "drop" => {
+            write_args(call, 0)?;
+            Write::DropCollection { db, collection }
+        }
+        "renameCollection" => {
+            let args = write_args(call, 2)?;
+            let drop_target = match args.get(1) {
+                None => false,
+                Some(Bson::Boolean(b)) => *b,
+                Some(_) => {
+                    return Err(invalid(
+                        "renameCollection: dropTarget must be true or false",
+                    ));
+                }
+            };
+            Write::RenameCollection {
+                to_db: db.clone(),
+                db,
+                from: collection,
+                to: required_string(name, args, 0)?,
+                drop_target,
+            }
+        }
+        "aggregate" => {
+            let pipeline = document_array(name, call.args.as_deref().unwrap_or_default().first())?;
+            if !pipeline_writes(&pipeline) {
+                return Ok(None);
+            }
+            write_args(call, 1)?;
+            Write::Aggregate {
+                db,
+                collection,
+                pipeline,
+            }
+        }
+        read if READ_METHODS.contains(&read) => return Ok(None),
+        other => {
+            return Err(invalid(format!(
+                "`{other}` is not supported by the built-in shell; install mongosh for full JavaScript"
+            )));
+        }
+    };
+    Ok(Some(write))
+}
+
+/// The [`Write`] that `statement` runs on database `db`, without running it (what
+/// [`Connection::eval_builtin`] executes for it): `None` for a statement that only reads,
+/// an error for one the built-in shell cannot run. `use x` switches `db`.
+///
+/// This is how the shell text of a [`Write`] is checked: `statement_write(w.shell())`
+/// gives back `w.canonical()` (see `docs/safety.md`).
+pub fn statement_write(db: &mut String, statement: &str) -> Result<Option<Write>> {
+    let words: Vec<&str> = statement.split_whitespace().collect();
+    match words.as_slice() {
+        ["show", ..] => return Ok(None),
+        ["use", name] => {
+            *db = name.trim_end_matches(';').to_owned();
+            return Ok(None);
+        }
+        _ => {}
+    }
+    target_write(db, &parse_target(statement)?)
+}
+
+/// Every write a script would run, in order, without running anything; reads are left
+/// out. Fails on the first statement the built-in shell cannot run.
+pub fn script_plan(db: &str, script: &str) -> Result<Vec<Write>> {
+    let mut db = db.to_owned();
+    let mut writes = Vec::new();
+    for statement in split_statements(script) {
+        if let Some(write) = statement_write(&mut db, &statement)? {
+            writes.push(write);
+        }
+    }
+    Ok(writes)
 }
 
 fn arg_int(args: &[Bson], what: &str) -> Result<i64> {
@@ -292,9 +703,30 @@ fn outcome_value(outcome: WriteOutcome) -> Bson {
     }
 }
 
+/// The reply of write method `method` on `db`, shaped like mongosh's.
+fn write_reply(method: &str, db: &str, outcome: WriteOutcome) -> Bson {
+    match (method, outcome) {
+        ("insertMany", WriteOutcome::Inserted(ids)) => {
+            Bson::Document(doc! {"acknowledged": true, "insertedIds": ids})
+        }
+        ("drop" | "renameCollection", _) => Bson::Boolean(true),
+        ("dropDatabase", _) => Bson::Document(doc! {"ok": 1, "dropped": db}),
+        (
+            "dropIndex" | "hideIndex" | "unhideIndex" | "createCollection" | "createView"
+            | "dropUser" | "killOp",
+            _,
+        ) => Bson::Document(doc! {"ok": 1}),
+        (_, outcome) => outcome_value(outcome),
+    }
+}
+
 fn docs(list: Vec<Document>) -> Bson {
     Bson::Array(list.into_iter().map(Bson::Document).collect())
 }
+
+/// Most documents a `find` or `aggregate` of the built-in shell returns: `limit(0)` and
+/// larger limits are capped, so a script never loads a whole collection.
+pub const MAX_SHELL_DOCUMENTS: i64 = 1000;
 
 impl Connection {
     /// Evaluate a script statement by statement. `db` is the current database and is
@@ -338,11 +770,23 @@ impl Connection {
             }
             _ => {}
         }
-        let (collection, calls) = parse_chain(statement)?;
-        let Some(collection) = collection else {
-            return self.eval_db_call(db, &calls).await;
+        let target = parse_target(statement)?;
+        let current = target.db.clone().unwrap_or_else(|| db.clone());
+        // A write runs exactly as `statement_write` reads it, through `execute`.
+        if let Some(write) = target_write(&current, &target)? {
+            let method = target
+                .calls
+                .first()
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            return Ok(write_reply(&method, &current, self.execute(write).await?));
+        }
+        let Some(collection) = target.collection else {
+            return self.eval_db_call(&current, &target.calls).await;
         };
-        let handle = self.collection(db, &collection);
+        let calls = target.calls;
+        let max_time = self.query_timeout();
+        let handle = self.collection(&current, &collection);
         let Some((first, modifiers)) = calls.split_first() else {
             return Err(invalid(format!(
                 "`db.{collection}` needs a method, e.g. db.{collection}.find()"
@@ -351,7 +795,7 @@ impl Connection {
         let args = first.args.clone().unwrap_or_default();
         match first.name.as_str() {
             "find" => {
-                let mut find = handle.find(arg_doc(&args, 0)?);
+                let mut find = handle.find(arg_doc(&args, 0)?).max_time(max_time);
                 let projection = arg_doc(&args, 1)?;
                 if !projection.is_empty() {
                     find = find.projection(projection);
@@ -377,172 +821,74 @@ impl Connection {
                     }
                 }
                 if count {
-                    let n = handle.count_documents(arg_doc(&args, 0)?).await?;
+                    let n = handle
+                        .count_documents(arg_doc(&args, 0)?)
+                        .max_time(max_time)
+                        .await?;
                     return Ok(Bson::Int64(n as i64));
                 }
+                // `limit(0)` (no limit) and huge limits load at most this many.
+                let limit = match limit.unsigned_abs() {
+                    0 => MAX_SHELL_DOCUMENTS,
+                    n => i64::try_from(n)
+                        .unwrap_or(i64::MAX)
+                        .min(MAX_SHELL_DOCUMENTS),
+                };
                 let cursor = find.limit(limit).await?;
                 Ok(docs(cursor.try_collect().await?))
             }
             "findOne" => Ok(handle
                 .find_one(arg_doc(&args, 0)?)
+                .max_time(max_time)
                 .await?
                 .map_or(Bson::Null, Bson::Document)),
             "aggregate" => {
-                let stages = match args.first() {
-                    Some(Bson::Array(items)) => items
-                        .iter()
-                        .map(|s| {
-                            s.as_document()
-                                .cloned()
-                                .ok_or_else(|| invalid("each stage must be a document"))
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                    _ => return Err(invalid("aggregate expects an array of stages")),
-                };
-                if crate::write::pipeline_writes(&stages) {
-                    let write = Write::Aggregate {
-                        db: db.clone(),
-                        collection: collection.clone(),
-                        pipeline: stages,
-                    };
-                    return Ok(outcome_value(self.execute(write).await?));
+                let stages = document_array("aggregate", args.first())?;
+                let mut cursor = handle
+                    .aggregate(stages)
+                    .allow_disk_use(true)
+                    .max_time(max_time)
+                    .await?;
+                // Read only what is shown; dropping the cursor ends it on the server.
+                let mut list = Vec::new();
+                while (list.len() as i64) < BATCH * 4 {
+                    match cursor.try_next().await? {
+                        Some(document) => list.push(document),
+                        None => break,
+                    }
                 }
-                let cursor = handle.aggregate(stages).allow_disk_use(true).await?;
-                let mut list: Vec<Document> = cursor.try_collect().await?;
-                list.truncate(BATCH as usize * 4);
                 Ok(docs(list))
             }
             "countDocuments" | "count" => Ok(Bson::Int64(
-                handle.count_documents(arg_doc(&args, 0)?).await? as i64,
+                handle
+                    .count_documents(arg_doc(&args, 0)?)
+                    .max_time(max_time)
+                    .await? as i64,
             )),
-            "estimatedDocumentCount" => {
-                Ok(Bson::Int64(handle.estimated_document_count().await? as i64))
-            }
+            "estimatedDocumentCount" => Ok(Bson::Int64(
+                handle.estimated_document_count().max_time(max_time).await? as i64,
+            )),
             "distinct" => {
                 let field = args
                     .first()
                     .and_then(Bson::as_str)
                     .ok_or_else(|| invalid("distinct expects a field name"))?;
                 Ok(Bson::Array(
-                    handle.distinct(field, arg_doc(&args, 1)?).await?,
+                    handle
+                        .distinct(field, arg_doc(&args, 1)?)
+                        .max_time(max_time)
+                        .await?,
                 ))
             }
-            "insertOne" => {
-                let write = Write::InsertDocuments {
-                    db: db.clone(),
-                    collection: collection.clone(),
-                    documents: vec![arg_doc(&args, 0)?],
-                };
-                Ok(outcome_value(self.execute(write).await?))
-            }
-            "insertMany" => {
-                let documents = match args.first() {
-                    Some(Bson::Array(items)) => items
-                        .iter()
-                        .filter_map(|d| d.as_document().cloned())
-                        .collect(),
-                    _ => return Err(invalid("insertMany expects an array of documents")),
-                };
-                let write = Write::InsertDocuments {
-                    db: db.clone(),
-                    collection: collection.clone(),
-                    documents,
-                };
-                match self.execute(write).await? {
-                    WriteOutcome::Inserted(ids) => Ok(Bson::Document(
-                        doc! {"acknowledged": true, "insertedIds": ids},
-                    )),
-                    other => Ok(outcome_value(other)),
-                }
-            }
-            "updateOne" | "updateMany" => {
-                let (db, collection) = (db.clone(), collection.clone());
-                let (filter, update) = (arg_doc(&args, 0)?, arg_doc(&args, 1)?);
-                let write = if first.name == "updateOne" {
-                    Write::UpdateOne {
-                        db,
-                        collection,
-                        filter,
-                        update,
-                    }
-                } else {
-                    Write::UpdateMany {
-                        db,
-                        collection,
-                        filter,
-                        update,
-                    }
-                };
-                Ok(outcome_value(self.execute(write).await?))
-            }
-            "replaceOne" => {
-                let write = Write::ReplaceOne {
-                    db: db.clone(),
-                    collection: collection.clone(),
-                    filter: arg_doc(&args, 0)?,
-                    replacement: arg_doc(&args, 1)?,
-                };
-                Ok(outcome_value(self.execute(write).await?))
-            }
-            "deleteOne" | "deleteMany" => {
-                let (db, collection) = (db.clone(), collection.clone());
-                let filter = arg_doc(&args, 0)?;
-                let write = if first.name == "deleteOne" {
-                    Write::DeleteOne {
-                        db,
-                        collection,
-                        filter,
-                    }
-                } else {
-                    Write::DeleteMany {
-                        db,
-                        collection,
-                        filter,
-                    }
-                };
-                Ok(outcome_value(self.execute(write).await?))
-            }
             "getIndexes" => Ok(docs(
-                self.indexes(db, &collection)
+                self.indexes(&current, &collection)
                     .await?
                     .into_iter()
                     .map(|i| i.raw)
                     .collect(),
             )),
-            "createIndex" => {
-                let write = Write::CreateIndex {
-                    db: db.clone(),
-                    collection: collection.clone(),
-                    index: crate::connection::NewIndex {
-                        keys: arg_doc(&args, 0)?,
-                        ..Default::default()
-                    },
-                };
-                Ok(outcome_value(self.execute(write).await?))
-            }
-            "dropIndex" => {
-                let name = args
-                    .first()
-                    .and_then(Bson::as_str)
-                    .ok_or_else(|| invalid("dropIndex expects an index name"))?;
-                let write = Write::DropIndex {
-                    db: db.clone(),
-                    collection: collection.clone(),
-                    name: name.to_owned(),
-                };
-                self.execute(write).await?;
-                Ok(Bson::Document(doc! {"ok": 1}))
-            }
-            "drop" => {
-                let write = Write::DropCollection {
-                    db: db.clone(),
-                    collection: collection.clone(),
-                };
-                self.execute(write).await?;
-                Ok(Bson::Boolean(true))
-            }
             "stats" => {
-                let stats = self.collection_stats(db, &collection).await?;
+                let stats = self.collection_stats(&current, &collection).await?;
                 Ok(Bson::Document(doc! {
                     "count": stats.count as i64, "size": stats.size as i64, "avgObjSize": stats.avg_obj_size as i64,
                     "storageSize": stats.storage_size as i64, "nindexes": stats.index_count as i64,
@@ -555,6 +901,7 @@ impl Connection {
         }
     }
 
+    /// The database calls that read (writes went through `target_write`).
     async fn eval_db_call(&self, db: &str, calls: &[Call]) -> Result<Bson> {
         let Some(call) = calls.first() else {
             return Ok(Bson::String(db.to_owned()));
@@ -578,24 +925,6 @@ impl Connection {
             "stats" => Ok(Bson::Document(
                 self.run_command(db, doc! {"dbStats": 1}).await?,
             )),
-            "createCollection" => {
-                let name = args
-                    .first()
-                    .and_then(Bson::as_str)
-                    .ok_or_else(|| invalid("createCollection expects a name"))?;
-                let write = Write::CreateCollection {
-                    db: db.to_owned(),
-                    name: name.to_owned(),
-                    options: arg_doc(&args, 1)?,
-                };
-                self.execute(write).await?;
-                Ok(Bson::Document(doc! {"ok": 1}))
-            }
-            "dropDatabase" => {
-                self.execute(Write::DropDatabase { db: db.to_owned() })
-                    .await?;
-                Ok(Bson::Document(doc! {"ok": 1, "dropped": db}))
-            }
             other => Err(invalid(format!(
                 "`db.{other}()` is not supported by the built-in shell; install mongosh for full JavaScript"
             ))),
@@ -874,6 +1203,146 @@ mod tests {
         assert_eq!(calls[0].name, "runCommand");
         assert!(parse_chain("print(1)").is_err());
         assert!(parse_chain("db.orders.find({a: }").is_err());
+    }
+
+    fn write_of(statement: &str) -> Result<Option<Write>> {
+        statement_write(&mut "shop".to_owned(), statement)
+    }
+
+    #[test]
+    fn statements_map_to_the_write_they_run() {
+        assert_eq!(
+            write_of("db.orders.updateMany({ a: 1 }, { $set: { b: 2 } })").unwrap(),
+            Some(Write::UpdateMany {
+                db: "shop".into(),
+                collection: "orders".into(),
+                filter: doc! {"a": 1},
+                update: doc! {"$set": {"b": 2}},
+            })
+        );
+        assert_eq!(
+            write_of("db.getSiblingDB('archive').getCollection('a.b').deleteOne({ _id: 1 })")
+                .unwrap(),
+            Some(Write::DeleteOne {
+                db: "archive".into(),
+                collection: "a.b".into(),
+                filter: doc! {"_id": 1},
+            })
+        );
+        assert_eq!(
+            write_of("db.getSiblingDB('archive').logs.drop()").unwrap(),
+            Some(Write::DropCollection {
+                db: "archive".into(),
+                collection: "logs".into(),
+            })
+        );
+        assert_eq!(
+            write_of("db.adminCommand({ renameCollection: 'shop.a.b', to: 'old.c' })").unwrap(),
+            Some(Write::RenameCollection {
+                db: "shop".into(),
+                from: "a.b".into(),
+                to_db: "old".into(),
+                to: "c".into(),
+                drop_target: false,
+            })
+        );
+        assert_eq!(
+            write_of("db.orders.createIndex({ a: 1 }, { unique: true, name: 'u' })").unwrap(),
+            Some(Write::CreateIndex {
+                db: "shop".into(),
+                collection: "orders".into(),
+                index: NewIndex {
+                    keys: doc! {"a": 1},
+                    name: Some("u".into()),
+                    unique: true,
+                    ..NewIndex::default()
+                },
+            })
+        );
+        assert_eq!(
+            write_of("db.killOp(12)").unwrap(),
+            Some(Write::KillOp {
+                opid: Bson::Int32(12)
+            })
+        );
+        // Reads are not writes.
+        for read in [
+            "db.orders.find({}).limit(5)",
+            "db.orders.aggregate([{ $match: {} }]).toArray()",
+            "db.runCommand({ ping: 1 })",
+            "db.adminCommand({ listDatabases: 1 })",
+            "db.getCollectionNames()",
+            "show dbs",
+        ] {
+            assert_eq!(write_of(read).unwrap(), None, "{read}");
+        }
+        assert!(matches!(
+            write_of("db.orders.aggregate([{ $out: 'x' }])").unwrap(),
+            Some(Write::Aggregate { .. })
+        ));
+        assert!(matches!(
+            write_of("db.runCommand({ compact: 'orders' })").unwrap(),
+            Some(Write::RunCommand { .. })
+        ));
+    }
+
+    #[test]
+    fn writes_the_shell_cannot_run_as_typed_are_refused() {
+        for (statement, why) in [
+            ("db.orders.deleteMany()", "argument 1 is missing"),
+            ("db.orders.updateOne({ a: 1 })", "argument 2 is missing"),
+            ("db.orders.deleteMany(null)", "must be a document"),
+            ("db.orders.insertOne()", "argument 1 is missing"),
+            (
+                "db.orders.insertMany([{ a: 1 }, 2])",
+                "element 1 must be a document",
+            ),
+            (
+                "db.orders.updateOne({}, { $set: { a: 1 } }, { upsert: true })",
+                "options are not supported",
+            ),
+            (
+                "db.orders.insertMany([{}], { ordered: false })",
+                "options are not supported",
+            ),
+            (
+                "db.orders.createIndex({ a: 1 }, { collation: { locale: 'fr' } })",
+                "collation",
+            ),
+            ("db.orders.deleteMany({}).limit(1)", "cannot follow"),
+            ("db.orders.findOneAndDelete({})", "not supported"),
+            (
+                "db.createUser({ user: 'x', pwd: 'y', roles: [] })",
+                "not supported",
+            ),
+        ] {
+            let err = write_of(statement).unwrap_err().to_string();
+            assert!(err.contains(why), "{statement}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_script_plan_lists_its_writes_in_order() {
+        let plan = script_plan(
+            "shop",
+            "db.a.find({})\nuse archive\ndb.b.insertOne({ x: 1 }); db.getSiblingDB('shop').c.drop()",
+        )
+        .unwrap();
+        assert_eq!(
+            plan,
+            [
+                Write::InsertDocuments {
+                    db: "archive".into(),
+                    collection: "b".into(),
+                    documents: vec![doc! {"x": 1}],
+                },
+                Write::DropCollection {
+                    db: "shop".into(),
+                    collection: "c".into(),
+                },
+            ]
+        );
+        assert!(script_plan("shop", "db.a.find({})\nprint(1)").is_err());
     }
 
     #[test]
