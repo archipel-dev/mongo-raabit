@@ -4,6 +4,10 @@ Where Mongo Raabit stands against MongoDB Compass (feature list from Compass's p
 documentation) and, where useful, Studio 3T (public documentation and observable behaviour).
 Competitors are named only in this table. Clean-room: no competitor code, icons or artwork.
 
+The query sidebar interaction gaps and acceptance criteria are tracked in
+[the Studio 3T query-builder reference](studio3t-query-builder.md). Passing the current
+sidebar tests does not establish interaction parity.
+
 ## How to read this
 
 **Status**
