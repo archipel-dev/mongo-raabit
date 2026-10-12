@@ -496,7 +496,16 @@ fn drive(child: &mut Child, display: &str, report: &Path, spawn_ms: u128) -> Res
             .map(|(_, ms)| *ms)
             .collect();
         if ms.is_empty() {
-            bail!("no frames recorded on the {name} screen");
+            let first = frames.first().map_or(-1.0, |(t, _)| *t - spawn_ms as f64);
+            let last = frames.last().map_or(-1.0, |(t, _)| *t - spawn_ms as f64);
+            bail!(
+                "no frames recorded on the {name} screen ({} to {} ms after spawn); the app \
+                 painted {} frames, the first {first:.0} ms and the last {last:.0} ms after \
+                 spawn, its first frame {first_frame_ms:.0} ms after it started",
+                start as f64 - spawn_ms as f64,
+                end as f64 - spawn_ms as f64,
+                frames.len(),
+            );
         }
         ms.sort_by(f64::total_cmp);
         let p95 = ms[((ms.len() as f64 * 0.95).ceil() as usize).clamp(1, ms.len()) - 1];
