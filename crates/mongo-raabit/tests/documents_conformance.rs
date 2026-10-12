@@ -264,8 +264,14 @@ fn a_header_click_sorts_by_that_field() {
         panic!("no sort reported");
     };
     assert_eq!((field.as_str(), *descending), ("age", false));
-    assert_eq!(results::sort_text("age", false), "{ age: 1 }");
-    assert_eq!(results::sort_text("a.b", true), "{ \"a.b\": -1 }");
+    assert_eq!(
+        mongo_raabit_core::documents::sort_text("age", false),
+        "{ age: 1 }"
+    );
+    assert_eq!(
+        mongo_raabit_core::documents::sort_text("a.b", true),
+        "{ \"a.b\": -1 }"
+    );
 }
 
 struct TreeHarness {

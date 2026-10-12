@@ -2,15 +2,14 @@
 //!
 //! Buttons, icon buttons, segmented controls, tags, separators and dialogs are used straight
 //! from `archipel_sdk::kit::components`; what remains here is layout glue (captions, form
-//! rows, the query-bar field) and the code editor until the kit ships its own.
+//! rows, the query-bar field) and the SQL highlighter.
 
-use crate::egui::{Id, Layout, Response, RichText, Ui};
+use crate::egui::{Layout, Response, RichText, Ui};
 use crate::icons::{self, Icon};
 use archipel_sdk::kit::Tone;
 use archipel_sdk::kit::components::code::{Highlighter, Span, TokenKind};
 use archipel_sdk::kit::components::{
-    Dialog, DialogAction, Dropdown, FieldLabel, IconButton, MenuItem, Separator, Spinner, Tag,
-    TextField, TextFieldOutput,
+    Dialog, DialogAction, Dropdown, FieldLabel, Separator, Spinner, Tag, TextField, TextFieldOutput,
 };
 use archipel_sdk::kit::tokens::{size, typography};
 use mongo_raabit_core::sql_syntax::{SqlToken, tokenize_line};
@@ -128,125 +127,6 @@ pub fn value_field(
         .enabled(enabled)
         .width(width)
         .show(ui)
-}
-
-/// What happened in a [`number_field`] this frame.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NumberEdit {
-    /// The value was set to a number the user typed.
-    pub changed: bool,
-    /// The user left the field (or pressed Enter) after changing the value.
-    pub committed: bool,
-}
-
-/// A whole-number field (the kit has no number input): edits `value` while the text parses.
-pub fn number_field<N>(ui: &mut Ui, id: Id, name: &str, value: &mut N, width: f32) -> NumberEdit
-where
-    N: Copy + Default + PartialEq + std::fmt::Display + std::str::FromStr,
-{
-    let field_id = id.with("field");
-    let buffer_id = id.with("text");
-    let dirty_id = id.with("dirty");
-    let editing = ui.memory(|m| m.has_focus(field_id));
-    let mut text = if editing {
-        ui.data(|d| d.get_temp::<String>(buffer_id))
-            .unwrap_or_else(|| value.to_string())
-    } else {
-        value.to_string()
-    };
-    // Allocated at its own width, so the field sits where the layout puts it also in
-    // right-to-left rows (a field laid out in the whole remaining width would not).
-    let response = ui
-        .allocate_ui(crate::egui::vec2(width, size::CONTROL_HEIGHT), |ui| {
-            TextField::new(&mut text)
-                .id(field_id)
-                .name(name)
-                .monospace(true)
-                .width(width)
-                .show(ui)
-                .response
-        })
-        .inner;
-    let mut edit = NumberEdit::default();
-    if response.changed()
-        && let Some(parsed) = parse_number::<N>(&text)
-        && parsed != *value
-    {
-        *value = parsed;
-        edit.changed = true;
-        ui.data_mut(|d| d.insert_temp(dirty_id, true));
-    }
-    if response.has_focus() {
-        ui.data_mut(|d| d.insert_temp(buffer_id, text));
-    } else {
-        ui.data_mut(|d| d.remove::<String>(buffer_id));
-        if response.lost_focus() {
-            edit.committed = ui
-                .data_mut(|d| d.remove_temp::<bool>(dirty_id))
-                .unwrap_or(false);
-        }
-    }
-    edit
-}
-
-/// A number typed by the user: blank means the default (zero).
-fn parse_number<N: Default + std::str::FromStr>(text: &str) -> Option<N> {
-    let text = text.trim();
-    if text.is_empty() {
-        Some(N::default())
-    } else {
-        text.parse().ok()
-    }
-}
-
-/// An editable name with a picker of `names` (fields seen in results, collections).
-/// Typing filters the list; `empty_hint` is shown when there is nothing to pick yet.
-/// Returns true when the text changed.
-#[allow(clippy::too_many_arguments)]
-pub fn name_picker(
-    ui: &mut Ui,
-    id: Id,
-    name: &str,
-    text: &mut String,
-    names: &[String],
-    hint: &str,
-    empty_hint: &str,
-    width: f32,
-) -> bool {
-    let mut changed = false;
-    let field_width = (width - size::ICON_BUTTON - ui.spacing().item_spacing.x).max(40.0);
-    changed |= TextField::new(text)
-        .id(id.with("text"))
-        .name(name)
-        .placeholder(hint)
-        .monospace(true)
-        .width(field_width)
-        .show(ui)
-        .response
-        .changed();
-    let button = ui.add(IconButton::new(Icon::ChevronDown, format!("Pick {name}")));
-    crate::egui::Popup::menu(&button)
-        .id(id.with("popup"))
-        .show(|ui| {
-            ui.set_min_width(width);
-            if names.is_empty() {
-                label(ui, Tone::Muted, empty_hint);
-                return;
-            }
-            archipel_sdk::kit::parts::scroll_vertical()
-                .max_height(ui.ctx().content_rect().height() / 3.0)
-                .show(ui, |ui| {
-                    for picked in mongo_raabit_core::fields::filter_names(names, text) {
-                        let item = MenuItem::new(picked.as_str())
-                            .checked(picked.as_str() == text.as_str());
-                        if ui.add(item).clicked() && picked.as_str() != text.as_str() {
-                            text.clone_from(picked);
-                            changed = true;
-                        }
-                    }
-                });
-        });
-    changed
 }
 
 /// Give an input that has only a placeholder an accessible name (the kit's search field
@@ -378,18 +258,4 @@ pub fn modal(
         .content(body)
         .show(ctx);
     !matches!(action, Some(DialogAction::Dismissed))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_numbers_with_blank_as_zero() {
-        assert_eq!(parse_number::<u64>("12"), Some(12));
-        assert_eq!(parse_number::<u64>("  7 "), Some(7));
-        assert_eq!(parse_number::<u64>(""), Some(0));
-        assert_eq!(parse_number::<u64>("-1"), None);
-        assert_eq!(parse_number::<u64>("1x"), None);
-    }
 }

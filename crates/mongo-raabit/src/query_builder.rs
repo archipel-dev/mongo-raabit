@@ -8,8 +8,8 @@ use crate::icons::Icon;
 use crate::widgets;
 use archipel_sdk::kit::Tone;
 use archipel_sdk::kit::components::{
-    Banner, Button, Checkbox, FieldLabel, Form, FormUi, IconButton, SegmentedControl, Severity,
-    Tag, Tooltip, TooltipExt,
+    Banner, Button, Checkbox, FieldLabel, Form, FormUi, IconButton, NumberField, SegmentedControl,
+    Severity, Tag, TextField, Tooltip, TooltipExt,
 };
 use archipel_sdk::kit::parts::Surface;
 use archipel_sdk::kit::tokens::{size, typography};
@@ -32,7 +32,6 @@ const MODE_WIDTH: f32 = 80.0;
 const AND_WIDTH: f32 = 28.0;
 const PICKER_WIDTH: f32 = 200.0;
 const DIRECTION_WIDTH: f32 = 130.0;
-const NO_FIELDS: &str = "Run the query to list the fields";
 const MODE_TIP: &str = "All: every condition must match (AND). Any: at least one (OR).";
 
 /// What happened in the builder this frame.
@@ -108,15 +107,26 @@ pub fn show(ui: &mut Ui, builder: &mut QueryBuilder, fields: &[String]) -> Event
                 run |= items(form, &mut builder.model.filter, fields, id.with("root"));
             }
             toolbar(form, builder);
-            if builder.show_sort {
-                sort_section(form, &mut builder.model.sort, fields, id.with("sort"));
-            }
-            if builder.show_projection {
-                projection_section(form, &mut builder.model, fields, id.with("projection"));
-            }
-            if builder.show_paging {
-                paging_section(form, &mut builder.model, id.with("paging"));
-            }
+            sort_section(
+                form,
+                &mut builder.show_sort,
+                &mut builder.model.sort,
+                fields,
+                id.with("sort"),
+            );
+            projection_section(
+                form,
+                &mut builder.show_projection,
+                &mut builder.model,
+                fields,
+                id.with("projection"),
+            );
+            paging_section(
+                form,
+                &mut builder.show_paging,
+                &mut builder.model,
+                id.with("paging"),
+            );
             preview(form.ui(), &builder.to_query_text());
         });
     });
@@ -188,7 +198,7 @@ fn header(
     });
 }
 
-/// "Add condition / group" and the toggles of the optional sections.
+/// "Add condition / group".
 fn toolbar(form: &mut FormUi<'_>, builder: &mut QueryBuilder) {
     form.fields(|ui| {
         if ui
@@ -210,14 +220,6 @@ fn toolbar(form: &mut FormUi<'_>, builder: &mut QueryBuilder) {
             let group = builder.model.new_group();
             builder.model.filter.items.push(group);
         }
-        ui.add_space(size::FORM_CONTROL_SPACE);
-        let sort = builder.model.sort.len();
-        section_toggle(ui, &mut builder.show_sort, "Sort", sort);
-        let projection = &builder.model.projection;
-        let projected = projection.fields.len() + usize::from(projection.exclude_id);
-        section_toggle(ui, &mut builder.show_projection, "Projection", projected);
-        let paged = usize::from(builder.model.skip > 0) + usize::from(builder.model.limit > 0);
-        section_toggle(ui, &mut builder.show_paging, "Skip / Limit", paged);
     });
 }
 
@@ -318,16 +320,16 @@ fn condition_row(
 ) -> bool {
     let mut remove = false;
     form.fields(|ui| {
-        widgets::name_picker(
-            ui,
-            id.with("field"),
-            "Field",
-            &mut condition.field,
-            fields,
-            "field",
-            NO_FIELDS,
-            FIELD_WIDTH,
-        );
+        TextField::new(&mut condition.field)
+            .id(id.with("field"))
+            .name("Field")
+            .placeholder("field")
+            .monospace(true)
+            .width(FIELD_WIDTH)
+            .suggestions(fields)
+            .show(ui)
+            .response
+            .changed();
         widgets::choice(
             ui,
             id.with("operator"),
@@ -416,42 +418,38 @@ fn value_edit(
     widgets::value_field(ui, name, text, hint, width, enabled).submitted
 }
 
-/// A section toggle such as "Sort (2)": a ghost button with a disclosure chevron.
-fn section_toggle(ui: &mut Ui, open: &mut bool, label: &str, count: usize) {
-    let text = if count > 0 {
+/// A section title such as "Sort (2)": the label and how many settings it holds.
+fn section_title(label: &str, count: usize) -> String {
+    if count > 0 {
         format!("{label} ({count})")
     } else {
         label.to_owned()
-    };
-    let chevron = if *open {
-        Icon::ChevronDown
-    } else {
-        Icon::ChevronRight
-    };
-    if ui
-        .add(Button::ghost(text).icon(chevron).min_width(0.0))
-        .clicked()
-    {
-        *open = !*open;
     }
 }
 
-fn sort_section(form: &mut FormUi<'_>, sort: &mut Vec<SortKey>, fields: &[String], id: Id) {
-    form.group("Sort by", |form| {
+fn sort_section(
+    form: &mut FormUi<'_>,
+    open: &mut bool,
+    sort: &mut Vec<SortKey>,
+    fields: &[String],
+    id: Id,
+) {
+    let title = section_title("Sort", sort.len());
+    form.collapsible(&title, open, |form| {
         let mut remove = None;
         for (index, key) in sort.iter_mut().enumerate() {
             let key_id = id.with(index);
             form.fields(|ui| {
-                widgets::name_picker(
-                    ui,
-                    key_id.with("field"),
-                    "Sort field",
-                    &mut key.field,
-                    fields,
-                    "field",
-                    NO_FIELDS,
-                    PICKER_WIDTH,
-                );
+                TextField::new(&mut key.field)
+                    .id(key_id.with("field"))
+                    .name("Sort field")
+                    .placeholder("field")
+                    .monospace(true)
+                    .width(PICKER_WIDTH)
+                    .suggestions(fields)
+                    .show(ui)
+                    .response
+                    .changed();
                 ui.add(SegmentedControl::new(
                     &mut key.descending,
                     [(false, "Ascending"), (true, "Descending")],
@@ -481,9 +479,17 @@ fn sort_section(form: &mut FormUi<'_>, sort: &mut Vec<SortKey>, fields: &[String
     });
 }
 
-fn projection_section(form: &mut FormUi<'_>, model: &mut Builder, fields: &[String], id: Id) {
+fn projection_section(
+    form: &mut FormUi<'_>,
+    open: &mut bool,
+    model: &mut Builder,
+    fields: &[String],
+    id: Id,
+) {
     let projection = &mut model.projection;
-    form.group("Fields", |form| {
+    let held = projection.fields.len() + usize::from(projection.exclude_id);
+    let title = section_title("Projection", held);
+    form.collapsible(&title, open, |form| {
         form.fields(|ui| {
             widgets::choice(
                 ui,
@@ -503,16 +509,16 @@ fn projection_section(form: &mut FormUi<'_>, model: &mut Builder, fields: &[Stri
         let mut remove = None;
         for (index, field) in projection.fields.iter_mut().enumerate() {
             form.fields(|ui| {
-                widgets::name_picker(
-                    ui,
-                    id.with(index),
-                    "Projected field",
-                    field,
-                    fields,
-                    "field",
-                    NO_FIELDS,
-                    PICKER_WIDTH,
-                );
+                TextField::new(field)
+                    .id(id.with(index))
+                    .name("Projected field")
+                    .placeholder("field")
+                    .monospace(true)
+                    .width(PICKER_WIDTH)
+                    .suggestions(fields)
+                    .show(ui)
+                    .response
+                    .changed();
                 if ui
                     .add(IconButton::new(Icon::Close, "Remove field"))
                     .clicked()
@@ -533,13 +539,25 @@ fn projection_section(form: &mut FormUi<'_>, model: &mut Builder, fields: &[Stri
     });
 }
 
-fn paging_section(form: &mut FormUi<'_>, model: &mut Builder, id: Id) {
-    form.group("Skip / Limit", |form| {
+fn paging_section(form: &mut FormUi<'_>, open: &mut bool, model: &mut Builder, id: Id) {
+    let held = usize::from(model.skip > 0) + usize::from(model.limit > 0);
+    let title = section_title("Skip / Limit", held);
+    form.collapsible(&title, open, |form| {
         form.row("Skip:", |ui| {
-            widgets::number_field(ui, id.with("skip"), "Skip", &mut model.skip, TYPE_WIDTH);
+            ui.add(
+                NumberField::new(&mut model.skip)
+                    .id(id.with("skip"))
+                    .name("Skip")
+                    .width(TYPE_WIDTH),
+            );
         });
         form.row("Limit:", |ui| {
-            widgets::number_field(ui, id.with("limit"), "Limit", &mut model.limit, TYPE_WIDTH);
+            ui.add(
+                NumberField::new(&mut model.limit)
+                    .id(id.with("limit"))
+                    .name("Limit")
+                    .width(TYPE_WIDTH),
+            );
             widgets::label(ui, Tone::Muted, "0 = no limit");
         });
     });

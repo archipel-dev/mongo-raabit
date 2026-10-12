@@ -6,13 +6,13 @@
 use crate::app::{Load, MongoRaabit, NodeKey, SessionId, SessionState};
 use crate::egui::Ui;
 use crate::icons::Icon;
-use crate::style;
 use archipel_sdk::kit::Glyph;
 use archipel_sdk::kit::components::{
     Banner, EmptyState, IconButton, MenuItem, MenuSeparator, Severity, TextField, Tree, TreeRow,
 };
 use archipel_sdk::kit::tokens::size;
 use mongo_raabit_core::connection::CollectionKind;
+use mongo_raabit_core::format;
 
 enum Action {
     Toggle(NodeKey),
@@ -118,7 +118,7 @@ fn flatten(app: &MongoRaabit) -> Flat {
             } else if db.info.empty {
                 "empty".to_owned()
             } else {
-                style::bytes(db.info.size_on_disk)
+                format::bytes(db.info.size_on_disk)
             };
             flat.push(
                 TreeRow::new(db.info.name.as_str(), 1)
@@ -163,7 +163,7 @@ fn flatten(app: &MongoRaabit) -> Flat {
                 let info = entry
                     .stats
                     .as_ref()
-                    .map(|s| style::count(s.count))
+                    .map(|s| format::count(s.count))
                     .unwrap_or_else(|| match entry.info.kind {
                         CollectionKind::View => "view".into(),
                         CollectionKind::GridFsBucket => "GridFS".into(),

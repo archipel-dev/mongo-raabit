@@ -20,7 +20,6 @@ mod shell_view;
 mod sql_view;
 pub mod stage_builder;
 mod structure_view;
-pub mod style;
 pub mod tools;
 mod tree;
 mod values;

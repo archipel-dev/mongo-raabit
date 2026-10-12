@@ -5,7 +5,6 @@ use crate::app::{CollectionTab, Load, MongoRaabit, QueryMode, ResultView, TabId}
 use crate::egui::{RichText, Ui};
 use crate::icons::{self, Icon};
 use crate::results::{self, DocCommand, TableEvent, TreeEvent};
-use crate::style;
 use crate::tree::ToolKind;
 use crate::widgets;
 use archipel_sdk::kit::components::{
@@ -15,6 +14,11 @@ use archipel_sdk::kit::components::{
 use archipel_sdk::kit::tokens::size;
 use archipel_sdk::kit::{Glyph, Tone};
 use mongo_raabit_core::connection::CollectionKind;
+use mongo_raabit_core::format;
+
+/// Room the query bar leaves for the Run button.
+const RUN_RESERVE: f32 = 110.0;
+const PAGE_SIZE_WIDTH: f32 = 110.0;
 
 pub const PAGE_SIZES: [u64; 5] = [20, 50, 100, 250, 1000];
 
@@ -46,52 +50,44 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     let mut actions = Vec::new();
     let mut tool = None;
     let mut sql = false;
-    crate::egui::Frame::new()
-        .inner_margin(crate::egui::Margin {
-            left: 14,
-            right: 14,
-            top: 10,
-            bottom: 6,
-        })
-        .show(ui, |ui| {
-            header(ui, tab, &server_name, &mut tool);
-            ui.add_space(8.0);
-            mode_switch(ui, tab);
-            if matches!(tab.mode, QueryMode::Sql | QueryMode::Shell) {
-                sql = true;
-                return;
-            }
-            ui.add_space(6.0);
-            match tab.mode {
-                QueryMode::Builder => {
-                    let fields = tab
-                        .result
-                        .ready()
-                        .map(|page| crate::query_builder::field_names(&page.documents))
-                        .unwrap_or_default();
-                    match crate::query_builder::show(ui, &mut tab.builder, &fields) {
-                        crate::query_builder::Event::None => {}
-                        crate::query_builder::Event::Changed => {
-                            tab.query = tab.builder.to_query_text();
-                        }
-                        crate::query_builder::Event::Run => {
-                            tab.query = tab.builder.to_query_text();
-                            actions.push(Action::Run { recount: true });
-                        }
+    header(ui, tab, &server_name, &mut tool);
+    widgets::padded(ui, |ui| {
+        mode_switch(ui, tab);
+        if matches!(tab.mode, QueryMode::Sql | QueryMode::Shell) {
+            sql = true;
+            return;
+        }
+        ui.add_space(size::SECTION_SPACING);
+        match tab.mode {
+            QueryMode::Builder => {
+                let fields = tab
+                    .result
+                    .ready()
+                    .map(|page| crate::query_builder::field_names(&page.documents))
+                    .unwrap_or_default();
+                match crate::query_builder::show(ui, &mut tab.builder, &fields) {
+                    crate::query_builder::Event::None => {}
+                    crate::query_builder::Event::Changed => {
+                        tab.query = tab.builder.to_query_text();
+                    }
+                    crate::query_builder::Event::Run => {
+                        tab.query = tab.builder.to_query_text();
+                        actions.push(Action::Run { recount: true });
                     }
                 }
-                _ => query_bar(ui, tab, &mut actions),
             }
-            if let Some(err) = tab.query_error.clone() {
-                ui.add_space(4.0);
-                let banner = Banner::new(Severity::Error, err).dismissible(true).show(ui);
-                if banner.dismissed {
-                    tab.query_error = None;
-                }
+            _ => query_bar(ui, tab, &mut actions),
+        }
+        if let Some(err) = tab.query_error.clone() {
+            ui.add_space(size::ISLAND_GAP);
+            let banner = Banner::new(Severity::Error, err).dismissible(true).show(ui);
+            if banner.dismissed {
+                tab.query_error = None;
             }
-            ui.add_space(8.0);
-            result_toolbar(ui, tab, &mut actions);
-        });
+        }
+        ui.add_space(size::SECTION_SPACING);
+        result_toolbar(ui, tab, &mut actions);
+    });
     if sql {
         ui.add(Separator);
         if app.collection_tab_mut(tab_id).map(|t| t.mode) == Some(QueryMode::Shell) {
@@ -185,63 +181,56 @@ fn tone_text(ui: &Ui, tone: Tone, text: impl Into<String>) -> RichText {
     RichText::new(text).color(tone.resolve(ui.ctx()))
 }
 
+/// The tab's header: where the collection lives, what it is, how many documents it holds
+/// and the shortcuts to its tools.
 fn header(ui: &mut Ui, tab: &CollectionTab, server: &str, tool: &mut Option<ToolKind>) {
-    ui.horizontal(|ui| {
-        let icon = match tab.kind {
-            CollectionKind::View => Icon::View,
-            CollectionKind::TimeSeries => Icon::TimeSeries,
-            CollectionKind::GridFsBucket => Icon::Bucket,
-            _ => Icon::Collection,
-        };
-        let accent = Tone::Accent.resolve(ui.ctx());
-        let muted = Tone::Muted.resolve(ui.ctx());
-        icons::icon(ui, icon, accent);
-        ui.label(tone_text(ui, Tone::Muted, server));
-        icons::icon(ui, Icon::ChevronRight, muted);
-        ui.label(tone_text(ui, Tone::Secondary, &tab.db));
-        icons::icon(ui, Icon::ChevronRight, muted);
-        ui.label(
-            tone_text(ui, Tone::Strong, &tab.collection)
-                .size(15.0)
-                .strong(),
-        );
-        if tab.kind == CollectionKind::View {
-            ui.add(Tag::new("view").tone(Tone::Accent));
-        }
-        ui.with_layout(
-            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-            |ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                for (icon, tip, kind) in [
-                    (
-                        Icon::Schema,
-                        "Structure (schema and indexes)",
-                        ToolKind::Schema,
-                    ),
-                    (Icon::Pipeline, "Aggregation", ToolKind::Aggregation),
-                ] {
-                    if ui.add(IconButton::new(icon, tip)).clicked() {
-                        *tool = Some(kind);
-                    }
+    let (icon, kind) = match tab.kind {
+        CollectionKind::View => (Icon::View, "View"),
+        CollectionKind::TimeSeries => (Icon::TimeSeries, "Time series"),
+        CollectionKind::GridFsBucket => (Icon::Bucket, "Bucket"),
+        CollectionKind::System => (Icon::Collection, "System"),
+        CollectionKind::Collection => (Icon::Collection, "Collection"),
+    };
+    widgets::tool_header(
+        ui,
+        icon,
+        Tone::Accent,
+        &[server, tab.db.as_str()],
+        &tab.collection,
+        Tag::new(kind).tone(if tab.kind == CollectionKind::View {
+            Tone::Accent
+        } else {
+            Tone::Secondary
+        }),
+        |ui| match &tab.count {
+            Load::Ready(n) => {
+                ui.add(Tag::new(format!("{} documents", format::group(*n))).tone(Tone::Accent));
+            }
+            Load::Loading => {
+                ui.add(Spinner::new().label("Counting documents"));
+            }
+            Load::Failed(err) => {
+                ui.add(Tag::new("count failed").tone(Tone::Error))
+                    .on_hover_text(err);
+            }
+            Load::Idle => {}
+        },
+        |ui| {
+            ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
+            for (icon, tip, kind) in [
+                (
+                    Icon::Schema,
+                    "Structure (schema and indexes)",
+                    ToolKind::Schema,
+                ),
+                (Icon::Pipeline, "Aggregation", ToolKind::Aggregation),
+            ] {
+                if ui.add(IconButton::new(icon, tip)).clicked() {
+                    *tool = Some(kind);
                 }
-                ui.add_space(10.0);
-                ui.spacing_mut().item_spacing.x = 6.0;
-                match &tab.count {
-                    Load::Ready(n) => {
-                        ui.add(Tag::new(format!("{} documents", group(*n))).tone(Tone::Accent));
-                    }
-                    Load::Loading => {
-                        ui.add(Spinner::new().label("Counting documents"));
-                    }
-                    Load::Failed(err) => {
-                        ui.add(Tag::new("count failed").tone(Tone::Error))
-                            .on_hover_text(err);
-                    }
-                    Load::Idle => {}
-                }
-            },
-        );
-    });
+            }
+        },
+    );
 }
 
 /// Builder | Code | SQL. Switching from Code back to the builder takes over the code
@@ -265,10 +254,10 @@ fn mode_switch(ui: &mut Ui, tab: &mut CollectionTab) {
 }
 
 fn query_bar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
-    ui.spacing_mut().item_spacing = crate::egui::vec2(6.0, 6.0);
+    ui.spacing_mut().item_spacing = crate::egui::vec2(size::FORM_LABEL_GAP, size::FORM_LABEL_GAP);
     let mut enter = false;
     ui.horizontal(|ui| {
-        let width = ui.available_width() - 110.0;
+        let width = ui.available_width() - RUN_RESERVE;
         let r = widgets::query_field(
             ui,
             "Filter",
@@ -286,7 +275,7 @@ fn query_bar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
         }
     });
     ui.horizontal(|ui| {
-        let total = ui.available_width() - 6.0 * 5.0;
+        let total = ui.available_width() - size::FORM_LABEL_GAP * 5.0;
         let r = widgets::query_field(
             ui,
             "Projection",
@@ -314,19 +303,6 @@ fn query_bar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
     }
 }
 
-/// `1234567` → `1,234,567`.
-pub fn group(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
-
 /// A page size as the dropdown shows it.
 #[derive(Clone, Copy, PartialEq)]
 struct PageSize(u64);
@@ -347,7 +323,7 @@ fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action
                 (ResultView::Json, "JSON"),
             ],
         ));
-        ui.add_space(6.0);
+        ui.add_space(size::SECONDARY_GAP);
         let has_selection = tab.selected.is_some();
         ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
         if ui
@@ -387,7 +363,7 @@ fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action
         {
             actions.push(Action::Doc(DocCommand::Delete, None));
         }
-        ui.add_space(6.0);
+        ui.add_space(size::SECONDARY_GAP);
         if ui
             .add(IconButton::new(Icon::Explain, "Explain query plan"))
             .clicked()
@@ -403,9 +379,9 @@ fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action
         {
             actions.push(Action::Code);
         }
-        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.spacing_mut().item_spacing.x = size::FORM_LABEL_GAP;
         if tab.view == ResultView::Table && !tab.drill.is_empty() {
-            ui.add_space(8.0);
+            ui.add_space(size::SECONDARY_GAP);
             if let Some(depth) = results::breadcrumb(ui, &tab.drill) {
                 tab.drill.truncate(depth);
             }
@@ -428,20 +404,14 @@ fn paging(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
     {
         actions.push(Action::Page(tab.page + 1));
     }
-    let first = page.map(|pg| pg.first_index()).unwrap_or(0);
-    let last = page
-        .map(|pg| first + pg.documents.len() as u64)
-        .unwrap_or(0)
-        .saturating_sub(1);
-    let total = match &tab.count {
-        Load::Ready(n) => format!(" of {}", group(*n)),
-        _ => String::new(),
-    };
-    let range = if first == 0 {
-        "No documents".to_owned()
-    } else {
-        format!("{}–{}{}", group(first), group(last), total)
-    };
+    let range = format::page_range(
+        page.map_or(0, |pg| pg.first_index()),
+        page.map_or(0, |pg| pg.documents.len() as u64),
+        match &tab.count {
+            Load::Ready(n) => Some(*n),
+            _ => None,
+        },
+    );
     ui.label(tone_text(ui, Tone::Secondary, range));
     if ui
         .add(IconButton::new(Icon::ChevronLeft, "Previous page").enabled(tab.page > 0))
@@ -457,7 +427,7 @@ fn paging(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
             PAGE_SIZES.map(PageSize),
         )
         .label("Page size")
-        .width(110.0),
+        .width(PAGE_SIZE_WIDTH),
     );
     if chosen.0 != tab.page_size {
         actions.push(Action::PageSize(chosen.0));
@@ -466,8 +436,8 @@ fn paging(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
         ui.add(Spinner::new().label("Loading page"));
     }
     if let Some(page) = page {
-        ui.add_space(6.0);
-        ui.label(tone_text(ui, Tone::Muted, style::duration(page.elapsed)))
+        ui.add_space(size::SECONDARY_GAP);
+        ui.label(tone_text(ui, Tone::Muted, format::duration(page.elapsed)))
             .on_hover_text("Query time of this page");
         icons::icon(ui, Icon::TimeSeries, Tone::Muted.resolve(ui.ctx()));
     }
@@ -501,7 +471,7 @@ fn result_area(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) 
                     actions,
                 ),
                 None => {
-                    ui.add_space(40.0);
+                    ui.add_space(size::FORM_GROUP_SPACING * 2.0);
                     ui.vertical_centered(|ui| {
                         ui.add(Spinner::new().label("Running query"));
                         ui.label(tone_text(ui, Tone::Secondary, "Running query…"));
@@ -511,12 +481,12 @@ fn result_area(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) 
         }
         Load::Failed(err) => {
             ui.data_mut(|d| d.remove::<Snapshot>(snapshot_id));
-            ui.add_space(8.0);
+            ui.add_space(size::SECONDARY_GAP);
             Banner::new(Severity::Error, err.clone()).show(ui);
         }
         Load::Ready(page) if page.documents.is_empty() => {
             ui.data_mut(|d| d.remove::<Snapshot>(snapshot_id));
-            ui.add_space(24.0);
+            ui.add_space(size::FORM_GROUP_SPACING);
             EmptyState::new("No documents match the query")
                 .icon(Glyph::Filter)
                 .hint("Change the filter or reset the query.")
@@ -558,7 +528,7 @@ fn documents(
                 actions.push(Action::CommitEdit);
             }
             Some(TableEvent::Sort { field, descending }) => {
-                tab.query.sort = results::sort_text(&field, descending);
+                tab.query.sort = mongo_raabit_core::documents::sort_text(&field, descending);
                 actions.push(Action::Run { recount: false });
             }
             None => {}
@@ -594,15 +564,5 @@ fn documents(
             first,
             Some(version),
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn groups_digits() {
-        assert_eq!(super::group(0), "0");
-        assert_eq!(super::group(1200), "1,200");
-        assert_eq!(super::group(1_234_567), "1,234,567");
     }
 }

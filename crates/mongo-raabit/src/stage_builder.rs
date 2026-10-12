@@ -9,8 +9,8 @@ use crate::icons::Icon;
 use crate::widgets;
 use archipel_sdk::kit::Tone;
 use archipel_sdk::kit::components::{
-    Banner, Button, Checkbox, FieldLabel, Form, FormUi, IconButton, SegmentedControl, Severity,
-    TooltipExt,
+    Banner, Button, Checkbox, FieldLabel, Form, FormUi, IconButton, NumberField, SegmentedControl,
+    Severity, TextField, TooltipExt,
 };
 use archipel_sdk::kit::parts::Surface;
 use archipel_sdk::kit::tokens::size;
@@ -27,8 +27,6 @@ const WIDE_WIDTH: f32 = 240.0;
 const VALUE_WIDTH: f32 = 180.0;
 const NAME_WIDTH: f32 = 150.0;
 const CHOICE_WIDTH: f32 = 120.0;
-const NO_FIELDS: &str = "No suggestions yet (they come from the stage input preview)";
-const NO_COLLECTIONS: &str = "No collections are known yet";
 
 /// Editing mode of one stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,16 +169,16 @@ pub fn show(ui: &mut Ui, form: &mut StageForm, suggest: Suggestions, id: Id) -> 
             let mut changed = false;
             rows.fields(|ui| {
                 ui.add(FieldLabel::new("One document per element of"));
-                changed |= widgets::name_picker(
-                    ui,
-                    id.with("path"),
-                    "Array field",
-                    &mut form.path,
-                    suggest.fields,
-                    "array field",
-                    NO_FIELDS,
-                    PICKER_WIDTH,
-                );
+                changed |= TextField::new(&mut form.path)
+                    .id(id.with("path"))
+                    .name("Array field")
+                    .placeholder("array field")
+                    .monospace(true)
+                    .width(PICKER_WIDTH)
+                    .suggestions(suggest.fields)
+                    .show(ui)
+                    .response
+                    .changed();
             });
             changed |= rows
                 .add(Checkbox::new(
@@ -193,28 +191,28 @@ pub fn show(ui: &mut Ui, form: &mut StageForm, suggest: Suggestions, id: Id) -> 
         StageForm::Lookup(form) => {
             let mut changed = false;
             rows.row("Join collection:", |ui| {
-                changed |= widgets::name_picker(
-                    ui,
-                    id.with("from"),
-                    "Join collection",
-                    &mut form.from,
-                    suggest.collections,
-                    "collection",
-                    NO_COLLECTIONS,
-                    WIDE_WIDTH,
-                );
+                changed |= TextField::new(&mut form.from)
+                    .id(id.with("from"))
+                    .name("Join collection")
+                    .placeholder("collection")
+                    .monospace(true)
+                    .width(WIDE_WIDTH)
+                    .suggestions(suggest.collections)
+                    .show(ui)
+                    .response
+                    .changed();
             });
             rows.row("Local field:", |ui| {
-                changed |= widgets::name_picker(
-                    ui,
-                    id.with("local"),
-                    "Local field",
-                    &mut form.local_field,
-                    suggest.fields,
-                    "field in this pipeline",
-                    NO_FIELDS,
-                    WIDE_WIDTH,
-                );
+                changed |= TextField::new(&mut form.local_field)
+                    .id(id.with("local"))
+                    .name("Local field")
+                    .placeholder("field in this pipeline")
+                    .monospace(true)
+                    .width(WIDE_WIDTH)
+                    .suggestions(suggest.fields)
+                    .show(ui)
+                    .response
+                    .changed();
             });
             rows.row("Foreign field:", |ui| {
                 changed |= text_field(
@@ -261,16 +259,16 @@ fn match_form(
     for (i, c) in form.conditions.iter_mut().enumerate() {
         let row = id.with(("cond", i));
         rows.fields(|ui| {
-            changed |= widgets::name_picker(
-                ui,
-                row.with("field"),
-                "Field",
-                &mut c.field,
-                suggest.fields,
-                "field",
-                NO_FIELDS,
-                PICKER_WIDTH,
-            );
+            changed |= TextField::new(&mut c.field)
+                .id(row.with("field"))
+                .name("Field")
+                .placeholder("field")
+                .monospace(true)
+                .width(PICKER_WIDTH)
+                .suggestions(suggest.fields)
+                .show(ui)
+                .response
+                .changed();
             let before = c.op;
             let description = c.op.description();
             widgets::choice(
@@ -332,16 +330,16 @@ fn group_form(
         let mut remove = None;
         for (i, key) in form.keys.iter_mut().enumerate() {
             rows.fields(|ui| {
-                changed |= widgets::name_picker(
-                    ui,
-                    id.with(("key", i)),
-                    "Group key",
-                    key,
-                    suggest.fields,
-                    "field",
-                    NO_FIELDS,
-                    PICKER_WIDTH,
-                );
+                changed |= TextField::new(key)
+                    .id(id.with(("key", i)))
+                    .name("Group key")
+                    .placeholder("field")
+                    .monospace(true)
+                    .width(PICKER_WIDTH)
+                    .suggestions(suggest.fields)
+                    .show(ui)
+                    .response
+                    .changed();
                 if remove_button(ui) {
                     remove = Some(i);
                 }
@@ -377,16 +375,16 @@ fn group_form(
                 .changed();
                 if row.function.needs_field() {
                     ui.add(FieldLabel::new("of"));
-                    changed |= widgets::name_picker(
-                        ui,
-                        rid.with("field"),
-                        "Accumulated field",
-                        &mut row.field,
-                        suggest.fields,
-                        "field",
-                        NO_FIELDS,
-                        PICKER_WIDTH,
-                    );
+                    changed |= TextField::new(&mut row.field)
+                        .id(rid.with("field"))
+                        .name("Accumulated field")
+                        .placeholder("field")
+                        .monospace(true)
+                        .width(PICKER_WIDTH)
+                        .suggestions(suggest.fields)
+                        .show(ui)
+                        .response
+                        .changed();
                 } else {
                     widgets::label(ui, Tone::Muted, "documents");
                 }
@@ -421,16 +419,16 @@ fn sort_form(
     for (i, row) in form.fields.iter_mut().enumerate() {
         let rid = id.with(("sort", i));
         rows.fields(|ui| {
-            changed |= widgets::name_picker(
-                ui,
-                rid,
-                "Sort field",
-                &mut row.field,
-                suggest.fields,
-                "field",
-                NO_FIELDS,
-                PICKER_WIDTH,
-            );
+            changed |= TextField::new(&mut row.field)
+                .id(rid)
+                .name("Sort field")
+                .placeholder("field")
+                .monospace(true)
+                .width(PICKER_WIDTH)
+                .suggestions(suggest.fields)
+                .show(ui)
+                .response
+                .changed();
             changed |= ui
                 .add(SegmentedControl::new(
                     &mut row.descending,
@@ -466,16 +464,16 @@ fn project_form(
     for (i, row) in form.fields.iter_mut().enumerate() {
         let rid = id.with(("proj", i));
         rows.fields(|ui| {
-            changed |= widgets::name_picker(
-                ui,
-                rid,
-                "Field",
-                &mut row.field,
-                suggest.fields,
-                "field",
-                NO_FIELDS,
-                PICKER_WIDTH,
-            );
+            changed |= TextField::new(&mut row.field)
+                .id(rid)
+                .name("Field")
+                .placeholder("field")
+                .monospace(true)
+                .width(PICKER_WIDTH)
+                .suggestions(suggest.fields)
+                .show(ui)
+                .response
+                .changed();
             let mut kind = row.action.kind_index();
             let picked = widgets::choice(
                 ui,
@@ -527,16 +525,16 @@ fn add_fields_form(
                 .changed();
             match row.source {
                 ValueSource::Field => {
-                    changed |= widgets::name_picker(
-                        ui,
-                        rid,
-                        "Source field",
-                        &mut row.value,
-                        suggest.fields,
-                        "field",
-                        NO_FIELDS,
-                        VALUE_WIDTH,
-                    );
+                    changed |= TextField::new(&mut row.value)
+                        .id(rid)
+                        .name("Source field")
+                        .placeholder("field")
+                        .monospace(true)
+                        .width(VALUE_WIDTH)
+                        .suggestions(suggest.fields)
+                        .show(ui)
+                        .response
+                        .changed();
                 }
                 ValueSource::Value => {
                     changed |= text_field(ui, "Value", &mut row.value, "value", VALUE_WIDTH);
@@ -569,8 +567,14 @@ fn number_row(rows: &mut FormUi<'_>, id: Id, before: &str, value: &mut u64, afte
     let mut changed = false;
     rows.fields(|ui| {
         ui.add(FieldLabel::new(before));
-        changed |=
-            widgets::number_field(ui, id.with("number"), before, value, CHOICE_WIDTH).changed;
+        changed |= ui
+            .add(
+                NumberField::new(value)
+                    .id(id.with("number"))
+                    .name(before)
+                    .width(CHOICE_WIDTH),
+            )
+            .changed();
         ui.add(FieldLabel::new(after));
     });
     changed

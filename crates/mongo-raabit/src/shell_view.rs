@@ -9,17 +9,17 @@ use crate::egui::text::CCursorRange;
 use crate::egui::{Id, RichText, Ui};
 use crate::icons::{self, Icon};
 use crate::results;
-use crate::style;
 use crate::tools::{ShellEngine, ShellEntry, ShellTab, shell_documents};
 use crate::widgets;
 use archipel_sdk::kit::Tone;
-use archipel_sdk::kit::components::code::JavaScript;
+use archipel_sdk::kit::components::code::{ExtendedJson, JavaScript};
 use archipel_sdk::kit::components::{
     Button, Checkbox, CodeEditor, CodeView, Completion, Completions, EmptyState, IconButton,
     Spinner, SplitPane, Tag, Tooltip, TooltipExt,
 };
 use archipel_sdk::kit::parts::scroll_vertical;
 use archipel_sdk::kit::tokens::size;
+use mongo_raabit_core::format;
 use mongo_raabit_core::shell::{char_slice, script_summary};
 use mongo_raabit_core::shell_eval;
 use std::collections::HashSet;
@@ -257,7 +257,7 @@ fn entry_block(ui: &mut Ui, tab_id: TabId, index: usize, entry: &ShellEntry) {
                 widgets::label(
                     ui,
                     Tone::Muted,
-                    format!("{} · {}", entry.engine, style::duration(entry.elapsed)),
+                    format!("{} · {}", entry.engine, format::duration(entry.elapsed)),
                 );
                 if !entry.ok {
                     icons::icon(ui, Icon::Warning, Tone::Error.resolve(ui.ctx()));
@@ -269,7 +269,7 @@ fn entry_block(ui: &mut Ui, tab_id: TabId, index: usize, entry: &ShellEntry) {
         let lines = entry.output.lines().count().clamp(1, OUTPUT_LINES);
         CodeView::new(&entry.output)
             .label("Output")
-            .highlighter(&JavaScript)
+            .highlighter(&ExtendedJson)
             .wrap(true)
             .id(Id::new(("raabit-shell-output", tab_id, index)))
             .revision(crate::egui::util::hash(&entry.output))

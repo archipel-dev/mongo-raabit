@@ -11,13 +11,13 @@ use crate::tools::SchemaTab;
 use crate::widgets;
 use archipel_sdk::kit::Tone;
 use archipel_sdk::kit::components::{
-    Banner, Bucket, Button, Cell, Column, FieldLabel, Histogram, ProgressBar, PropertyGrid,
-    SectionHeader, SegmentedControl, Severity, SplitPane, Tag, TreeRow, TreeTable,
+    Banner, Bucket, Button, Cell, Column, FieldLabel, Histogram, NumberField, ProgressBar,
+    PropertyGrid, SectionHeader, SegmentedControl, Severity, SplitPane, Tag, TreeRow, TreeTable,
 };
 use archipel_sdk::kit::parts::scroll_vertical;
 use archipel_sdk::kit::tokens::size;
 use mongo_raabit_core::schema::{
-    FieldStats, SampleMethod, SchemaReport, clamp_sample_size, format_number,
+    FieldStats, MAX_SAMPLE_SIZE, SampleMethod, SchemaReport, format_number,
 };
 use std::cell::Cell as StdCell;
 use std::collections::HashSet;
@@ -68,9 +68,21 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                     (SampleMethod::Random, "Random"),
                 ],
             ));
-            let id = ui.id().with(("raabit-schema-sample", tab_id));
-            widgets::number_field(ui, id, "Sample size", sample, SAMPLE_WIDTH);
-            *sample = clamp_sample_size(*sample);
+            // Allocated at its own width: a field in a right-to-left row would take all
+            // the room that is left.
+            ui.allocate_ui(
+                crate::egui::vec2(SAMPLE_WIDTH, size::CONTROL_HEIGHT),
+                |ui| {
+                    ui.add(
+                        NumberField::new(sample)
+                            .id(ui.id().with(("raabit-schema-sample", tab_id)))
+                            .name("Sample size")
+                            .range(1..=MAX_SAMPLE_SIZE)
+                            .step(100)
+                            .width(SAMPLE_WIDTH),
+                    )
+                },
+            );
             ui.add(FieldLabel::new("Sample"));
         },
     );

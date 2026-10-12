@@ -4,7 +4,6 @@
 use crate::app::{Load, MongoRaabit};
 use crate::egui::Ui;
 use crate::icons::Icon;
-use crate::style;
 use crate::widgets;
 use archipel_sdk::kit::components::{
     Banner, Button, Checkbox, Dialog, DialogAction, Dropdown, IconButton, ListRow, Severity,
@@ -14,6 +13,7 @@ use archipel_sdk::kit::tokens::size;
 use archipel_sdk::kit::{Glyph, Tone};
 use mongo_raabit_core::Connection;
 use mongo_raabit_core::connection::ServerInfo;
+use mongo_raabit_core::format;
 use mongo_raabit_core::profile::{
     AuthMechanism, ConnectionProfile, HostPort, ProfileStore, ReadPreference, SshAuth, SshSettings,
     Target,
@@ -439,7 +439,10 @@ fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui
                 for profile in profiles {
                     let row = ListRow::new(profile.name.as_str())
                         .icon(Icon::Database)
-                        .secondary(crate::values::truncate(&profile.summary(), 10))
+                        .secondary(mongo_raabit_core::documents::truncate(
+                            &profile.summary(),
+                            10,
+                        ))
                         .depth(depth)
                         .selected(m.selected.as_deref() == Some(profile.id.as_str()))
                         .show(ui);
@@ -584,7 +587,7 @@ fn editor(m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
                     "Connected: MongoDB {} · {} · {}",
                     info.version,
                     info.topology,
-                    style::duration(info.round_trip)
+                    format::duration(info.round_trip)
                 ),
             )
             .show(ui);

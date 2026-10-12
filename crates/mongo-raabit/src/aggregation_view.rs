@@ -6,21 +6,22 @@ use crate::egui::{Id, Ui, vec2};
 use crate::icons::{self, Icon};
 use crate::results;
 use crate::stage_builder::{self, Mode, Suggestions};
-use crate::style;
 use crate::tools::{AggregationTab, RunResult};
-use crate::values;
 use crate::widgets;
 use archipel_sdk::kit::Tone;
-use archipel_sdk::kit::components::code::JavaScript;
+use archipel_sdk::kit::components::code::ExtendedJson;
 use archipel_sdk::kit::components::{
-    Banner, Button, Checkbox, CodeEditor, Counter, Dropdown, IconButton, ListRow, MenuItem,
-    MenuSeparator, SegmentedControl, Separator, Severity, Spinner, SplitPane, Tag, TooltipExt,
+    Banner, Button, Checkbox, CodeEditor, CodeView, Counter, Dropdown, IconButton, ListRow,
+    MenuItem, MenuSeparator, NumberField, SegmentedControl, Separator, Severity, Spinner,
+    SplitPane, Tag, TooltipExt,
 };
-use archipel_sdk::kit::parts::{Slot, Surface, scroll_vertical};
-use archipel_sdk::kit::tokens::{size, typography};
+use archipel_sdk::kit::parts::{Slot, scroll_vertical};
+use archipel_sdk::kit::tokens::size;
 use mongo_raabit_core::aggregate::{RunOptions, STAGE_OPERATORS, Stage, stage_operator};
 use mongo_raabit_core::bson::Document;
 use mongo_raabit_core::codegen::{CodeRequest, Operation};
+use mongo_raabit_core::documents;
+use mongo_raabit_core::format;
 use mongo_raabit_core::stage_form;
 use std::cell::RefCell;
 
@@ -151,14 +152,31 @@ fn header(ui: &mut Ui, server: &str, tab: &mut AggregationTab, actions: &mut Vec
                 ui.add_space(size::SECONDARY_GAP);
                 widgets::label(ui, Tone::Muted, "docs");
                 let id = ui.id().with("raabit-sample");
-                let edit = widgets::number_field(
-                    ui,
-                    id,
-                    "Preview sample size",
-                    &mut tab.sample,
-                    SAMPLE_WIDTH,
-                );
-                if edit.committed {
+                // Allocated at its own width: a field in a right-to-left row would take
+                // all the room that is left.
+                let field = ui
+                    .allocate_ui(
+                        crate::egui::vec2(SAMPLE_WIDTH, size::CONTROL_HEIGHT),
+                        |ui| {
+                            ui.add(
+                                NumberField::new(&mut tab.sample)
+                                    .id(id)
+                                    .name("Preview sample size")
+                                    .width(SAMPLE_WIDTH),
+                            )
+                        },
+                    )
+                    .inner;
+                // The preview runs when the user leaves the field after changing it.
+                let dirty = id.with("dirty");
+                if field.changed() {
+                    ui.data_mut(|d| d.insert_temp(dirty, true));
+                }
+                if field.lost_focus()
+                    && ui
+                        .data_mut(|d| d.remove_temp::<bool>(dirty))
+                        .unwrap_or(false)
+                {
                     actions.push(Action::Preview);
                 }
                 widgets::label(ui, Tone::Muted, "Preview on first")
@@ -462,7 +480,7 @@ fn stage_editor(
         .add(
             CodeEditor::new(&mut stage.body)
                 .label("Stage body")
-                .highlighter(&JavaScript)
+                .highlighter(&ExtendedJson)
                 .id(Id::new(("raabit-stage-editor", index)))
                 .height(editor_height),
         )
@@ -512,7 +530,6 @@ fn stage_editor(
                     ("out", index),
                 );
             });
-            let _ = style::duration(preview.elapsed);
         }
     }
 }
@@ -536,30 +553,18 @@ fn preview_column(
             Banner::new(Severity::Warning, note).show(ui);
             return;
         }
-        let palette = crate::style::Palette::of(ui);
-        scroll_vertical()
-            .id_salt(id)
-            .max_height(height - size::CONTROL_HEIGHT)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for doc in docs {
-                    Surface::Field
-                        .frame(ui.ctx())
-                        .inner_margin(crate::egui::Margin::symmetric(
-                            size::SECONDARY_GAP as i8,
-                            size::ISLAND_GAP as i8,
-                        ))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            let font = crate::egui::FontId::monospace(typography::COMMENT);
-                            let job = values::document_job(doc, &palette, font);
-                            ui.add(crate::egui::Label::new(job).wrap());
-                        });
-                }
-                if docs.is_empty() {
-                    widgets::caption(ui, "No documents");
-                }
-            });
+        if docs.is_empty() {
+            widgets::caption(ui, "No documents");
+            return;
+        }
+        let text = documents::json_text(docs, 1);
+        CodeView::new(&text)
+            .id(crate::egui::Id::new(("raabit-preview", id)))
+            .label(title)
+            .highlighter(&ExtendedJson)
+            .revision(crate::egui::util::hash(&text))
+            .height(height - size::CONTROL_HEIGHT)
+            .show(ui);
     });
 }
 
@@ -581,7 +586,7 @@ pub fn result_pane(
             match result {
                 Load::Ready(r) => {
                     ui.add(Tag::new(format!("{} documents", r.documents.len())).tone(Tone::Accent));
-                    widgets::label(ui, Tone::Muted, style::duration(r.elapsed));
+                    widgets::label(ui, Tone::Muted, format::duration(r.elapsed));
                     if r.documents.len() as u64 >= crate::tools::RUN_LIMIT {
                         widgets::label(
                             ui,

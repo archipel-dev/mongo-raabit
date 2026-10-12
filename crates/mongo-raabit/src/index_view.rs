@@ -6,7 +6,6 @@
 use crate::app::{Load, MongoRaabit, TabId};
 use crate::egui::{Id, Ui};
 use crate::icons::Icon;
-use crate::style;
 use crate::tools::IndexTab;
 use crate::widgets;
 use archipel_sdk::kit::Tone;
@@ -17,6 +16,7 @@ use archipel_sdk::kit::components::{
 use archipel_sdk::kit::parts::Surface;
 use archipel_sdk::kit::tokens::size;
 use mongo_raabit_core::connection::IndexInfo;
+use mongo_raabit_core::format;
 use mongo_raabit_core::indexes::{self, PRIMARY_INDEX};
 
 enum Action {
@@ -210,7 +210,7 @@ fn index_table(
         widgets::label(
             ui,
             Tone::Secondary,
-            format!("{count} indexes · {}", style::bytes(bytes)),
+            format!("{count} indexes · {}", format::bytes(bytes)),
         );
         ui.with_layout(
             crate::egui::Layout::right_to_left(crate::egui::Align::Center),
@@ -270,7 +270,7 @@ fn index_table(
             0 => Cell::new(&index.name).icon(Icon::Index),
             1 => Cell::new(indexes::keys_label(index)),
             2 => Cell::new(indexes::properties_label(index)),
-            3 => Cell::new(index.size.map(style::bytes).unwrap_or_default()),
+            3 => Cell::new(index.size.map(format::bytes).unwrap_or_default()),
             _ => Cell::new(indexes::usage_label(index.ops)),
         };
         if index.hidden {

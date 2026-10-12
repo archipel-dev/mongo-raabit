@@ -5,7 +5,7 @@ use crate::app::{Load, MongoRaabit, TabId};
 use crate::egui::{RichText, Ui};
 use crate::icons::Icon;
 use crate::widgets;
-use archipel_sdk::kit::components::code::JavaScript;
+use archipel_sdk::kit::components::code::{ExtendedJson, JavaScript};
 use archipel_sdk::kit::components::{
     Banner, Button, Cell, Checkbox, CodeEditor, CodeView, Column, Dialog as KitDialog,
     DialogAction, Dropdown, Severity, Spinner, Tag, TreeRow, TreeTable,
@@ -115,7 +115,10 @@ fn document_editor(
     editor: &mut DocumentEditor,
 ) -> bool {
     let title = match &editor.mode {
-        DocumentMode::Edit(id) => format!("Edit Document  {}", crate::values::preview(id)),
+        DocumentMode::Edit(id) => format!(
+            "Edit Document  {}",
+            mongo_raabit_core::documents::preview(id)
+        ),
         DocumentMode::Insert => "Add Document".to_owned(),
     };
     let mut save = false;
@@ -129,7 +132,7 @@ fn document_editor(
             CodeEditor::new(&mut editor.text)
                 .id(crate::egui::Id::new("raabit-doc-text"))
                 .label("Document")
-                .highlighter(&JavaScript)
+                .highlighter(&ExtendedJson)
                 .line_numbers(true)
                 .tab_indents(false)
                 .height(380.0),
@@ -308,7 +311,7 @@ fn explain_dialog(ctx: &crate::egui::Context, explain: &mut ExplainDialog) -> bo
                     CodeView::new(&raw)
                         .id(crate::egui::Id::new("raabit-explain-raw"))
                         .label("Raw explain output")
-                        .highlighter(&JavaScript)
+                        .highlighter(&ExtendedJson)
                         .folding(true)
                         .height(200.0)
                         .show(ui);
