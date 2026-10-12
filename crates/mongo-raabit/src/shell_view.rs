@@ -35,10 +35,15 @@ const SUMMARY_CHARS: usize = 90;
 /// Most lines of one run's output shown before its block scrolls.
 const OUTPUT_LINES: usize = 14;
 const HINT: &str = "Ctrl+Enter runs the script or the selection · Ctrl+Space completes";
+const READ_ONLY_SHELL_TIP: &str = "Read-only connection: scripts run in the built-in shell, which refuses writes (mongosh cannot be limited to reads)";
 const BUILTIN_TIP: &str = "Evaluate with the built-in shell even though mongosh is installed";
 const BUILTIN_ENGINE_TIP: &str = "Evaluates show/use and db.<collection> commands with the driver. Install mongosh for full JavaScript.";
 
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
+    let read_only = app
+        .shell_tab_mut(tab_id)
+        .map(|t| t.session)
+        .is_some_and(|s| app.session_read_only(s));
     let Some(tab) = app.shell_tab_mut(tab_id) else {
         return;
     };
@@ -54,7 +59,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         ..
     } = tab;
     let mut run: Option<Option<String>> = None;
-    let builtin = *force_builtin;
+    // mongosh cannot be limited to reads: a read-only connection uses the built-in shell.
+    let builtin = *force_builtin || read_only;
     widgets::tool_header(
         ui,
         Icon::Shell,
@@ -62,7 +68,13 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         &[],
         db,
         Tag::new("Shell").tone(Tone::Accent),
-        |ui| engine_tag(ui, engine, builtin),
+        |ui| {
+            engine_tag(ui, engine, builtin);
+            if read_only {
+                ui.add(Tag::new("Read-only").tone(Tone::Warning))
+                    .tooltip(READ_ONLY_SHELL_TIP);
+            }
+        },
         |ui| {
             if *running {
                 ui.add(Spinner::new().label("Running"));
@@ -74,8 +86,14 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 run = Some(None);
             }
             if matches!(engine, ShellEngine::Mongosh { .. }) {
-                ui.add(Checkbox::new(force_builtin, "Built-in"))
-                    .tooltip(BUILTIN_TIP);
+                if read_only {
+                    let mut on = true;
+                    ui.add(Checkbox::new(&mut on, "Built-in").enabled(false))
+                        .tooltip(READ_ONLY_SHELL_TIP);
+                } else {
+                    ui.add(Checkbox::new(force_builtin, "Built-in"))
+                        .tooltip(BUILTIN_TIP);
+                }
             }
             if ui
                 .add(IconButton::new(Icon::Trash, "Clear output"))

@@ -164,7 +164,7 @@ fn table_harness<'a>() -> testing::Harness<'a, TableHarness> {
         events: Vec::new(),
     };
     let mut harness = testing::harness_state(Theme::dark(), state, |ui, s: &mut TableHarness| {
-        if let Some(event) = results::table(ui, &mut s.tab, &s.docs, 1) {
+        if let Some(event) = results::table(ui, &mut s.tab, &s.docs, 1, true) {
             if let TableEvent::Select(i) = &event {
                 s.tab.selected = Some(*i);
             }
@@ -343,6 +343,8 @@ fn live(
     let (mut profile, _) = ConnectionProfile::from_uri(&uri()).unwrap();
     profile.connect_timeout_ms = Some(1500);
     let mut app = MongoRaabit::new(None);
+    // These flows exercise the writes; the confirmation has its own tests (confirm.rs).
+    app.settings.confirm_writes = false;
     let session = app.connect(profile);
     app.wait_idle(Duration::from_secs(10));
     if let SessionState::Failed(err) = &app.session(session).unwrap().state {

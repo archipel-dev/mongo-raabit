@@ -191,6 +191,7 @@ pub fn table(
     tab: &mut CollectionTab,
     docs: &[Document],
     first_index: u64,
+    editable: bool,
 ) -> Option<TableEvent> {
     let rows = table_rows(docs, &tab.drill);
     if rows.is_empty() {
@@ -239,7 +240,7 @@ pub fn table(
     // The field path of an editable cell, `None` for cells that are read-only.
     let path_of = |row: usize, name: &str| -> Option<String> {
         let (doc_index, value) = &rows[row];
-        if !matches!(value, Bson::Document(_)) || name == "_id" || !settable(name) {
+        if !editable || !matches!(value, Bson::Document(_)) || name == "_id" || !settable(name) {
             return None;
         }
         let prefix = editable_prefix(docs.get(*doc_index)?, &drill)?;

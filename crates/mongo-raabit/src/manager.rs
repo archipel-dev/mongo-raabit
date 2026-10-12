@@ -370,6 +370,9 @@ fn with_port(
     });
 }
 
+/// What the Read-only checkbox of a connection blocks.
+const READ_ONLY_COMMENT: &str = "Blocks every change to the database: edits, inserts, deletes, index and collection changes, writing shell commands";
+
 fn editor(m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
     if m.uri_import.is_some() {
         import_form(m, ui);
@@ -388,6 +391,10 @@ fn editor(m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
                     "Folder",
                     &mut m.form.draft.folder,
                     "e.g. Production/EU",
+                );
+                form.add(
+                    Checkbox::new(&mut m.form.draft.read_only, "Read-only")
+                        .comment(READ_ONLY_COMMENT),
                 );
                 tab_strip(form.ui(), m);
                 match m.page {

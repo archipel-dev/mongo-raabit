@@ -47,11 +47,15 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         .map(|s| s.profile.name.clone())
         .unwrap_or_default();
     let collections = lookup_collections(app, tab_id);
+    let read_only = app
+        .aggregation_tab_mut(tab_id)
+        .map(|t| t.session)
+        .is_some_and(|s| app.session_read_only(s));
     let Some(tab) = app.aggregation_tab_mut(tab_id) else {
         return;
     };
     let mut actions = Vec::new();
-    widgets::padded(ui, |ui| header(ui, &server, tab, &mut actions));
+    widgets::padded(ui, |ui| header(ui, &server, tab, read_only, &mut actions));
     ui.add(Separator);
     let idle = matches!(tab.result, Load::Idle);
     let size = ui.available_size();
@@ -124,7 +128,19 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
 }
 
 /// Breadcrumb of the collection, the sample size of previews and the Run buttons.
-fn header(ui: &mut Ui, server: &str, tab: &mut AggregationTab, actions: &mut Vec<Action>) {
+fn header(
+    ui: &mut Ui,
+    server: &str,
+    tab: &mut AggregationTab,
+    read_only: bool,
+    actions: &mut Vec<Action>,
+) {
+    // A pipeline ending in `$out` / `$merge` writes: blocked on a read-only connection.
+    let blocked = read_only
+        && tab
+            .pipeline
+            .documents(None)
+            .is_ok_and(|stages| mongo_raabit_core::write::pipeline_writes(&stages));
     let muted = Tone::Muted.resolve(ui.ctx());
     ui.horizontal(|ui| {
         icons::icon(ui, Icon::Pipeline, Tone::Accent.resolve(ui.ctx()));
@@ -134,13 +150,23 @@ fn header(ui: &mut Ui, server: &str, tab: &mut AggregationTab, actions: &mut Vec
         icons::icon(ui, Icon::ChevronRight, muted);
         widgets::title(ui, &tab.collection);
         ui.add(Tag::new("Aggregation").tone(Tone::Accent));
+        if read_only {
+            ui.add(Tag::new("Read-only").tone(Tone::Warning));
+        }
         ui.with_layout(
             crate::egui::Layout::right_to_left(crate::egui::Align::Center),
             |ui| {
-                if ui
-                    .add(Button::primary("Run Pipeline").icon(Icon::Play))
-                    .clicked()
-                {
+                let run = ui.add(
+                    Button::primary("Run Pipeline")
+                        .icon(Icon::Play)
+                        .enabled(!blocked),
+                );
+                let run = if blocked {
+                    run.tooltip("Read-only connection: $out and $merge write to a collection")
+                } else {
+                    run
+                };
+                if run.clicked() {
                     actions.push(Action::Run);
                 }
                 if ui

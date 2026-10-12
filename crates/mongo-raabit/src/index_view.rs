@@ -8,6 +8,7 @@ use crate::egui::{Id, Ui};
 use crate::icons::Icon;
 use crate::tools::IndexTab;
 use crate::widgets;
+use crate::writes::READ_ONLY_TIP;
 use archipel_sdk::kit::Tone;
 use archipel_sdk::kit::components::{
     Banner, Button, Cell, Checkbox, Column, Form, IconButton, Severity, Spinner, Table, Tag,
@@ -38,6 +39,10 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         .and_then(|s| app.session(s))
         .map(|s| s.profile.name.clone())
         .unwrap_or_default();
+    let read_only = app
+        .index_tab_mut(tab_id)
+        .map(|t| t.session)
+        .is_some_and(|s| app.session_read_only(s));
     let Some(tab) = app.index_tab_mut(tab_id) else {
         return;
     };
@@ -61,15 +66,25 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         collection,
         Tag::new("Indexes").tone(Tone::Warning),
         |ui| {
+            if read_only {
+                ui.add(Tag::new("Read-only").tone(Tone::Warning));
+            }
             if *busy {
                 ui.add(Spinner::new().label("Working"));
             }
         },
         |ui| {
-            if ui
-                .add(Button::primary("New Index").icon(Icon::Plus))
-                .clicked()
-            {
+            let new = ui.add(
+                Button::primary("New Index")
+                    .icon(Icon::Plus)
+                    .enabled(!read_only),
+            );
+            let new = if read_only {
+                new.tooltip(READ_ONLY_TIP)
+            } else {
+                new
+            };
+            if new.clicked() {
                 *form_open = !*form_open;
             }
             if ui.add(IconButton::new(Icon::Refresh, "Refresh")).clicked() {
@@ -77,6 +92,9 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             }
         },
     );
+    if read_only {
+        *form_open = false;
+    }
     if *form_open || error.is_some() {
         widgets::padded(ui, |ui| {
             if *form_open {
@@ -96,7 +114,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         }
         Load::Ready(list) => {
             widgets::padded(ui, |ui| {
-                index_table(ui, tab_id, list, confirm_drop, &mut actions);
+                index_table(ui, tab_id, list, confirm_drop, read_only, &mut actions);
             });
         }
     }
@@ -185,6 +203,7 @@ fn index_table(
     tab_id: TabId,
     list: &[IndexInfo],
     confirm: &mut Option<String>,
+    read_only: bool,
     actions: &mut Vec<Action>,
 ) {
     let mem_id = Id::new(("raabit-indexes", tab_id, "memory"));
@@ -215,7 +234,7 @@ fn index_table(
         ui.with_layout(
             crate::egui::Layout::right_to_left(crate::egui::Align::Center),
             |ui| {
-                let target = selected.filter(|i| i.name != PRIMARY_INDEX);
+                let target = selected.filter(|i| i.name != PRIMARY_INDEX && !read_only);
                 let confirming =
                     target.is_some_and(|i| confirm.as_deref() == Some(i.name.as_str()));
                 if confirming {
@@ -232,6 +251,11 @@ fn index_table(
                             .small(true)
                             .enabled(target.is_some()),
                     )
+                    .tooltip(if read_only {
+                        READ_ONLY_TIP
+                    } else {
+                        "Drop the selected index"
+                    })
                     .clicked()
                 {
                     *confirm = target.map(|i| i.name.clone());
@@ -244,7 +268,7 @@ fn index_table(
                             .small(true)
                             .enabled(target.is_some()),
                     )
-                    .tooltip(HIDE_TIP)
+                    .tooltip(if read_only { READ_ONLY_TIP } else { HIDE_TIP })
                     .clicked()
                     && let Some(index) = target
                 {

@@ -241,3 +241,47 @@ fn node_menu_items() {
     })
     .run();
 }
+
+#[test]
+fn safety_checkboxes_with_comments() {
+    for (label, comment) in [
+        (
+            "Read-only",
+            "Blocks every change to the database: edits, inserts, deletes, index and collection changes, writing shell commands",
+        ),
+        (
+            "Don't ask again",
+            "Runs changes without this confirmation; turn it back on in Settings",
+        ),
+    ] {
+        testing::conformance(label, move |ui, enabled| {
+            let mut on = false;
+            ui.add(
+                Checkbox::new(&mut on, label)
+                    .comment(comment)
+                    .enabled(enabled),
+            )
+        })
+        .run();
+    }
+}
+
+#[test]
+fn settings_menu_item() {
+    testing::conformance("Settings…", |ui, enabled| {
+        ui.add(
+            MenuItem::new("Settings…")
+                .icon(Icon::Settings)
+                .enabled(enabled),
+        )
+    })
+    .run();
+}
+
+#[test]
+fn more_actions_button() {
+    testing::conformance("More actions", |ui, enabled| {
+        ui.add(IconButton::new(archipel_sdk::kit::Glyph::More, "More actions").enabled(enabled))
+    })
+    .run();
+}

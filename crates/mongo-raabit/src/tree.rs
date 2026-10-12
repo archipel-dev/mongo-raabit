@@ -72,6 +72,10 @@ fn flatten(app: &MongoRaabit) -> Flat {
     for session in &app.sessions {
         let skey = NodeKey::Session(session.id);
         let expanded = app.expanded.contains(&skey);
+        let read_only = match &session.state {
+            SessionState::Connected(conn) => conn.is_read_only(),
+            _ => session.profile.read_only || app.settings.new_connections_read_only,
+        };
         let info = match &session.state {
             SessionState::Connecting => "connecting…".to_owned(),
             SessionState::Connected(conn) if session.databases.is_loading() => {
@@ -83,9 +87,16 @@ fn flatten(app: &MongoRaabit) -> Flat {
                 "failed".into()
             }
         };
+        // The kit's tree rows have no tag (see "Kit gaps"): a lock and the secondary text
+        // say "read-only".
+        let (icon, info) = if read_only {
+            (Icon::Lock, format!("read-only · {info}"))
+        } else {
+            (Icon::Server, info)
+        };
         flat.push(
             TreeRow::new(session.profile.name.as_str(), 0)
-                .icon(Icon::Server)
+                .icon(icon)
                 .secondary(info)
                 .parent(expanded),
             skey,
@@ -275,14 +286,26 @@ pub fn header_actions(app: &mut MongoRaabit, ui: &mut Ui) {
         .and_then(|key| flat.keys.iter().position(|k| k == key));
     let session_ids: Vec<SessionId> = app.sessions.iter().map(|s| s.id).collect();
     let mut open_manager = false;
+    let mut open_settings = false;
     let mut actions = Vec::new();
-    let more = ui.add(
-        IconButton::new(Glyph::More, "Actions for the selected item").enabled(current.is_some()),
-    );
-    if let Some(i) = current {
-        crate::egui::Popup::menu(&more).show(|ui| {
+    let more = ui.add(IconButton::new(Glyph::More, "More actions"));
+    crate::egui::Popup::menu(&more).show(|ui| {
+        if let Some(i) = current {
             node_menu(ui, &flat, i, &mut actions);
-        });
+            ui.add(MenuSeparator);
+        }
+        ui.set_max_width(size::SUBMENU_WIDTH);
+        if ui
+            .add(MenuItem::new("Settings…").icon(Icon::Settings))
+            .clicked()
+        {
+            open_settings = true;
+            ui.close();
+        }
+    });
+    if open_settings {
+        app.host_requests
+            .push(crate::writes::HostRequest::OpenSettings);
     }
     if ui
         .add(IconButton::new(Icon::Refresh, "Refresh all"))

@@ -48,6 +48,8 @@ pub enum Icon {
     Save,
     Warning,
     Filter,
+    Settings,
+    Lock,
 }
 
 impl Icon {
@@ -100,6 +102,8 @@ impl Icon {
             Icon::Save => Glyph::Save,
             Icon::Warning => Glyph::Warning,
             Icon::Filter => Glyph::Filter,
+            Icon::Settings => Glyph::Settings,
+            Icon::Lock => Glyph::Lock,
         }
     }
 }

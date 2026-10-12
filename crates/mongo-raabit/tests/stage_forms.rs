@@ -156,6 +156,8 @@ fn renders_every_stage_form_headlessly() {
 #[test]
 fn renders_the_aggregation_tab_with_forms_and_code() {
     let mut app = MongoRaabit::new(None);
+    // These flows exercise the writes; the confirmation has its own tests (confirm.rs).
+    app.settings.confirm_writes = false;
     let mut stages = sample_stages();
     stages.push(Stage::new("$facet"));
     let count = stages.len();
@@ -194,6 +196,8 @@ fn form_built_pipelines_run_on_a_live_server() {
     let (mut profile, _) = ConnectionProfile::from_uri(&uri()).unwrap();
     profile.connect_timeout_ms = Some(1500);
     let mut app = MongoRaabit::new(None);
+    // These flows exercise the writes; the confirmation has its own tests (confirm.rs).
+    app.settings.confirm_writes = false;
     let session = app.connect(profile);
     app.wait_idle(Duration::from_secs(10));
     if let SessionState::Failed(err) = &app.session(session).unwrap().state {

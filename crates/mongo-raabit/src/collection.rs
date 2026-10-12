@@ -7,9 +7,10 @@ use crate::icons::{self, Icon};
 use crate::results::{self, DocCommand, TableEvent, TreeEvent};
 use crate::tree::ToolKind;
 use crate::widgets;
+use crate::writes::READ_ONLY_TIP_LOWER;
 use archipel_sdk::kit::components::{
     Banner, Button, Dropdown, EmptyState, IconButton, SegmentedControl, Separator, Severity,
-    Spinner, Tag,
+    Spinner, Tag, TooltipExt,
 };
 use archipel_sdk::kit::tokens::size;
 use archipel_sdk::kit::{Glyph, Tone};
@@ -24,6 +25,7 @@ pub const PAGE_SIZES: [u64; 5] = [20, 50, 100, 250, 1000];
 
 enum Action {
     Add,
+    Select(usize),
     Doc(DocCommand, Option<usize>),
     CommitEdit,
     Explain,
@@ -44,13 +46,14 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         .session(server)
         .map(|s| s.profile.name.clone())
         .unwrap_or_default();
+    let read_only = app.session_read_only(server);
     let Some(tab) = app.collection_tab_mut(tab_id) else {
         return;
     };
     let mut actions = Vec::new();
     let mut tool = None;
     let mut sql = false;
-    header(ui, tab, &server_name, &mut tool);
+    header(ui, tab, &server_name, read_only, &mut tool);
     widgets::padded(ui, |ui| {
         mode_switch(ui, tab);
         if matches!(tab.mode, QueryMode::Sql | QueryMode::Shell) {
@@ -86,7 +89,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             }
         }
         ui.add_space(size::SECTION_SPACING);
-        result_toolbar(ui, tab, &mut actions);
+        result_toolbar(ui, tab, read_only, &mut actions);
     });
     if sql {
         ui.add(Separator);
@@ -105,7 +108,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     }
     ui.add(Separator);
-    result_area(ui, tab, &mut actions);
+    result_area(ui, tab, read_only, &mut actions);
     if let Some(kind) = tool
         && let Some(tab) = app.collection_tab_mut(tab_id)
     {
@@ -148,6 +151,11 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 }
             }
             Action::Add => app.add_document(tab_id),
+            Action::Select(index) => {
+                if let Some(tab) = app.collection_tab_mut(tab_id) {
+                    tab.selected = Some(index);
+                }
+            }
             Action::CommitEdit => app.commit_cell_edit(tab_id),
             Action::Explain => app.explain(tab_id),
             Action::Code => app.query_code(tab_id),
@@ -181,9 +189,36 @@ fn tone_text(ui: &Ui, tone: Tone, text: impl Into<String>) -> RichText {
     RichText::new(text).color(tone.resolve(ui.ctx()))
 }
 
+/// Why a read-only connection's write actions are disabled.
+const READ_ONLY_HINT: &str =
+    "Read-only connection: edits, inserts, deletes and index changes are blocked";
+
+/// The document count of the header.
+fn count_tag(ui: &mut Ui, count: &Load<u64>) {
+    match count {
+        Load::Ready(n) => {
+            ui.add(Tag::new(format!("{} documents", format::group(*n))).tone(Tone::Accent));
+        }
+        Load::Loading => {
+            ui.add(Spinner::new().label("Counting documents"));
+        }
+        Load::Failed(err) => {
+            ui.add(Tag::new("count failed").tone(Tone::Error))
+                .on_hover_text(err);
+        }
+        Load::Idle => {}
+    }
+}
+
 /// The tab's header: where the collection lives, what it is, how many documents it holds
 /// and the shortcuts to its tools.
-fn header(ui: &mut Ui, tab: &CollectionTab, server: &str, tool: &mut Option<ToolKind>) {
+fn header(
+    ui: &mut Ui,
+    tab: &CollectionTab,
+    server: &str,
+    read_only: bool,
+    tool: &mut Option<ToolKind>,
+) {
     let (icon, kind) = match tab.kind {
         CollectionKind::View => (Icon::View, "View"),
         CollectionKind::TimeSeries => (Icon::TimeSeries, "Time series"),
@@ -202,18 +237,12 @@ fn header(ui: &mut Ui, tab: &CollectionTab, server: &str, tool: &mut Option<Tool
         } else {
             Tone::Secondary
         }),
-        |ui| match &tab.count {
-            Load::Ready(n) => {
-                ui.add(Tag::new(format!("{} documents", format::group(*n))).tone(Tone::Accent));
+        |ui| {
+            if read_only {
+                ui.add(Tag::new("Read-only").tone(Tone::Warning))
+                    .tooltip(READ_ONLY_HINT);
             }
-            Load::Loading => {
-                ui.add(Spinner::new().label("Counting documents"));
-            }
-            Load::Failed(err) => {
-                ui.add(Tag::new("count failed").tone(Tone::Error))
-                    .on_hover_text(err);
-            }
-            Load::Idle => {}
+            count_tag(ui, &tab.count);
         },
         |ui| {
             ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
@@ -303,6 +332,16 @@ fn query_bar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
     }
 }
 
+/// The page sizes offered: the usual ones and the tab's own (from Settings).
+fn page_sizes(current: u64) -> Vec<PageSize> {
+    let mut sizes = PAGE_SIZES.to_vec();
+    if !sizes.contains(&current) {
+        sizes.push(current);
+        sizes.sort_unstable();
+    }
+    sizes.into_iter().map(PageSize).collect()
+}
+
 /// A page size as the dropdown shows it.
 #[derive(Clone, Copy, PartialEq)]
 struct PageSize(u64);
@@ -313,7 +352,23 @@ impl std::fmt::Display for PageSize {
     }
 }
 
-fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
+/// A write action of the toolbar: on a read-only connection disabled, its tooltip (the
+/// label) saying why. The kit's icon buttons take no separate disabled reason (see "Kit
+/// gaps"), so the reason joins the label.
+fn write_button(icon: Icon, label: &str, enabled: bool, read_only: bool) -> IconButton {
+    if read_only {
+        IconButton::new(icon, format!("{label} ({READ_ONLY_TIP_LOWER})")).enabled(false)
+    } else {
+        IconButton::new(icon, label).enabled(enabled)
+    }
+}
+
+fn result_toolbar(
+    ui: &mut Ui,
+    tab: &mut CollectionTab,
+    read_only: bool,
+    actions: &mut Vec<Action>,
+) {
     ui.horizontal(|ui| {
         ui.add(SegmentedControl::new(
             &mut tab.view,
@@ -327,22 +382,29 @@ fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action
         let has_selection = tab.selected.is_some();
         ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
         if ui
-            .add(IconButton::new(Icon::Plus, "Add document"))
+            .add(write_button(Icon::Plus, "Add document", true, read_only))
             .clicked()
         {
             actions.push(Action::Add);
         }
         if ui
-            .add(
-                IconButton::new(Icon::Edit, "Edit document (double-click a row)")
-                    .enabled(has_selection),
-            )
+            .add(write_button(
+                Icon::Edit,
+                "Edit document (double-click a row)",
+                has_selection,
+                read_only,
+            ))
             .clicked()
         {
             actions.push(Action::Doc(DocCommand::Edit, None));
         }
         if ui
-            .add(IconButton::new(Icon::Copy, "Clone document").enabled(has_selection))
+            .add(write_button(
+                Icon::Copy,
+                "Clone document",
+                has_selection,
+                read_only,
+            ))
             .clicked()
         {
             actions.push(Action::Doc(DocCommand::Clone, None));
@@ -355,8 +417,7 @@ fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action
         }
         if ui
             .add(
-                IconButton::new(Icon::Trash, "Delete document")
-                    .enabled(has_selection)
+                write_button(Icon::Trash, "Delete document", has_selection, read_only)
                     .tone(Tone::Error),
             )
             .clicked()
@@ -424,7 +485,7 @@ fn paging(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
         Dropdown::new(
             ("raabit-page-size", &tab.db, &tab.collection),
             &mut chosen,
-            PAGE_SIZES.map(PageSize),
+            page_sizes(tab.page_size),
         )
         .label("Page size")
         .width(PAGE_SIZE_WIDTH),
@@ -452,7 +513,7 @@ struct Snapshot {
     docs: std::sync::Arc<Vec<mongo_raabit_core::bson::Document>>,
 }
 
-fn result_area(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
+fn result_area(ui: &mut Ui, tab: &mut CollectionTab, read_only: bool, actions: &mut Vec<Action>) {
     let snapshot_id = crate::egui::Id::new(("raabit-page", &tab.db, &tab.collection));
     // The page is lent to the view for this frame; background jobs only apply their
     // results between frames.
@@ -468,6 +529,7 @@ fn result_area(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) 
                     &snapshot.docs,
                     snapshot.first,
                     snapshot.seq,
+                    read_only,
                     actions,
                 ),
                 None => {
@@ -503,7 +565,7 @@ fn result_area(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) 
                 };
                 ui.data_mut(|d| d.insert_temp(snapshot_id, snapshot));
             }
-            documents(ui, tab, &page.documents, first, tab.seq, actions);
+            documents(ui, tab, &page.documents, first, tab.seq, read_only, actions);
         }
     }
     tab.result = result;
@@ -516,13 +578,22 @@ fn documents(
     docs: &[mongo_raabit_core::bson::Document],
     first: u64,
     version: u64,
+    read_only: bool,
     actions: &mut Vec<Action>,
 ) {
+    // A read-only connection shows the documents; it cannot open them for editing.
+    let open = |i: usize| {
+        if read_only {
+            Action::Select(i)
+        } else {
+            Action::Doc(DocCommand::Edit, Some(i))
+        }
+    };
     match tab.view {
-        ResultView::Table => match results::table(ui, tab, docs, first) {
+        ResultView::Table => match results::table(ui, tab, docs, first, !read_only) {
             Some(TableEvent::Drill(field)) => tab.drill.push(field),
             Some(TableEvent::Select(i)) => tab.selected = Some(i),
-            Some(TableEvent::Open(i)) => actions.push(Action::Doc(DocCommand::Edit, Some(i))),
+            Some(TableEvent::Open(i)) => actions.push(open(i)),
             Some(TableEvent::Edit(edit)) => {
                 tab.editing = Some(edit);
                 actions.push(Action::CommitEdit);
@@ -542,7 +613,7 @@ fn documents(
             },
             docs,
             first,
-            true,
+            !read_only,
         ) {
             Some(TreeEvent::Toggle(key)) => {
                 if !tab.open.remove(&key) {
@@ -550,7 +621,7 @@ fn documents(
                 }
             }
             Some(TreeEvent::Select(i)) => tab.selected = Some(i),
-            Some(TreeEvent::Open(i)) => actions.push(Action::Doc(DocCommand::Edit, Some(i))),
+            Some(TreeEvent::Open(i)) => actions.push(open(i)),
             Some(TreeEvent::Edit(edit)) => {
                 tab.editing = Some(edit);
                 actions.push(Action::CommitEdit);

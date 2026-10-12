@@ -5,6 +5,7 @@ use crate::dialogs::{
 };
 use crate::jobs::Jobs;
 use crate::manager::ConnectionManager;
+use crate::writes::{HostRequest, PendingWrite, WriteOrigin};
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::codegen::{CodeRequest, Operation};
 use mongo_raabit_core::connection::{
@@ -13,7 +14,7 @@ use mongo_raabit_core::connection::{
 use mongo_raabit_core::profile::{ConnectionProfile, ProfileStore};
 use mongo_raabit_core::query::{Page, Query, QueryText};
 use mongo_raabit_core::secrets::{MemorySecretStore, SecretStore};
-use mongo_raabit_core::{Connection, Write, WriteOutcome};
+use mongo_raabit_core::{ConnectOptions, Connection, RaabitError, Settings, Write};
 use mongo_raabit_core::{documents, status, tabs};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -229,7 +230,28 @@ pub struct MongoRaabit {
     pub status: String,
     /// Island sizes and visibility of the window.
     pub layout: archipel_sdk::kit::components::WorkbenchState,
+    /// The user's settings; the plugin refreshes them from the host every frame.
+    pub settings: Settings,
+    /// Requests for the host (store a setting, open Settings), taken by the plugin.
+    pub host_requests: Vec<HostRequest>,
+    /// A write the user just confirmed, run after the dialogs of this frame.
+    pub confirmed: Option<PendingWrite>,
     next_id: u64,
+}
+
+/// Run `future`, failing when it takes longer than `limit` (the query timeout setting).
+pub(crate) async fn bounded<T>(
+    limit: std::time::Duration,
+    future: impl std::future::Future<Output = mongo_raabit_core::Result<T>>,
+) -> mongo_raabit_core::Result<T> {
+    tokio::time::timeout(limit, future)
+        .await
+        .unwrap_or_else(|_| {
+            Err(RaabitError::Invalid(format!(
+                "did not finish within {} s (Settings › Query timeout)",
+                limit.as_secs()
+            )))
+        })
 }
 
 impl Default for MongoRaabit {
@@ -267,6 +289,9 @@ impl MongoRaabit {
             tree_filter: String::new(),
             status,
             layout: Default::default(),
+            settings: Settings::default(),
+            host_requests: Vec::new(),
+            confirmed: None,
             next_id: 1,
         }
     }
@@ -335,8 +360,11 @@ impl MongoRaabit {
         self.expanded.insert(NodeKey::Session(id));
         self.selected = Some(NodeKey::Session(id));
         let secrets = self.secrets.clone();
+        let options = ConnectOptions {
+            read_only: self.settings.new_connections_read_only,
+        };
         self.jobs.spawn(
-            async move { Connection::connect(&profile, secrets.as_ref()).await },
+            async move { Connection::connect_with(&profile, secrets.as_ref(), options).await },
             move |app: &mut MongoRaabit, result| {
                 let Some(session) = app.session_mut(id) else {
                     return;
@@ -495,9 +523,11 @@ impl MongoRaabit {
             return self.tabs[index].id;
         }
         let id = self.next_id();
+        let mut tab = CollectionTab::new(session, db, collection, kind);
+        tab.page_size = u64::from(self.settings.page_size);
         self.tabs.push(Tab {
             id,
-            kind: TabKind::Collection(Box::new(CollectionTab::new(session, db, collection, kind))),
+            kind: TabKind::Collection(Box::new(tab)),
         });
         self.active_tab = self.tabs.len() - 1;
         self.run_query(id, true);
@@ -571,11 +601,14 @@ impl MongoRaabit {
             }
             return;
         };
+        let limit = self.settings.query_timeout();
         {
             let conn = conn.clone();
             let (db, coll, query) = (db.clone(), coll.clone(), query.clone());
             self.jobs.spawn(
-                async move { conn.find_page(&db, &coll, &query, page, page_size).await },
+                async move {
+                    bounded(limit, conn.find_page(&db, &coll, &query, page, page_size)).await
+                },
                 move |app: &mut MongoRaabit, result| {
                     if let Some(tab) = app.collection_tab_mut(tab_id)
                         && tab.seq == seq
@@ -590,7 +623,7 @@ impl MongoRaabit {
         }
         if recount {
             self.jobs.spawn(
-                async move { conn.count(&db, &coll, &query).await },
+                async move { bounded(limit, conn.count(&db, &coll, &query)).await },
                 move |app: &mut MongoRaabit, result| {
                     if let Some(tab) = app.collection_tab_mut(tab_id)
                         && tab.seq == seq
@@ -638,96 +671,72 @@ impl MongoRaabit {
         }
     }
 
+    /// Delete the selected document: through the write confirmation when it is on, else
+    /// after a plain "Delete document?" question (deletes always ask).
     pub fn request_delete(&mut self, tab_id: TabId) {
         if let Some(id) = self
             .selected_document(tab_id)
             .and_then(|d| d.get("_id").cloned())
         {
-            self.dialog = Some(Dialog::Delete(ConfirmDelete {
-                tab: tab_id,
-                ids: vec![id],
-                busy: false,
-            }));
+            if self.settings.confirm_writes {
+                self.delete_documents(tab_id, vec![id]);
+            } else {
+                self.dialog = Some(Dialog::Delete(ConfirmDelete {
+                    tab: tab_id,
+                    ids: vec![id],
+                    busy: false,
+                }));
+            }
         }
+    }
+
+    /// The session, database and collection of a collection tab.
+    fn tab_namespace(&mut self, tab_id: TabId) -> Option<(SessionId, String, String)> {
+        let tab = self.collection_tab_mut(tab_id)?;
+        Some((tab.session, tab.db.clone(), tab.collection.clone()))
     }
 
     /// Save the document editor's content (replace or insert), then refresh the page.
     pub fn save_document(&mut self, tab_id: TabId, mode: DocumentMode, doc: Document) {
-        let Some((conn, db, coll)) = self.tab_context(tab_id) else {
+        let Some((session, db, collection)) = self.tab_namespace(tab_id) else {
             return;
         };
-        self.jobs.spawn(
-            async move {
-                match mode {
-                    DocumentMode::Edit(id) => conn
-                        .execute(Write::ReplaceDocument {
-                            db,
-                            collection: coll,
-                            id,
-                            replacement: doc,
-                        })
-                        .await
-                        .map(|_| "Document saved".to_owned()),
-                    DocumentMode::Insert => conn
-                        .execute(Write::InsertDocuments {
-                            db,
-                            collection: coll,
-                            documents: vec![doc],
-                        })
-                        .await
-                        .map(|outcome| outcome.message()),
-                }
+        let write = match mode {
+            DocumentMode::Edit(id) => Write::ReplaceDocument {
+                db,
+                collection,
+                id,
+                replacement: doc,
             },
-            move |app: &mut MongoRaabit, result| match result {
-                Ok(message) => {
-                    app.status = message;
-                    app.dialog = None;
-                    app.run_query(tab_id, true);
-                }
-                Err(err) => {
-                    if let Some(Dialog::Document(editor)) = &mut app.dialog {
-                        editor.saving = false;
-                        editor.error = Some(err.to_string());
-                    }
-                }
+            DocumentMode::Insert => Write::InsertDocuments {
+                db,
+                collection,
+                documents: vec![doc],
             },
-        );
+        };
+        self.request_write(PendingWrite {
+            session,
+            write,
+            origin: WriteOrigin::Document(tab_id),
+        });
     }
 
     pub fn delete_documents(&mut self, tab_id: TabId, ids: Vec<Bson>) {
-        let Some((conn, db, coll)) = self.tab_context(tab_id) else {
+        let Some((session, db, collection)) = self.tab_namespace(tab_id) else {
             return;
         };
-        self.jobs.spawn(
-            async move {
-                conn.execute(Write::DeleteDocuments {
-                    db,
-                    collection: coll,
-                    ids,
-                })
-                .await
+        self.request_write(PendingWrite {
+            session,
+            write: Write::DeleteDocuments {
+                db,
+                collection,
+                ids,
             },
-            move |app: &mut MongoRaabit, result| {
-                app.dialog = None;
-                match result {
-                    Ok(outcome) => {
-                        let n = match outcome {
-                            WriteOutcome::Deleted(n) => n,
-                            _ => 0,
-                        };
-                        app.status = status::deleted_documents(n);
-                        if let Some(tab) = app.collection_tab_mut(tab_id) {
-                            tab.selected = None;
-                        }
-                        app.run_query(tab_id, true);
-                    }
-                    Err(err) => app.status = format!("Delete failed: {err}"),
-                }
-            },
-        );
+            origin: WriteOrigin::Delete(tab_id),
+        });
     }
 
-    /// Commit an inline cell edit with `$set`.
+    /// Commit an inline cell edit: a `$set` of the field on the document's `_id`.
     pub fn commit_cell_edit(&mut self, tab_id: TabId) {
         let Some(tab) = self.collection_tab_mut(tab_id) else {
             return;
@@ -751,29 +760,20 @@ impl MongoRaabit {
                 return;
             }
         };
-        let Some((conn, db, coll)) = self.tab_context(tab_id) else {
+        let Some((session, db, collection)) = self.tab_namespace(tab_id) else {
             return;
         };
-        let path = edit.path.clone();
-        self.jobs.spawn(
-            async move {
-                conn.execute(Write::SetField {
-                    db,
-                    collection: coll,
-                    id,
-                    path,
-                    value: Some(value),
-                })
-                .await
+        self.request_write(PendingWrite {
+            session,
+            write: Write::SetField {
+                db,
+                collection,
+                id,
+                path: edit.path,
+                value: Some(value),
             },
-            move |app: &mut MongoRaabit, result| match result {
-                Ok(_) => {
-                    app.status = format!("Updated {}", edit.path);
-                    app.run_query(tab_id, false);
-                }
-                Err(err) => app.status = format!("Update failed: {err}"),
-            },
-        );
+            origin: WriteOrigin::Cell(tab_id),
+        });
     }
 
     pub fn explain(&mut self, tab_id: TabId) {

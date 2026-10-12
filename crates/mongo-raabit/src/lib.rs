@@ -25,6 +25,7 @@ mod tree;
 mod values;
 mod welcome;
 pub mod widgets;
+pub mod writes;
 
 pub use app::MongoRaabit;
 pub use archipel_sdk::kit::egui;

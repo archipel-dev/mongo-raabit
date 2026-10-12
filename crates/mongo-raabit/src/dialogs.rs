@@ -100,11 +100,40 @@ pub struct ConfirmDelete {
     pub busy: bool,
 }
 
+/// What a write confirmation runs when the user picks Run.
+pub enum Confirmed {
+    Write(Box<crate::writes::PendingWrite>),
+    /// A shell script that calls write methods.
+    Script {
+        tab: TabId,
+        script: String,
+    },
+}
+
+/// "Run this change?": the query in mongosh syntax, what it affects, Cancel and Run.
+pub struct ConfirmWrite {
+    /// Matches the background preview to this dialog.
+    pub id: u64,
+    pub title: String,
+    pub shell: String,
+    pub destructive: bool,
+    /// What the write affects ("2 documents will be modified"), counted in the background.
+    pub summary: Load<String>,
+    /// "Don't ask again": turns the confirmation off when Run is picked.
+    pub dont_ask: bool,
+    /// The write runs; the dialog closes when it finishes.
+    pub running: bool,
+    /// The dialog this one replaced (the document editor), shown again after it.
+    pub back: Option<Box<Dialog>>,
+    pub action: Confirmed,
+}
+
 pub enum Dialog {
     Document(DocumentEditor),
     Explain(ExplainDialog),
     Code(CodeDialog),
     Delete(ConfirmDelete),
+    ConfirmWrite(ConfirmWrite),
 }
 
 /// Render the open dialog, if any.
@@ -117,10 +146,118 @@ pub fn show(app: &mut MongoRaabit, ctx: &crate::egui::Context) {
         Dialog::Explain(explain) => explain_dialog(ctx, explain),
         Dialog::Code(code) => code_dialog(ctx, code),
         Dialog::Delete(confirm) => delete_dialog(app, ctx, confirm),
+        Dialog::ConfirmWrite(confirm) => confirm_write(app, ctx, confirm),
     };
-    // A save/delete started above may already have replaced or closed the dialog.
-    if keep && app.dialog.is_none() {
-        app.dialog = Some(dialog);
+    if !keep {
+        return;
+    }
+    // A save/delete started above may already have replaced or closed the dialog; a
+    // write confirmation that replaced it brings it back afterwards.
+    match &mut app.dialog {
+        None => app.dialog = Some(dialog),
+        Some(Dialog::ConfirmWrite(confirm))
+            if confirm.back.is_none() && !matches!(dialog, Dialog::ConfirmWrite(_)) =>
+        {
+            confirm.back = Some(Box::new(dialog));
+        }
+        Some(_) => {}
+    }
+    if let Some(pending) = app.confirmed.take() {
+        app.run_write(pending);
+    }
+}
+
+/// Width of the write confirmation.
+const CONFIRM_WIDTH: f32 = 720.0;
+/// Tallest the query view of the confirmation grows.
+const CONFIRM_VIEW_MAX: f32 = 320.0;
+
+fn confirm_write(
+    app: &mut MongoRaabit,
+    ctx: &crate::egui::Context,
+    confirm: &mut ConfirmWrite,
+) -> bool {
+    let lines = confirm.shell.lines().count().max(1) as f32;
+    let max = view_height(ctx, 260.0, CONFIRM_VIEW_MAX);
+    let height = (lines * size::CODE_LINE_HEIGHT + size::CODE_LINE_HEIGHT)
+        .clamp((size::CODE_LINE_HEIGHT * 2.0).min(max), max);
+    let counted = !matches!(confirm.summary, Load::Idle | Load::Loading);
+    let destructive = confirm.destructive;
+    let action = KitDialog::new(confirm.title.as_str())
+        .icon(if destructive {
+            Glyph::Warning
+        } else {
+            Icon::Edit.glyph()
+        })
+        .width(CONFIRM_WIDTH.min(ctx.content_rect().width() - 40.0))
+        .content(|ui| {
+            widgets::caption(ui, "This runs on the server:");
+            CodeView::new(&confirm.shell)
+                .id(crate::egui::Id::new(("raabit-confirm-write", confirm.id)))
+                .label("Query to run")
+                .highlighter(&ExtendedJson)
+                .height(height)
+                .show(ui);
+            match &confirm.summary {
+                Load::Idle | Load::Loading => {
+                    ui.horizontal(|ui| {
+                        ui.add(Spinner::new().label("Counting affected documents"));
+                        widgets::label(ui, Tone::Secondary, "Counting affected documents…");
+                    });
+                }
+                Load::Ready(summary) => {
+                    let tone = if destructive {
+                        Tone::Warning
+                    } else {
+                        Tone::Secondary
+                    };
+                    widgets::label(ui, tone, summary.as_str());
+                }
+                Load::Failed(err) => {
+                    Banner::new(Severity::Warning, err.clone()).show(ui);
+                }
+            }
+            ui.add(
+                Checkbox::new(&mut confirm.dont_ask, "Don't ask again")
+                    .comment("Runs changes without this confirmation; turn it back on in Settings"),
+            );
+            if confirm.running {
+                ui.add(Spinner::new().label("Running"));
+            }
+        })
+        .secondary("Cancel")
+        .primary("Run")
+        .danger(destructive)
+        .primary_enabled(counted && !confirm.running)
+        .show(ctx);
+    match action {
+        Some(DialogAction::Primary) => {
+            if confirm.dont_ask {
+                app.stop_confirming_writes();
+            }
+            match &confirm.action {
+                Confirmed::Write(pending) => {
+                    // Runs once this dialog is back in place (see `show`), so the outcome
+                    // finds it there.
+                    confirm.running = true;
+                    app.confirmed = Some((**pending).clone());
+                    true
+                }
+                Confirmed::Script { tab, script } => {
+                    app.dialog = confirm.back.take().map(|b| *b);
+                    app.run_shell_script(*tab, script.clone());
+                    false
+                }
+            }
+        }
+        Some(_) => {
+            app.dialog = confirm.back.take().map(|b| *b);
+            if let Confirmed::Write(pending) = &confirm.action {
+                app.write_cancelled(&pending.origin);
+            }
+            false
+        }
+        None => true,
     }
 }
 
