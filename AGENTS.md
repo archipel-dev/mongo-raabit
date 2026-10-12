@@ -19,6 +19,8 @@ Studio 3T. It runs standalone (`raabit`) and as an Archipel IDE plugin from the 
 - UI only from archipel-kit components, parts and behaviours, reached through
   `archipel_sdk::kit` (one kit version: the SDK's). No ad-hoc egui painting, no private
   colors/spacing. Missing kit pieces are requested from the platform owner, never copied in.
+- Every database write is a `Write` and follows [docs/safety.md](docs/safety.md): guarded,
+  confirmed, outcome-checked, with contract and live tests.
 - Every interactive element gets a `kit::testing::conformance` test; every screen a
   `testing::audit` test.
 - Mouse-only verification under Xvfb (xdotool) before a PR; screenshots in the PR.

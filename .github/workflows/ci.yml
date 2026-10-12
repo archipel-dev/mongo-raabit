@@ -35,6 +35,29 @@ jobs:
       # Live tests skip here (no server); the `live` job runs them.
       - run: cargo test --workspace
 
+  # The same packaging the release runs, so a broken installer fails the PR
+  # instead of the tagged release.
+  package:
+    name: installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install WiX Toolset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+      - name: Build raabit and its installer
+        shell: bash
+        run: cargo xtask dist --installer
+
   live:
     name: live tests (MongoDB ${{ matrix.mongo }})
     runs-on: ubuntu-latest
