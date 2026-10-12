@@ -2724,7 +2724,7 @@ dependencies = [
 
 [[package]]
 name = "mongo-raabit"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "archipel-sdk",
  "mongo-raabit-core",
@@ -2736,7 +2736,7 @@ dependencies = [
 
 [[package]]
 name = "mongo-raabit-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "csv",
  "futures-util",
@@ -3646,7 +3646,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "raabit"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "archipel-sdk",
  "mongo-raabit",
@@ -5830,7 +5830,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "flate2",
