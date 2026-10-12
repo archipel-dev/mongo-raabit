@@ -277,7 +277,7 @@ dependencies = [
 [[package]]
 name = "archipel-icons"
 version = "0.1.0"
-source = "git+https://www.github.com/archipel-dev/kit?branch=claude%2Fkit-lib-android-studio-ui-jleosm#09ea9ac40db5134241c0748b6231158b934a8391"
+source = "git+https://www.github.com/archipel-dev/kit?branch=claude%2Fkit-lib-android-studio-ui-jleosm#544f7cd2b80e53c0913845a69e05bf3414785653"
 dependencies = [
  "egui",
 ]
@@ -285,7 +285,7 @@ dependencies = [
 [[package]]
 name = "archipel-kit"
 version = "0.1.0"
-source = "git+https://www.github.com/archipel-dev/kit?branch=claude%2Fkit-lib-android-studio-ui-jleosm#09ea9ac40db5134241c0748b6231158b934a8391"
+source = "git+https://www.github.com/archipel-dev/kit?branch=claude%2Fkit-lib-android-studio-ui-jleosm#544f7cd2b80e53c0913845a69e05bf3414785653"
 dependencies = [
  "archipel-icons",
  "egui",
