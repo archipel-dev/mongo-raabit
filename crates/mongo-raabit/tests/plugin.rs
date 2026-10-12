@@ -161,3 +161,20 @@ fn the_views_read_and_write_the_hosts_settings() {
     // Reading the settings never writes them.
     assert_eq!(host.setting(settings::PAGE_SIZE), Some(json!(100.0)));
 }
+
+#[test]
+fn standalone_commands_reveal_embedded_islands_without_duplicate_host_views() {
+    use mongo_raabit::plugin::SHOW_TOOLS;
+    let mut plugin = MongoRaabitPlugin::new();
+    let mut host = RecordingHost::new(ID);
+    host.standalone = true;
+    plugin.activate(&mut host).unwrap();
+    assert!(plugin.contributions().tool_windows.is_empty());
+    for command in [OPEN, SHOW_DATABASES, SHOW_TOOLS] {
+        plugin.execute(command, Value::Null, &mut host).unwrap();
+    }
+    assert!(host.editor_tabs.is_empty());
+    assert!(host.tool_windows.is_empty());
+    assert_eq!(host.repaints, 3);
+    assert_eq!(host.app_focuses, 3);
+}

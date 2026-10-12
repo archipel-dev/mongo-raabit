@@ -249,7 +249,7 @@ dependencies = [
 [[package]]
 name = "archipel-app"
 version = "0.1.0"
-source = "git+https://github.com/archipel-dev/sdk?branch=main#7cdf6cc83f1d6e4d3b3a4a1bd75db2e37e4c362a"
+source = "git+https://github.com/archipel-dev/sdk?branch=main#b918ed2ecf8363bc4ad557004334bc66aee61747"
 dependencies = [
  "archipel-plugin-api",
  "archipel-plugin-ui",
@@ -267,7 +267,7 @@ dependencies = [
 [[package]]
 name = "archipel-command"
 version = "0.1.0"
-source = "git+https://github.com/archipel-dev/sdk?branch=main#7cdf6cc83f1d6e4d3b3a4a1bd75db2e37e4c362a"
+source = "git+https://github.com/archipel-dev/sdk?branch=main#b918ed2ecf8363bc4ad557004334bc66aee61747"
 dependencies = [
  "serde",
  "serde_json",
@@ -276,16 +276,16 @@ dependencies = [
 
 [[package]]
 name = "archipel-icons"
-version = "0.2.2"
-source = "git+https://github.com/archipel-dev/kit?branch=main#dceb405f1c023cba7e81e228a46f8116f7b63325"
+version = "0.3.1"
+source = "git+https://github.com/archipel-dev/kit?branch=main#d48b2a02f9ec0b318a1545333af2d0376e56ff03"
 dependencies = [
  "egui",
 ]
 
 [[package]]
 name = "archipel-kit"
-version = "0.2.2"
-source = "git+https://github.com/archipel-dev/kit?branch=main#dceb405f1c023cba7e81e228a46f8116f7b63325"
+version = "0.3.1"
+source = "git+https://github.com/archipel-dev/kit?branch=main#d48b2a02f9ec0b318a1545333af2d0376e56ff03"
 dependencies = [
  "archipel-icons",
  "egui",
@@ -299,7 +299,7 @@ dependencies = [
 [[package]]
 name = "archipel-plugin-api"
 version = "0.1.0"
-source = "git+https://github.com/archipel-dev/sdk?branch=main#7cdf6cc83f1d6e4d3b3a4a1bd75db2e37e4c362a"
+source = "git+https://github.com/archipel-dev/sdk?branch=main#b918ed2ecf8363bc4ad557004334bc66aee61747"
 dependencies = [
  "archipel-command",
  "serde",
@@ -311,7 +311,7 @@ dependencies = [
 [[package]]
 name = "archipel-plugin-testing"
 version = "0.1.0"
-source = "git+https://github.com/archipel-dev/sdk?branch=main#7cdf6cc83f1d6e4d3b3a4a1bd75db2e37e4c362a"
+source = "git+https://github.com/archipel-dev/sdk?branch=main#b918ed2ecf8363bc4ad557004334bc66aee61747"
 dependencies = [
  "archipel-kit",
  "archipel-plugin-api",
@@ -322,7 +322,7 @@ dependencies = [
 [[package]]
 name = "archipel-plugin-ui"
 version = "0.1.0"
-source = "git+https://github.com/archipel-dev/sdk?branch=main#7cdf6cc83f1d6e4d3b3a4a1bd75db2e37e4c362a"
+source = "git+https://github.com/archipel-dev/sdk?branch=main#b918ed2ecf8363bc4ad557004334bc66aee61747"
 dependencies = [
  "archipel-kit",
  "archipel-plugin-api",
@@ -332,7 +332,7 @@ dependencies = [
 [[package]]
 name = "archipel-sdk"
 version = "0.1.0"
-source = "git+https://github.com/archipel-dev/sdk?branch=main#7cdf6cc83f1d6e4d3b3a4a1bd75db2e37e4c362a"
+source = "git+https://github.com/archipel-dev/sdk?branch=main#b918ed2ecf8363bc4ad557004334bc66aee61747"
 dependencies = [
  "archipel-app",
  "archipel-plugin-api",

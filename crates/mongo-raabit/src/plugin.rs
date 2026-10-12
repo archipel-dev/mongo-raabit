@@ -110,6 +110,7 @@ pub struct MongoRaabitPlugin {
     app: Option<MongoRaabit>,
     /// The status line last sent to the host: the host repaints on every update.
     status: String,
+    standalone: bool,
 }
 
 impl Default for MongoRaabitPlugin {
@@ -125,6 +126,7 @@ impl MongoRaabitPlugin {
                 .expect("bundled manifest is valid"),
             app: None,
             status: String::new(),
+            standalone: false,
         }
     }
 
@@ -142,8 +144,16 @@ impl Plugin for MongoRaabitPlugin {
         &self.manifest
     }
 
+    fn activate(
+        &mut self,
+        host: &mut dyn PluginHost,
+    ) -> Result<(), archipel_sdk::api::PluginError> {
+        self.standalone = host.is_standalone();
+        Ok(())
+    }
+
     fn contributions(&self) -> Contributions {
-        Contributions::new()
+        let contributions = Contributions::new()
             .command(CommandContribution::new(OPEN, "MongoDB (Mongo Raabit)"))
             .command(CommandContribution::new(
                 SHOW_DATABASES,
@@ -154,7 +164,11 @@ impl Plugin for MongoRaabitPlugin {
                 "Show MongoDB Query Builder",
             ))
             .menu(MenuLocation::Tools, OPEN)
-            .settings_page(settings_page())
+            .settings_page(settings_page());
+        if self.standalone {
+            return contributions;
+        }
+        contributions
             .tool_window(
                 ToolWindowContribution::new(DATABASES_WINDOW, "Databases", DATABASES_VIEW)
                     .anchor(ToolWindowAnchor::Left)
@@ -173,6 +187,21 @@ impl Plugin for MongoRaabitPlugin {
         _params: Value,
         host: &mut dyn PluginHost,
     ) -> CommandResult {
+        if host.is_standalone() {
+            let app = self.app(host);
+            match command {
+                OPEN => {}
+                SHOW_DATABASES => {
+                    app.layout.left_hidden = false;
+                    app.layout.maximized = None;
+                }
+                SHOW_TOOLS => app.show_tool(crate::app::ToolTab::Query),
+                other => return Err(CommandError::Unknown(other.into())),
+            }
+            host.focus_app_view();
+            host.request_repaint();
+            return Ok(Value::Null);
+        }
         match command {
             OPEN => {
                 host.open_editor_tab(EditorTabRequest::new(VIEW, "MongoDB"));

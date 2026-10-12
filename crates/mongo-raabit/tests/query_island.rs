@@ -412,58 +412,13 @@ fn picking_the_aggregation_tool_shows_the_pipeline_output_in_the_center() {
 }
 
 #[test]
-#[ignore = "writes images for looking at the layout"]
-fn dump_layout() {
-    let dir = std::env::var("RAABIT_DUMP").unwrap();
-    let mut h = window(two_tabs());
-    h.render()
-        .unwrap()
-        .save(format!("{dir}/island-1.png"))
-        .unwrap();
-    let from = field(&h, "status");
-    let to = zone(&h, FILTER_HINT).center();
-    drag(&mut h, from, to);
-    h.render()
-        .unwrap()
-        .save(format!("{dir}/island-2.png"))
-        .unwrap();
-    h.get_by_label("people").click();
-    h.run();
-    h.render()
-        .unwrap()
-        .save(format!("{dir}/island-3.png"))
-        .unwrap();
-    h.state_mut().layout.right_hidden = true;
-    h.run();
-    h.render()
-        .unwrap()
-        .save(format!("{dir}/island-4.png"))
-        .unwrap();
-}
-
-#[test]
-#[ignore = "prints the Tab order"]
-fn dump_tab_order() {
-    use archipel_sdk::kit::testing::NodeT;
-    let (mut app, _) = app_with_documents(ResultView::Table);
-    if std::env::var("RAABIT_BUILDER").is_ok() {
-        app.collection_tab_mut(PEOPLE).unwrap().mode = QueryMode::Builder;
-    }
-    let mut h = window(app);
-    for _ in 0..120 {
-        h.key_press(Key::Tab);
-        h.run_ok();
-        let focused = h
-            .root()
-            .children_recursive()
-            .find(|n| n.accesskit_node().is_focused())
-            .map(|n| {
-                format!(
-                    "{:?} {:?}",
-                    n.accesskit_node().role(),
-                    n.accesskit_node().label()
-                )
-            });
-        println!("{focused:?}");
+fn query_island_passes_the_audit_in_both_themes_and_window_sizes() {
+    for theme in [Theme::dark(), Theme::light()] {
+        for size in [vec2(1280.0, 800.0), vec2(1024.0, 700.0)] {
+            let mut h =
+                testing::harness_state_sized(theme.clone(), size, two_tabs(), |ui, app| app.ui(ui));
+            h.run_ok();
+            testing::audit(&mut h).assert_clean();
+        }
     }
 }

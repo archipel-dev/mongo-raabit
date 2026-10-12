@@ -298,19 +298,16 @@ fn header(ui: &mut Ui, tab: &mut CollectionTab, server: &str, read_only: bool) {
                     (CenterView::Shell, "Shell"),
                 ],
             ));
-            ui.with_layout(
-                crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                |ui| {
-                    ui.add(Tag::new(kind).tone(tag_tone));
-                    if read_only {
-                        ui.add(Tag::new("Read-only").tone(Tone::Warning))
-                            .tooltip(READ_ONLY_HINT);
-                    }
-                    widgets::label(ui, Tone::Muted, tab.db.as_str())
-                        .on_hover_text(format!("{server} › {}.{}", tab.db, tab.collection));
-                    icons::icon(ui, icon, Tone::Muted.resolve(ui.ctx()));
-                },
-            );
+        });
+        ui.horizontal(|ui| {
+            ui.add(Tag::new(kind).tone(tag_tone));
+            if read_only {
+                ui.add(Tag::new("Read-only").tone(Tone::Warning))
+                    .tooltip(READ_ONLY_HINT);
+            }
+            widgets::label(ui, Tone::Muted, tab.db.as_str())
+                .on_hover_text(format!("{server} › {}.{}", tab.db, tab.collection));
+            icons::icon(ui, icon, Tone::Muted.resolve(ui.ctx()));
         });
     });
     ui.add(Separator);
