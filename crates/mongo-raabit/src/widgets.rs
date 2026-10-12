@@ -209,6 +209,25 @@ pub fn tool_header(
     ui.add(Separator);
 }
 
+/// The toolbar of a view inside a collection tab (whose header already says where it is):
+/// a `tag` naming the view, `status` content after it, and `actions` laid out right to
+/// left at the far end; a separator closes it.
+pub fn view_toolbar(
+    ui: &mut Ui,
+    tag: Tag,
+    status: impl FnOnce(&mut Ui),
+    actions: impl FnOnce(&mut Ui),
+) {
+    padded(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.add(tag);
+            status(ui);
+            ui.with_layout(Layout::right_to_left(crate::egui::Align::Center), actions);
+        });
+    });
+    ui.add(Separator);
+}
+
 /// A centered spinner with a caption, for a view that is loading.
 pub fn busy(ui: &mut Ui, text: &str) {
     ui.add_space(size::FORM_GROUP_SPACING * 2.0);

@@ -1,5 +1,7 @@
 //! Archipel plugin entry point: the whole mongo-raabit view as an editor tab
-//! (Tools › MongoDB), the Databases tool window, or the standalone `raabit` app.
+//! (Tools › MongoDB), the Databases tool window (left), the Collection tool window
+//! (right: query builder, pipeline and indexes of the active collection tab), or the
+//! standalone `raabit` app.
 
 use crate::writes::HostRequest;
 use crate::{MongoRaabit, tree};
@@ -16,6 +18,9 @@ pub const DATABASES_VIEW: &str = "mongo.databases";
 pub const DATABASES_WINDOW: &str = "mongo-databases";
 pub const OPEN: &str = "mongo.open";
 pub const SHOW_DATABASES: &str = "mongo.showDatabases";
+pub const TOOLS_VIEW: &str = "mongo.tools";
+pub const TOOLS_WINDOW: &str = "mongo-tools";
+pub const SHOW_TOOLS: &str = "mongo.showTools";
 const PROFILES_FILE: &str = "connections.json";
 /// The host's "Open Settings" command (the standalone app's; Ctrl+, there).
 pub const OPEN_SETTINGS: &str = archipel_sdk::app::CMD_SETTINGS;
@@ -144,12 +149,21 @@ impl Plugin for MongoRaabitPlugin {
                 SHOW_DATABASES,
                 "Show MongoDB Databases",
             ))
+            .command(CommandContribution::new(
+                SHOW_TOOLS,
+                "Show MongoDB Query Builder",
+            ))
             .menu(MenuLocation::Tools, OPEN)
             .settings_page(settings_page())
             .tool_window(
                 ToolWindowContribution::new(DATABASES_WINDOW, "Databases", DATABASES_VIEW)
                     .anchor(ToolWindowAnchor::Left)
                     .icon_text("Db"),
+            )
+            .tool_window(
+                ToolWindowContribution::new(TOOLS_WINDOW, crate::tool_window::TITLE, TOOLS_VIEW)
+                    .anchor(ToolWindowAnchor::Right)
+                    .icon_text("Q"),
             )
     }
 
@@ -166,6 +180,10 @@ impl Plugin for MongoRaabitPlugin {
             }
             SHOW_DATABASES => {
                 host.open_tool_window(DATABASES_WINDOW);
+                Ok(Value::Null)
+            }
+            SHOW_TOOLS => {
+                host.open_tool_window(TOOLS_WINDOW);
                 Ok(Value::Null)
             }
             other => Err(CommandError::Unknown(other.into())),
@@ -198,6 +216,13 @@ impl Plugin for MongoRaabitPlugin {
             app.jobs.set_context(ui.ctx());
             app.poll();
             tree::show(app, ui);
+            apply_requests(app, host);
+        } else if view.view == TOOLS_VIEW {
+            let app = self.app(host);
+            read_settings(app, host);
+            app.jobs.set_context(ui.ctx());
+            app.poll();
+            crate::tool_window::show_in_host(app, ui);
             apply_requests(app, host);
         } else {
             ui.label(format!("Unknown view {}", view.view));

@@ -226,6 +226,11 @@ pub struct Condition {
     pub type_name: TypeName,
     /// Text operators: ignore case (`i` regex option).
     pub ignore_case: bool,
+    /// Set on a condition made for a dropped field ([`Condition::for_field`]) until its
+    /// value is edited: while set, an empty value is incomplete instead of the empty string
+    /// (so dropping a text field does not filter on `""`). Text read back from a query never
+    /// sets it.
+    pub awaiting_value: bool,
 }
 
 /// A condition or a nested group.
@@ -273,6 +278,88 @@ pub struct Builder {
     pub skip: u64,
     /// 0 means no limit.
     pub limit: u64,
+}
+
+/// What a field holds, as far as the query builder cares: it picks the operator and the
+/// value type of a condition added for the field (see [`Condition::for_field`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum FieldType {
+    String,
+    Number,
+    Boolean,
+    Date,
+    ObjectId,
+    Array,
+    Object,
+    /// Only `null` values were seen.
+    Null,
+    /// Several kinds of values, or a kind the builder has no editor for.
+    #[default]
+    Mixed,
+}
+
+impl FieldType {
+    pub const ALL: [Self; 9] = [
+        Self::String,
+        Self::Number,
+        Self::Boolean,
+        Self::Date,
+        Self::ObjectId,
+        Self::Array,
+        Self::Object,
+        Self::Null,
+        Self::Mixed,
+    ];
+
+    /// The kind of a BSON type name as [`shell::type_name`] writes it (`Int32`, `Object`…).
+    pub fn from_type_name(name: &str) -> Self {
+        match name {
+            "String" | "Symbol" => Self::String,
+            "Int32" | "Int64" | "Double" | "Decimal128" => Self::Number,
+            "Boolean" => Self::Boolean,
+            "Date" | "Timestamp" => Self::Date,
+            "ObjectId" => Self::ObjectId,
+            "Array" => Self::Array,
+            "Object" => Self::Object,
+            "Null" | "Undefined" => Self::Null,
+            _ => Self::Mixed,
+        }
+    }
+
+    /// The kind of a field whose values had these BSON type names: their common kind
+    /// (nulls aside), `Null` when only nulls were seen, `Mixed` otherwise.
+    pub fn of_type_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut kind = None;
+        let mut nulls = false;
+        for name in names {
+            match Self::from_type_name(name) {
+                Self::Null => nulls = true,
+                k if kind.is_none() => kind = Some(k),
+                k if kind == Some(k) => {}
+                _ => return Self::Mixed,
+            }
+        }
+        match (kind, nulls) {
+            (Some(kind), _) => kind,
+            (None, true) => Self::Null,
+            (None, false) => Self::Mixed,
+        }
+    }
+
+    /// Short name for the type badge of a field row.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::String => "String",
+            Self::Number => "Number",
+            Self::Boolean => "Boolean",
+            Self::Date => "Date",
+            Self::ObjectId => "ObjectId",
+            Self::Array => "Array",
+            Self::Object => "Object",
+            Self::Null => "Null",
+            Self::Mixed => "Mixed",
+        }
+    }
 }
 
 /// Infers the BSON value of `text` typed for `field`: numbers, `true`/`false`, ObjectIds
@@ -408,6 +495,28 @@ impl Condition {
         }
     }
 
+    /// The condition a field dropped on the filter starts with: the operator and value type
+    /// that suit what the field holds. Booleans start complete (`true`), so do the presence
+    /// checks of objects and null-only fields; the others wait for a value.
+    pub fn for_field(field: &str, kind: FieldType) -> Self {
+        let (operator, value_type, value) = match kind {
+            FieldType::String => (Operator::Equals, ValueType::String, ""),
+            FieldType::Number => (Operator::Equals, ValueType::Number, ""),
+            FieldType::Boolean => (Operator::Equals, ValueType::Boolean, "true"),
+            FieldType::Date => (Operator::GreaterOrEqual, ValueType::Date, ""),
+            FieldType::ObjectId => (Operator::Equals, ValueType::ObjectId, ""),
+            FieldType::Array => (Operator::In, ValueType::Auto, ""),
+            FieldType::Object => (Operator::Exists, ValueType::Auto, ""),
+            FieldType::Null => (Operator::IsNull, ValueType::Auto, ""),
+            FieldType::Mixed => (Operator::Equals, ValueType::Auto, ""),
+        };
+        Self {
+            value_type,
+            awaiting_value: value.is_empty(),
+            ..Self::new(field, operator, value)
+        }
+    }
+
     /// The condition as a filter document `{field: …}`, or why it cannot be one.
     pub fn to_filter(&self) -> Result<Document, String> {
         let field = self.field.trim();
@@ -416,6 +525,18 @@ impl Condition {
         }
         if field.starts_with('$') {
             return Err("Field names cannot start with '$'".into());
+        }
+        let needs_value = matches!(
+            self.operator.operands(),
+            Operands::One | Operands::List | Operands::Two
+        );
+        if self.awaiting_value && needs_value && self.value.is_empty() {
+            return Err("Enter a value".into());
+        }
+        if self.value_type == ValueType::Null
+            && matches!(self.operator.operands(), Operands::List | Operands::Two)
+        {
+            return Err("Null is one value: use \"is null\" or another value type".into());
         }
         let value = |text: &str| convert(field, text, self.value_type);
         let op = |name: &str, v: Bson| -> Bson {
@@ -497,6 +618,42 @@ impl Condition {
     }
 }
 
+/// A group as it is written: what is left after invalid conditions and empty groups are
+/// dropped, single items unwrapped and All groups inside All groups joined.
+enum Effective {
+    Empty,
+    Leaf(Document),
+    All(Vec<Effective>),
+    Any(Vec<Effective>),
+}
+
+impl Effective {
+    fn to_document(&self) -> Document {
+        match self {
+            Self::Empty => Document::new(),
+            Self::Leaf(doc) => doc.clone(),
+            Self::All(items) => {
+                let parts: Vec<Document> = items.iter().map(Self::to_document).collect();
+                let mut merged = Document::new();
+                for (key, value) in parts.iter().flatten() {
+                    if !merge_into(&mut merged, key, value) {
+                        let mut d = Document::new();
+                        d.insert("$and", parts);
+                        return d;
+                    }
+                }
+                merged
+            }
+            Self::Any(items) => {
+                let parts: Vec<Document> = items.iter().map(Self::to_document).collect();
+                let mut d = Document::new();
+                d.insert("$or", parts);
+                d
+            }
+        }
+    }
+}
+
 impl Group {
     pub fn new(mode: MatchMode) -> Self {
         Self {
@@ -507,43 +664,36 @@ impl Group {
 
     /// The group as a filter; invalid conditions and empty groups are left out.
     /// An All group with distinct keys is written as one document, otherwise `$and`.
+    ///
+    /// The text is canonical, so it reads back ([`Group::from_filter`]) to a group that
+    /// writes the same text again: a group with one remaining item is that item, and the
+    /// items of an All group inside an All group join their parent's (All of All is All;
+    /// reading `$and` puts its clauses into the group that holds it).
     pub fn to_filter(&self) -> Document {
-        let parts: Vec<Document> = self
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Condition(c) => c.to_filter().ok(),
-                Item::Group(g) => Some(g.to_filter()),
-            })
-            .filter(|d| !d.is_empty())
-            .collect();
-        match parts.len() {
-            0 => Document::new(),
-            1 => parts.into_iter().next().unwrap_or_default(),
-            _ => match self.mode {
-                MatchMode::All => {
-                    let mut merged = Document::new();
-                    let mut distinct = true;
-                    for (key, value) in parts.iter().flatten() {
-                        if !merge_into(&mut merged, key, value) {
-                            distinct = false;
-                            break;
-                        }
-                    }
-                    if distinct {
-                        merged
-                    } else {
-                        let mut d = Document::new();
-                        d.insert("$and", parts);
-                        d
-                    }
-                }
-                MatchMode::Any => {
-                    let mut d = Document::new();
-                    d.insert("$or", parts);
-                    d
-                }
-            },
+        self.effective().to_document()
+    }
+
+    fn effective(&self) -> Effective {
+        let mut items = Vec::new();
+        for item in &self.items {
+            let effective = match item {
+                Item::Condition(c) => match c.to_filter() {
+                    Ok(doc) => Effective::Leaf(doc),
+                    Err(_) => continue,
+                },
+                Item::Group(g) => g.effective(),
+            };
+            match (self.mode, effective) {
+                (_, Effective::Empty) => {}
+                (MatchMode::All, Effective::All(inner)) => items.extend(inner),
+                (_, effective) => items.push(effective),
+            }
+        }
+        match (items.len(), self.mode) {
+            (0, _) => Effective::Empty,
+            (1, _) => items.pop().unwrap_or(Effective::Empty),
+            (_, MatchMode::All) => Effective::All(items),
+            (_, MatchMode::Any) => Effective::Any(items),
         }
     }
 
@@ -648,7 +798,11 @@ fn value_text(field: &str, value: &Bson) -> Option<(String, ValueType)> {
         Bson::Null => (String::new(), ValueType::Null),
         _ => return None,
     };
-    if explicit != ValueType::Null && same_value(&infer(field, &text), value) {
+    // Auto needs some text to infer from: a blank string stays an explicit String.
+    if explicit != ValueType::Null
+        && !text.trim().is_empty()
+        && same_value(&infer(field, &text), value)
+    {
         Some((text, ValueType::Auto))
     } else {
         Some((text, explicit))
@@ -690,11 +844,13 @@ fn field_conditions(field: &str, value: &Bson) -> Result<Vec<Condition>, String>
         Bson::Null => Ok(vec![base(Operator::IsNull)]),
         Bson::RegularExpression(regex) => Ok(vec![regex_condition(field, regex)?]),
         Bson::Document(ops) if ops.keys().all(|k| k.starts_with('$')) && !ops.is_empty() => {
+            // A range of one value type is "between"; otherwise its two bounds are read
+            // as two conditions below.
             if ops.len() == 2
+                && ops.keys().next().map(String::as_str) == Some("$gte")
                 && let (Some(low), Some(high)) = (ops.get("$gte"), ops.get("$lte"))
+                && let Some((texts, value_type)) = shared_type(field, &[low, high])
             {
-                let (texts, value_type) = shared_type(field, &[low, high])
-                    .ok_or_else(|| format!("the range on '{field}'"))?;
                 let [low, high]: [String; 2] = texts.try_into().map_err(|_| "range")?;
                 let c = Condition {
                     value: low,
@@ -834,7 +990,8 @@ fn regex_condition(field: &str, regex: &Regex) -> Result<Condition, String> {
     let (operator, body) = if let Some(rest) = pattern.strip_prefix('^') {
         (Operator::StartsWith, rest)
     } else if let Some(rest) = pattern.strip_suffix('$')
-        && !rest.ends_with('\\')
+        // An anchor unless escaped: an even number of backslashes before it.
+        && rest.chars().rev().take_while(|c| *c == '\\').count() % 2 == 0
     {
         (Operator::EndsWith, rest)
     } else {
@@ -966,6 +1123,57 @@ impl Builder {
     pub fn error_count(&self) -> usize {
         self.filter.error_count()
     }
+
+    /// Adds a condition on `field` to the top-level filter (a field dropped on Filter).
+    /// Returns the index of the new item.
+    pub fn add_filter_field(&mut self, field: &str, kind: FieldType) -> usize {
+        self.filter
+            .items
+            .push(Item::Condition(Condition::for_field(field, kind)));
+        self.filter.items.len() - 1
+    }
+
+    /// Adds `field` to the projection (a field dropped on Projection). `_id` is shown by
+    /// default, so adding it hides it. Returns false when it was there already.
+    pub fn add_projection_field(&mut self, field: &str) -> bool {
+        let field = field.trim();
+        if field.is_empty() {
+            return false;
+        }
+        if field == "_id" {
+            let added = !self.projection.exclude_id;
+            self.projection.exclude_id = true;
+            return added;
+        }
+        if self.projection.fields.iter().any(|f| f.trim() == field) {
+            return false;
+        }
+        self.projection.fields.push(field.to_owned());
+        true
+    }
+
+    /// Adds `field` to the sort, ascending (a field dropped on Sort). Returns false when
+    /// the sort has it already.
+    pub fn add_sort_field(&mut self, field: &str) -> bool {
+        let field = field.trim();
+        if field.is_empty() || self.sort.iter().any(|k| k.field.trim() == field) {
+            return false;
+        }
+        self.sort.push(SortKey {
+            field: field.to_owned(),
+            descending: false,
+        });
+        true
+    }
+
+    /// Moves sort key `from` to position `to` (sort keys apply in order). Out-of-range
+    /// indexes change nothing.
+    pub fn move_sort(&mut self, from: usize, to: usize) {
+        if from < self.sort.len() && to < self.sort.len() && from != to {
+            let key = self.sort.remove(from);
+            self.sort.insert(to, key);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1018,6 +1226,146 @@ mod tests {
             .unwrap_or_else(|e| panic!("{text:?} not taken over: {e}"));
         assert_eq!(back.to_query_text(), text);
         text
+    }
+
+    #[test]
+    fn dropped_fields_get_an_operator_for_their_type() {
+        let mut builder = Builder::default();
+        for kind in FieldType::ALL {
+            builder.add_filter_field(&format!("f_{}", kind.label()), kind);
+        }
+        let conditions: Vec<(Operator, ValueType, bool)> = builder
+            .filter
+            .items
+            .iter()
+            .map(|item| match item {
+                Item::Condition(c) => (c.operator, c.value_type, c.error().is_none()),
+                Item::Group(_) => panic!("a condition"),
+            })
+            .collect();
+        assert_eq!(
+            conditions,
+            [
+                (Operator::Equals, ValueType::String, false),
+                (Operator::Equals, ValueType::Number, false),
+                (Operator::Equals, ValueType::Boolean, true),
+                (Operator::GreaterOrEqual, ValueType::Date, false),
+                (Operator::Equals, ValueType::ObjectId, false),
+                (Operator::In, ValueType::Auto, false),
+                (Operator::Exists, ValueType::Auto, true),
+                (Operator::IsNull, ValueType::Auto, true),
+                (Operator::Equals, ValueType::Auto, false),
+            ]
+        );
+        // Only the complete ones are in the query, in the order they were dropped.
+        assert_eq!(
+            builder.to_query_text().filter,
+            "{ f_Boolean: true, f_Object: { $exists: true }, f_Null: null }"
+        );
+        // A fresh text condition waits for its value; once edited, "" is a value again.
+        let Item::Condition(c) = &mut builder.filter.items[0] else {
+            panic!()
+        };
+        assert!(c.awaiting_value);
+        c.awaiting_value = false;
+        assert!(c.error().is_none(), "the empty string, on purpose");
+        c.value = "Ada".into();
+        assert!(
+            builder
+                .to_query_text()
+                .filter
+                .starts_with("{ f_String: \"Ada\"")
+        );
+    }
+
+    /// Cases the property test (`tests/builder_contract.rs`) found: each reads back to the
+    /// same text now.
+    #[test]
+    fn canonical_text_for_cases_that_did_not_read_back() {
+        let mut nested = Builder::default();
+        nested.filter.items = vec![
+            Item::Group(Group {
+                mode: MatchMode::Any,
+                items: vec![Item::Group(Group {
+                    mode: MatchMode::All,
+                    items: vec![
+                        Item::Condition(Condition::new("a", Operator::Equals, "1")),
+                        Item::Condition(Condition::new("b", Operator::IsNull, "")),
+                    ],
+                })],
+            }),
+            Item::Condition(Condition::new("a", Operator::Equals, "2")),
+        ];
+        assert_eq!(
+            round_trip(&nested).filter,
+            "{ $and: [ { a: 1 }, { b: null }, { a: 2 } ] }"
+        );
+        let cases = [
+            typed("name", Operator::Equals, "", ValueType::String),
+            Condition::new("name", Operator::EndsWith, "\\"),
+            typed("name", Operator::In, "x", ValueType::Null),
+        ];
+        assert_eq!(round_trip(&one(cases[0].clone())).filter, "{ name: \"\" }");
+        assert_eq!(
+            round_trip(&one(cases[1].clone())).filter,
+            "{ name: /\\\\$/ }"
+        );
+        assert!(cases[2].error().is_some(), "a list of nulls is not offered");
+        let range = filter_of(
+            vec![
+                typed("a", Operator::LessOrEqual, "", ValueType::Null),
+                typed("a", Operator::GreaterOrEqual, "x", ValueType::String),
+            ],
+            MatchMode::All,
+        );
+        assert_eq!(
+            round_trip(&range).filter,
+            "{ a: { $lte: null, $gte: \"x\" } }"
+        );
+    }
+
+    #[test]
+    fn type_names_map_to_field_types() {
+        assert_eq!(
+            FieldType::of_type_names(["Int32", "Double"]),
+            FieldType::Number
+        );
+        assert_eq!(
+            FieldType::of_type_names(["String", "Null"]),
+            FieldType::String
+        );
+        assert_eq!(FieldType::of_type_names(["Null"]), FieldType::Null);
+        assert_eq!(
+            FieldType::of_type_names(["String", "Int32"]),
+            FieldType::Mixed
+        );
+        assert_eq!(FieldType::of_type_names([]), FieldType::Mixed);
+        assert_eq!(FieldType::of_type_names(["Binary"]), FieldType::Mixed);
+        assert_eq!(FieldType::from_type_name("Object"), FieldType::Object);
+    }
+
+    #[test]
+    fn projection_and_sort_drops_add_each_field_once() {
+        let mut builder = Builder::default();
+        assert!(builder.add_projection_field("name"));
+        assert!(!builder.add_projection_field(" name "));
+        assert!(builder.add_projection_field("_id"));
+        assert!(!builder.add_projection_field("_id"));
+        assert!(!builder.add_projection_field(""));
+        assert!(builder.add_sort_field("age"));
+        assert!(builder.add_sort_field("name"));
+        assert!(!builder.add_sort_field("age"));
+        builder.sort[1].descending = true;
+        let text = round_trip(&builder);
+        assert_eq!(text.projection, "{ name: 1, _id: 0 }");
+        assert_eq!(text.sort, "{ age: 1, name: -1 }");
+        builder.move_sort(1, 0);
+        assert_eq!(builder.to_query_text().sort, "{ name: -1, age: 1 }");
+        builder.move_sort(0, 9);
+        builder.move_sort(7, 0);
+        assert_eq!(builder.to_query_text().sort, "{ name: -1, age: 1 }");
+        builder.projection.mode = ProjectionMode::Exclude;
+        assert_eq!(round_trip(&builder).projection, "{ name: 0, _id: 0 }");
     }
 
     #[test]

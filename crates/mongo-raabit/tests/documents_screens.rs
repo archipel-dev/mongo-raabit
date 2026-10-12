@@ -43,7 +43,7 @@ fn the_table_passes_the_audit() {
     for theme in themes() {
         let (app, _) = app_with_documents(ResultView::Table);
         let mut harness = screen(theme, app);
-        harness.get_by_label("Documents");
+        harness.get_by_role_and_label(testing::Role::Table, "Documents");
         audit(&mut harness).assert_clean();
     }
 }
