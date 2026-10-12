@@ -207,6 +207,9 @@ pub struct AuthSettings {
     /// Authentication database (`authSource`); blank means the mechanism default.
     #[serde(default)]
     pub auth_database: String,
+    /// Fields of a newer version of the app, kept and saved back.
+    #[serde(flatten)]
+    pub unknown: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +224,9 @@ pub struct TlsSettings {
     pub allow_invalid_certificates: bool,
     #[serde(default)]
     pub allow_invalid_hostnames: bool,
+    /// Fields of a newer version of the app, kept and saved back.
+    #[serde(flatten)]
+    pub unknown: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +247,9 @@ pub struct SshSettings {
     pub port: u16,
     pub username: String,
     pub auth: SshAuth,
+    /// Fields of a newer version of the app, kept and saved back.
+    #[serde(flatten)]
+    pub unknown: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for SshSettings {
@@ -250,6 +259,7 @@ impl Default for SshSettings {
             port: 22,
             username: String::new(),
             auth: SshAuth::Agent,
+            unknown: serde_json::Map::new(),
         }
     }
 }
@@ -320,6 +330,10 @@ pub struct ConnectionProfile {
     /// URI options this model does not know, preserved verbatim on round trips.
     #[serde(default)]
     pub extra_options: Vec<(String, String)>,
+    /// Fields written by a newer version of the app: kept as they are and saved back, so
+    /// opening the file with this version loses nothing.
+    #[serde(flatten)]
+    pub unknown: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for ConnectionProfile {
@@ -338,6 +352,7 @@ impl Default for ConnectionProfile {
             connect_timeout_ms: None,
             read_only: false,
             extra_options: Vec::new(),
+            unknown: serde_json::Map::new(),
         }
     }
 }
@@ -679,14 +694,52 @@ impl ConnectionProfile {
     }
 }
 
+/// The format version of the connection file this app writes ([`ProfileStore::version`]).
+///
+/// - 0: the files written before the format had a version (no `version` field);
+/// - 1: the same fields, with `version`.
+///
+/// A change of format raises it and adds a step to `ProfileStore::migrate`, which brings
+/// every older file up to date on load; fixtures of every version stay in
+/// `tests/fixtures/` and must keep loading.
+pub const STORE_VERSION: u32 = 1;
+
 /// Saved profiles, persisted as JSON. Folders are implied by the profiles' `folder`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileStore {
+    /// The format version (see [`STORE_VERSION`]); 0 for files from before versions.
+    #[serde(default)]
+    pub version: u32,
     #[serde(default)]
     pub profiles: Vec<ConnectionProfile>,
     /// Empty folders the user created explicitly.
     #[serde(default)]
     pub folders: Vec<String>,
+    /// Fields written by a newer version of the app, kept and saved back.
+    #[serde(flatten)]
+    pub unknown: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Default for ProfileStore {
+    fn default() -> Self {
+        Self {
+            version: STORE_VERSION,
+            profiles: Vec::new(),
+            folders: Vec::new(),
+            unknown: serde_json::Map::new(),
+        }
+    }
+}
+
+/// The connection file as the app opened it ([`ProfileStore::open`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenedStore {
+    pub store: ProfileStore,
+    /// What went wrong reading the file, for the status line.
+    pub problem: Option<String>,
+    /// False when the file could not be read: saving would overwrite what the user has,
+    /// so changes stay in memory for this run.
+    pub writable: bool,
 }
 
 impl ProfileStore {
@@ -710,27 +763,66 @@ impl ProfileStore {
         })
     }
 
-    /// Load the store; a missing file is an empty store.
+    /// Load the store, migrated to [`STORE_VERSION`]; a missing file is an empty store.
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text)
+            Ok(text) => Self::from_json(&text)
                 .map_err(|e| RaabitError::Serde(format!("{}: {e}", path.display()))),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(err) => Err(err.into()),
         }
     }
 
-    /// Save atomically (write to a temporary file, then rename).
-    pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    /// Parse the file's text and migrate it to [`STORE_VERSION`].
+    pub fn from_json(text: &str) -> std::result::Result<Self, serde_json::Error> {
+        let mut store: Self = serde_json::from_str(text)?;
+        store.migrate();
+        Ok(store)
+    }
+
+    /// Bring a store read from an older file up to [`STORE_VERSION`]. A newer version is
+    /// left as it is: its unknown fields are kept and saved back.
+    fn migrate(&mut self) {
+        if self.version == 0 {
+            // 0 → 1: the same fields; the file gains its version.
+            self.version = 1;
         }
+    }
+
+    /// Open the store for the app. A file that cannot be read (corrupt, or written in a
+    /// format this version does not understand) is never replaced: it is copied to
+    /// `<name>.bak-<timestamp>`, the problem is reported, and the store is not writable
+    /// for this run, so nothing is saved over it.
+    pub fn open(path: &Path) -> OpenedStore {
+        match Self::load(path) {
+            Ok(store) => OpenedStore {
+                store,
+                problem: None,
+                writable: true,
+            },
+            Err(err) => {
+                let kept = match crate::persist::back_up_unreadable(path) {
+                    Ok(backup) => format!("a copy is in {}", backup.display()),
+                    Err(copy) => format!("it could not be copied ({copy})"),
+                };
+                OpenedStore {
+                    store: Self::default(),
+                    problem: Some(format!(
+                        "Could not read the saved connections ({err}). The file was left as \
+                         it is and {kept}; connections changed now are not saved."
+                    )),
+                    writable: false,
+                }
+            }
+        }
+    }
+
+    /// Save atomically: `<name>.tmp` first, flushed, the previous file kept as
+    /// `<name>.bak`, then renamed into place (see [`crate::persist::write_atomic`]).
+    pub fn save(&self, path: &Path) -> Result<()> {
         let text =
             serde_json::to_string_pretty(self).map_err(|e| RaabitError::Serde(e.to_string()))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        crate::persist::write_atomic(path, text.as_bytes())
     }
 
     pub fn get(&self, id: &str) -> Option<&ConnectionProfile> {

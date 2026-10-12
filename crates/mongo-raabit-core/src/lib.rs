@@ -15,6 +15,7 @@ pub mod fields;
 pub mod format;
 pub mod indexes;
 pub mod mongosh;
+pub mod persist;
 pub mod profile;
 pub mod query;
 pub mod schema;
