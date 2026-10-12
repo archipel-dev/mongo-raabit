@@ -20,8 +20,9 @@ use std::time::{Duration, Instant};
 /// How long a preview may count before it gives up ([`Affected::Unknown`]).
 pub const PREVIEW_TIMEOUT: Duration = Duration::from_secs(4);
 
-/// Longest argument list printed on one line by [`Write::shell`].
-const COMPACT_WIDTH: usize = 80;
+/// Longest call printed on one line by [`Write::shell`] (what a confirmation shows
+/// without scrolling sideways); longer calls print each argument indented.
+const COMPACT_WIDTH: usize = 88;
 /// Documents of an insert or import printed in full by [`Write::shell`].
 const SHOWN_DOCUMENTS: usize = 3;
 
@@ -228,14 +229,15 @@ fn sibling(db: &str) -> String {
     format!("db.getSiblingDB({})", quoted(db))
 }
 
-/// Arguments of a call: on one line when short, else each one pretty-printed.
-fn args(values: &[Bson]) -> String {
+/// Arguments of a call: on one line when the call (`prefix` and arguments) is short,
+/// else each one pretty-printed.
+fn args(prefix: usize, values: &[Bson]) -> String {
     let compact: Vec<String> = values
         .iter()
         .map(|v| shell::to_shell_string(v, ShellStyle::Compact))
         .collect();
     let line = compact.join(", ");
-    if line.chars().count() <= COMPACT_WIDTH && !line.contains('\n') {
+    if prefix + line.chars().count() < COMPACT_WIDTH && !line.contains('\n') {
         return line;
     }
     values
@@ -246,7 +248,8 @@ fn args(values: &[Bson]) -> String {
 }
 
 fn call(target: &str, method: &str, values: &[Bson]) -> String {
-    format!("{target}.{method}({})", args(values))
+    let prefix = target.chars().count() + method.chars().count() + 3;
+    format!("{target}.{method}({})", args(prefix, values))
 }
 
 /// A list of documents, the first few in full, the rest as a comment.
@@ -1354,7 +1357,7 @@ mod tests {
         };
         assert_eq!(
             write.shell(),
-            "db.getCollection(\"orders\").updateOne({ _id: ObjectId(\"65f000000000000000000001\") }, { $set: { price: 12.5 } })"
+            "db.getCollection(\"orders\").updateOne({\n  _id: ObjectId(\"65f000000000000000000001\")\n}, {\n  $set: {\n    price: 12.5\n  }\n})"
         );
         assert_eq!(write.title(), "Update 1 document in shop.orders");
         assert!(!write.is_destructive());
@@ -1538,7 +1541,7 @@ mod tests {
         };
         assert_eq!(
             index.shell(),
-            "db.getCollection(\"orders\").createIndex({ email: 1 }, { name: \"by_email\", unique: true, expireAfterSeconds: 60 })"
+            "db.getCollection(\"orders\").createIndex({\n  email: 1\n}, {\n  name: \"by_email\",\n  unique: true,\n  expireAfterSeconds: 60\n})"
         );
         assert!(!index.is_destructive());
         let hide = Write::SetIndexHidden {

@@ -603,6 +603,105 @@ impl Connection {
     }
 }
 
+/// Shell methods that change data or structure. Scripts calling any of them are
+/// confirmed before they run.
+pub const WRITE_METHODS: &[&str] = &[
+    "insert",
+    "insertOne",
+    "insertMany",
+    "update",
+    "updateOne",
+    "updateMany",
+    "replaceOne",
+    "findOneAndUpdate",
+    "findOneAndReplace",
+    "findOneAndDelete",
+    "findAndModify",
+    "bulkWrite",
+    "save",
+    "remove",
+    "deleteOne",
+    "deleteMany",
+    "drop",
+    "dropDatabase",
+    "dropIndex",
+    "dropIndexes",
+    "createIndex",
+    "createIndexes",
+    "hideIndex",
+    "unhideIndex",
+    "createCollection",
+    "createView",
+    "renameCollection",
+    "createUser",
+    "updateUser",
+    "dropUser",
+    "dropAllUsers",
+    "grantRolesToUser",
+    "revokeRolesFromUser",
+    "createRole",
+    "dropRole",
+    "killOp",
+    "runCommand",
+    "adminCommand",
+];
+
+/// Of [`WRITE_METHODS`], those that remove or overwrite data.
+const DESTRUCTIVE_METHODS: &[&str] = &[
+    "replaceOne",
+    "findOneAndReplace",
+    "findOneAndDelete",
+    "remove",
+    "deleteOne",
+    "deleteMany",
+    "drop",
+    "dropDatabase",
+    "dropIndex",
+    "dropIndexes",
+    "renameCollection",
+    "dropUser",
+    "dropAllUsers",
+    "dropRole",
+    "killOp",
+];
+
+/// What a script may change: the write methods it calls (`name(`), plus `$out` and
+/// `$merge` stages, in order of appearance. Text in strings and comments counts too: the
+/// check errs on the side of asking.
+pub fn script_writes(script: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let bytes = script.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        let ident_start = c == b'$' || c == b'_' || c.is_ascii_alphabetic();
+        if !ident_start || (i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+        {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        let word = &script[start..i];
+        let called = script[i..].trim_start().starts_with('(');
+        let hit = (called && WRITE_METHODS.contains(&word)) || matches!(word, "$out" | "$merge");
+        if hit && !found.iter().any(|f| f == word) {
+            found.push(word.to_owned());
+        }
+    }
+    found
+}
+
+/// True when [`script_writes`] found a method that removes or overwrites data.
+pub fn script_is_destructive(script: &str) -> bool {
+    script_writes(script)
+        .iter()
+        .any(|w| DESTRUCTIVE_METHODS.contains(&w.as_str()) || w == "$out")
+}
+
 /// Completions for the identifier chain ending at the cursor.
 pub fn complete(prefix: &str, collections: &[String]) -> Vec<String> {
     // After a call (`….find({}).li`) offer cursor modifiers.
@@ -784,6 +883,23 @@ mod tests {
         assert!(complete("db.orders.fi", &colls).contains(&"find(".to_string()));
         assert!(complete("db.orders.find({}).li", &colls).contains(&"limit(".to_string()));
         assert_eq!(complete("sh", &colls), ["show dbs", "show collections"]);
+    }
+
+    #[test]
+    fn finds_the_writes_of_a_script() {
+        assert!(script_writes("db.orders.find({}).limit(20)\nshow dbs").is_empty());
+        assert!(script_writes("db.orders.countDocuments({ dropped: 1 })").is_empty());
+        assert_eq!(
+            script_writes("db.a.insertOne({x: 1})\ndb.a.deleteMany({})\ndb.a.insertOne({})"),
+            ["insertOne", "deleteMany"]
+        );
+        assert_eq!(
+            script_writes("db.a.aggregate([{$match: {}}, {$out: 'b'}])"),
+            ["$out"]
+        );
+        assert_eq!(script_writes("db.runCommand({ping: 1})"), ["runCommand"]);
+        assert!(!script_is_destructive("db.a.updateOne({}, {$set: {a: 1}})"));
+        assert!(script_is_destructive("db.a.drop ()"));
     }
 
     #[test]
