@@ -4,6 +4,7 @@
   Windows, which passes:
     Version  numeric product version (from [workspace.package] version)
     Stage    absolute path of dist/raabit-<version>-windows-<arch>
+    Icon     absolute path of assets/logo/icon/raabit.ico
   The UpgradeCode must never change: MajorUpgrade uses it to replace any
   installed version with this one.
 -->
@@ -19,6 +20,10 @@
                   DowngradeErrorMessage="A newer version of Mongo Raabit is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- The app icon: Add/Remove Programs and the Start Menu shortcut. An advertised
+         shortcut needs its icon declared here, with an .ico Id. -->
+    <Icon Id="RaabitIcon.ico" SourceFile="$(var.Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="RaabitIcon.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/archipel-dev/mongo-raabit" />
     <Property Id="ARPHELPLINK" Value="https://github.com/archipel-dev/mongo-raabit/issues" />
 
@@ -35,6 +40,7 @@
                     Name="Mongo Raabit"
                     Description="Mongo Raabit"
                     WorkingDirectory="INSTALLFOLDER"
+                    Icon="RaabitIcon.ico"
                     Advertise="yes" />
         </File>
         <!-- `raabit` on PATH for new terminals. -->
