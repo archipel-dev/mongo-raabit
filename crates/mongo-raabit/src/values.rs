@@ -2,6 +2,7 @@
 
 use archipel_sdk::kit::ValueKind;
 use mongo_raabit_core::bson::Bson;
+use mongo_raabit_core::builder::FieldType;
 
 /// The kit value kind of a BSON value: it picks the color in tables, trees and code views.
 pub fn kind(value: &Bson) -> ValueKind {
@@ -17,6 +18,19 @@ pub fn kind(value: &Bson) -> ValueKind {
         Bson::DateTime(_) | Bson::Timestamp(_) => ValueKind::Date,
         Bson::Document(_) | Bson::Array(_) => ValueKind::Punctuation,
         _ => ValueKind::String,
+    }
+}
+
+/// The kit value kind of a field of the query builder: the color of its type badge.
+pub fn field_kind(kind: FieldType) -> ValueKind {
+    match kind {
+        FieldType::String => ValueKind::String,
+        FieldType::Number => ValueKind::Number,
+        FieldType::Boolean => ValueKind::Boolean,
+        FieldType::Date => ValueKind::Date,
+        FieldType::ObjectId => ValueKind::Id,
+        FieldType::Null => ValueKind::Null,
+        FieldType::Array | FieldType::Object | FieldType::Mixed => ValueKind::Punctuation,
     }
 }
 

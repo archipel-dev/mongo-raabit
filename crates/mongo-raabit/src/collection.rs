@@ -1,24 +1,25 @@
-//! Query tab of a collection: the query written with the visual builder, as shell code,
-//! as SQL or as a mongosh script, the paging toolbar and the Table / Tree / JSON result views.
+//! The editor tab of a collection in the center island: what the collection holds, in
+//! one of its views. Documents shows the result of the tab's query (Table / Tree / JSON,
+//! paging, count and query time) under a one-line summary of the query; the query itself
+//! is built in the Query tool window on the right. Aggregation shows the output of the
+//! pipeline of the Aggregation tool window, Schema the sampled schema, SQL and Shell their
+//! consoles.
 
-use crate::app::{CollectionTab, Load, MongoRaabit, QueryMode, ResultView, TabId};
+use crate::app::{CenterView, CollectionTab, Load, MongoRaabit, ResultView, TabId, ToolTab};
 use crate::egui::{RichText, Ui};
 use crate::icons::{self, Icon};
 use crate::results::{self, DocCommand, TableEvent, TreeEvent};
-use crate::tree::ToolKind;
 use crate::widgets;
 use crate::writes::READ_ONLY_TIP_LOWER;
 use archipel_sdk::kit::components::{
-    Banner, Button, Dropdown, EmptyState, IconButton, SegmentedControl, Separator, Severity,
-    Spinner, Tag, TooltipExt,
+    Banner, Dropdown, EmptyState, IconButton, SegmentedControl, Separator, Severity, Spinner, Tag,
+    TooltipExt,
 };
-use archipel_sdk::kit::tokens::size;
+use archipel_sdk::kit::tokens::{size, typography};
 use archipel_sdk::kit::{Glyph, Tone};
 use mongo_raabit_core::connection::CollectionKind;
 use mongo_raabit_core::format;
 
-/// Room the query bar leaves for the Run button.
-const RUN_RESERVE: f32 = 110.0;
 const PAGE_SIZE_WIDTH: f32 = 110.0;
 
 pub const PAGE_SIZES: [u64; 5] = [20, 50, 100, 250, 1000];
@@ -31,6 +32,8 @@ enum Action {
     Explain,
     Code,
     Run { recount: bool },
+    Reset,
+    EditQuery,
     Page(u64),
     PageSize(u64),
 }
@@ -50,37 +53,35 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     let Some(tab) = app.collection_tab_mut(tab_id) else {
         return;
     };
-    let mut actions = Vec::new();
-    let mut tool = None;
-    let mut sql = false;
-    header(ui, tab, &server_name, read_only, &mut tool);
-    widgets::padded(ui, |ui| {
-        mode_switch(ui, tab);
-        if matches!(tab.mode, QueryMode::Sql | QueryMode::Shell) {
-            sql = true;
-            return;
-        }
-        ui.add_space(size::SECTION_SPACING);
-        match tab.mode {
-            QueryMode::Builder => {
-                let fields = tab
-                    .result
-                    .ready()
-                    .map(|page| crate::query_builder::field_names(&page.documents))
-                    .unwrap_or_default();
-                match crate::query_builder::show(ui, &mut tab.builder, &fields) {
-                    crate::query_builder::Event::None => {}
-                    crate::query_builder::Event::Changed => {
-                        tab.query = tab.builder.to_query_text();
-                    }
-                    crate::query_builder::Event::Run => {
-                        tab.query = tab.builder.to_query_text();
-                        actions.push(Action::Run { recount: true });
-                    }
-                }
+    header(ui, tab, &server_name, read_only);
+    match tab.center {
+        CenterView::Documents => documents_view(app, tab_id, read_only, ui),
+        CenterView::Aggregation => {
+            if app.ensure_aggregation(tab_id) {
+                app.preview_stage(tab_id);
             }
-            _ => query_bar(ui, tab, &mut actions),
+            crate::aggregation_view::output(app, tab_id, ui);
         }
+        CenterView::Schema => {
+            app.ensure_structure(tab_id);
+            crate::schema_view::show(app, tab_id, ui);
+        }
+        CenterView::Sql => crate::sql_view::show(app, tab_id, ui),
+        CenterView::Shell => {
+            app.init_shell(tab_id);
+            crate::shell_view::show(app, tab_id, ui);
+        }
+    }
+}
+
+/// The documents of the tab's query: its summary, the result toolbar and the results.
+fn documents_view(app: &mut MongoRaabit, tab_id: TabId, read_only: bool, ui: &mut Ui) {
+    let Some(tab) = app.collection_tab_mut(tab_id) else {
+        return;
+    };
+    let mut actions = Vec::new();
+    widgets::padded(ui, |ui| {
+        query_summary(ui, tab, &mut actions);
         if let Some(err) = tab.query_error.clone() {
             ui.add_space(size::ISLAND_GAP);
             let banner = Banner::new(Severity::Error, err).dismissible(true).show(ui);
@@ -91,30 +92,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         ui.add_space(size::SECTION_SPACING);
         result_toolbar(ui, tab, read_only, &mut actions);
     });
-    if sql {
-        ui.add(Separator);
-        if app.collection_tab_mut(tab_id).map(|t| t.mode) == Some(QueryMode::Shell) {
-            app.init_shell(tab_id);
-            crate::shell_view::show(app, tab_id, ui);
-        } else {
-            crate::sql_view::show(app, tab_id, ui);
-        }
-        if let Some(kind) = tool
-            && let Some(tab) = app.collection_tab_mut(tab_id)
-        {
-            let (session, db, coll) = (tab.session, tab.db.clone(), tab.collection.clone());
-            crate::tree::open_tool(app, session, &db, Some(&coll), kind);
-        }
-        return;
-    }
     ui.add(Separator);
     result_area(ui, tab, read_only, &mut actions);
-    if let Some(kind) = tool
-        && let Some(tab) = app.collection_tab_mut(tab_id)
-    {
-        let (session, db, coll) = (tab.session, tab.db.clone(), tab.collection.clone());
-        crate::tree::open_tool(app, session, &db, Some(&coll), kind);
-    }
     for action in actions {
         match action {
             Action::Doc(command, index) => {
@@ -159,14 +138,15 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             Action::CommitEdit => app.commit_cell_edit(tab_id),
             Action::Explain => app.explain(tab_id),
             Action::Code => app.query_code(tab_id),
-            Action::Run { recount } => {
+            Action::EditQuery => app.show_tool(ToolTab::Query),
+            Action::Reset => {
                 if let Some(tab) = app.collection_tab_mut(tab_id) {
-                    tab.page = 0;
-                    tab.drill.clear();
-                    tab.selected = None;
+                    tab.builder.reset();
+                    tab.query = Default::default();
                 }
-                app.run_query(tab_id, recount);
+                app.run_documents(tab_id, true);
             }
+            Action::Run { recount } => app.run_documents(tab_id, recount),
             Action::Page(page) => {
                 if let Some(tab) = app.collection_tab_mut(tab_id) {
                     tab.page = page;
@@ -183,6 +163,87 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             }
         }
     }
+}
+
+impl MongoRaabit {
+    /// Runs the tab's query from its first page (after the query changed).
+    pub fn run_documents(&mut self, tab_id: TabId, recount: bool) {
+        if let Some(tab) = self.collection_tab_mut(tab_id) {
+            tab.page = 0;
+            tab.drill.clear();
+            tab.selected = None;
+        }
+        self.run_query(tab_id, recount);
+    }
+}
+
+/// One line saying which query the documents answer, read-only, with the way to edit it
+/// in the Query tool window, and its reset.
+fn query_summary(ui: &mut Ui, tab: &CollectionTab, actions: &mut Vec<Action>) {
+    let text = tab.query.preview();
+    let pending = match (tab.query.parse(), &tab.ran) {
+        (Ok(query), Some(ran)) => &query != ran,
+        (Ok(_), None) => false,
+        (Err(_), _) => true,
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
+        icons::icon(ui, Icon::Filter, Tone::Muted.resolve(ui.ctx()));
+        ui.with_layout(
+            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+            |ui| {
+                if ui
+                    .add(IconButton::new(Icon::Close, "Reset query"))
+                    .tooltip("Clear the query and show every document")
+                    .clicked()
+                {
+                    actions.push(Action::Reset);
+                }
+                if ui
+                    .add(IconButton::new(Icon::Edit, "Edit query"))
+                    .tooltip("Edit the query in the Query tool window")
+                    .clicked()
+                {
+                    actions.push(Action::EditQuery);
+                }
+                if ui
+                    .add(IconButton::new(
+                        Icon::Code,
+                        "Query code (JS, Python, Java, C#, Go, Rust, PHP, Ruby)",
+                    ))
+                    .clicked()
+                {
+                    actions.push(Action::Code);
+                }
+                if ui
+                    .add(IconButton::new(Icon::Explain, "Explain query plan"))
+                    .clicked()
+                {
+                    actions.push(Action::Explain);
+                }
+                if let Some(page) = tab.result.ready() {
+                    icons::icon(ui, Icon::TimeSeries, Tone::Muted.resolve(ui.ctx()));
+                    ui.label(tone_text(ui, Tone::Muted, format::duration(page.elapsed)))
+                        .on_hover_text("Query time of this page");
+                }
+                count_tag(ui, &tab.count);
+                if pending {
+                    ui.add(Tag::new("Not run").tone(Tone::Warning))
+                        .tooltip("The query was changed: Run it in the Query tool window");
+                }
+                let rich = RichText::new(&text)
+                    .font(crate::egui::FontId::monospace(typography::BODY))
+                    .color(Tone::Secondary.resolve(ui.ctx()));
+                ui.with_layout(
+                    crate::egui::Layout::left_to_right(crate::egui::Align::Center),
+                    |ui| {
+                        ui.add(crate::egui::Label::new(rich).truncate())
+                            .tooltip(format!("Query: {text}"));
+                    },
+                );
+            },
+        );
+    });
 }
 
 fn tone_text(ui: &Ui, tone: Tone, text: impl Into<String>) -> RichText {
@@ -210,15 +271,9 @@ fn count_tag(ui: &mut Ui, count: &Load<u64>) {
     }
 }
 
-/// The tab's header: where the collection lives, what it is, how many documents it holds
-/// and the shortcuts to its tools.
-fn header(
-    ui: &mut Ui,
-    tab: &CollectionTab,
-    server: &str,
-    read_only: bool,
-    tool: &mut Option<ToolKind>,
-) {
+/// The tab's header: the switch between its views, and where the collection lives and
+/// what it is.
+fn header(ui: &mut Ui, tab: &mut CollectionTab, server: &str, read_only: bool) {
     let (icon, kind) = match tab.kind {
         CollectionKind::View => (Icon::View, "View"),
         CollectionKind::TimeSeries => (Icon::TimeSeries, "Time series"),
@@ -226,110 +281,36 @@ fn header(
         CollectionKind::System => (Icon::Collection, "System"),
         CollectionKind::Collection => (Icon::Collection, "Collection"),
     };
-    widgets::tool_header(
-        ui,
-        icon,
-        Tone::Accent,
-        &[server, tab.db.as_str()],
-        &tab.collection,
-        Tag::new(kind).tone(if tab.kind == CollectionKind::View {
-            Tone::Accent
-        } else {
-            Tone::Secondary
-        }),
-        |ui| {
+    let tag_tone = if tab.kind == CollectionKind::View {
+        Tone::Accent
+    } else {
+        Tone::Secondary
+    };
+    widgets::padded(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.add(SegmentedControl::new(
+                &mut tab.center,
+                [
+                    (CenterView::Documents, "Documents"),
+                    (CenterView::Aggregation, "Aggregation"),
+                    (CenterView::Schema, "Schema"),
+                    (CenterView::Sql, "SQL"),
+                    (CenterView::Shell, "Shell"),
+                ],
+            ));
+        });
+        ui.horizontal(|ui| {
+            ui.add(Tag::new(kind).tone(tag_tone));
             if read_only {
                 ui.add(Tag::new("Read-only").tone(Tone::Warning))
                     .tooltip(READ_ONLY_HINT);
             }
-            count_tag(ui, &tab.count);
-        },
-        |ui| {
-            ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
-            for (icon, tip, kind) in [
-                (
-                    Icon::Schema,
-                    "Structure (schema and indexes)",
-                    ToolKind::Schema,
-                ),
-                (Icon::Pipeline, "Aggregation", ToolKind::Aggregation),
-            ] {
-                if ui.add(IconButton::new(icon, tip)).clicked() {
-                    *tool = Some(kind);
-                }
-            }
-        },
-    );
-}
-
-/// Builder | Code | SQL. Switching from Code back to the builder takes over the code
-/// when the builder can represent it.
-fn mode_switch(ui: &mut Ui, tab: &mut CollectionTab) {
-    let before = tab.mode;
-    ui.horizontal(|ui| {
-        ui.add(SegmentedControl::new(
-            &mut tab.mode,
-            [
-                (QueryMode::Builder, "Builder"),
-                (QueryMode::Code, "Code"),
-                (QueryMode::Sql, "SQL"),
-                (QueryMode::Shell, "Shell"),
-            ],
-        ));
+            widgets::label(ui, Tone::Muted, tab.db.as_str())
+                .on_hover_text(format!("{server} › {}.{}", tab.db, tab.collection));
+            icons::icon(ui, icon, Tone::Muted.resolve(ui.ctx()));
+        });
     });
-    if before != QueryMode::Builder && tab.mode == QueryMode::Builder {
-        tab.builder.take_over(&tab.query);
-    }
-}
-
-fn query_bar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
-    ui.spacing_mut().item_spacing = crate::egui::vec2(size::FORM_LABEL_GAP, size::FORM_LABEL_GAP);
-    let mut enter = false;
-    ui.horizontal(|ui| {
-        let width = ui.available_width() - RUN_RESERVE;
-        let r = widgets::query_field(
-            ui,
-            "Filter",
-            &mut tab.query.filter,
-            "{ field: \"value\" }",
-            width,
-        );
-        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-        if ui
-            .add(Button::primary("Run").icon(Icon::Play))
-            .on_hover_text("Run query (Enter)")
-            .clicked()
-        {
-            actions.push(Action::Run { recount: true });
-        }
-    });
-    ui.horizontal(|ui| {
-        let total = ui.available_width() - size::FORM_LABEL_GAP * 5.0;
-        let r = widgets::query_field(
-            ui,
-            "Projection",
-            &mut tab.query.projection,
-            "{ name: 1 }",
-            total * 0.34,
-        );
-        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-        let r = widgets::query_field(ui, "Sort", &mut tab.query.sort, "{ _id: -1 }", total * 0.30);
-        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-        let r = widgets::query_field(ui, "Skip", &mut tab.query.skip, "0", total * 0.11);
-        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-        let r = widgets::query_field(ui, "Limit", &mut tab.query.limit, "0", total * 0.11);
-        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(crate::egui::Key::Enter));
-        if ui
-            .add(IconButton::new(Icon::Close, "Reset query"))
-            .clicked()
-        {
-            tab.query = Default::default();
-            actions.push(Action::Run { recount: true });
-        }
-    });
-    if enter {
-        actions.push(Action::Run { recount: true });
-    }
+    ui.add(Separator);
 }
 
 /// The page sizes offered: the usual ones and the tab's own (from Settings).
@@ -424,34 +405,20 @@ fn result_toolbar(
         {
             actions.push(Action::Doc(DocCommand::Delete, None));
         }
-        ui.add_space(size::SECONDARY_GAP);
-        if ui
-            .add(IconButton::new(Icon::Explain, "Explain query plan"))
-            .clicked()
-        {
-            actions.push(Action::Explain);
-        }
-        if ui
-            .add(IconButton::new(
-                Icon::Code,
-                "Query code (JS, Python, Java, C#, Go, Rust, PHP, Ruby)",
-            ))
-            .clicked()
-        {
-            actions.push(Action::Code);
-        }
-        ui.spacing_mut().item_spacing.x = size::FORM_LABEL_GAP;
-        if tab.view == ResultView::Table && !tab.drill.is_empty() {
-            ui.add_space(size::SECONDARY_GAP);
-            if let Some(depth) = results::breadcrumb(ui, &tab.drill) {
-                tab.drill.truncate(depth);
-            }
-        }
         ui.with_layout(
             crate::egui::Layout::right_to_left(crate::egui::Align::Center),
             |ui| paging(ui, tab, actions),
         );
     });
+    if tab.view == ResultView::Table && !tab.drill.is_empty() {
+        ui.add_space(size::FORM_ROW_GAP);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = size::FORM_LABEL_GAP;
+            if let Some(depth) = results::breadcrumb(ui, &tab.drill) {
+                tab.drill.truncate(depth);
+            }
+        });
+    }
 }
 
 /// The paging bar, right to left: next, range, previous, page size, query time.
@@ -495,12 +462,6 @@ fn paging(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
     }
     if tab.result.is_loading() {
         ui.add(Spinner::new().label("Loading page"));
-    }
-    if let Some(page) = page {
-        ui.add_space(size::SECONDARY_GAP);
-        ui.label(tone_text(ui, Tone::Muted, format::duration(page.elapsed)))
-            .on_hover_text("Query time of this page");
-        icons::icon(ui, Icon::TimeSeries, Tone::Muted.resolve(ui.ctx()));
     }
 }
 

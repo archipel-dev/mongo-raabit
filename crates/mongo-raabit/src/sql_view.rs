@@ -36,12 +36,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     } = tab;
     let mut run = false;
     let mut to_aggregation: Option<(String, Pipeline)> = None;
-    widgets::tool_header(
+    widgets::view_toolbar(
         ui,
-        Icon::Sql,
-        Tone::Accent,
-        &[],
-        db,
         Tag::new("SQL Query").tone(Tone::Accent),
         |_| {},
         |ui| {

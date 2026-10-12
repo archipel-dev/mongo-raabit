@@ -1,5 +1,7 @@
 //! Field names for pickers: the paths seen in sample documents and their filtering.
 
+use crate::builder::FieldType;
+use crate::schema::SchemaReport;
 use mongodb::bson::{Bson, Document};
 use std::collections::BTreeSet;
 
@@ -79,6 +81,61 @@ pub fn field_paths(docs: &[Document]) -> Vec<String> {
     out
 }
 
+/// A field the query builder lists: a query path (`address.city`, `items.sku` for the
+/// documents inside an array), how deep it is nested and what it holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueryField {
+    /// Dotted path as a query names it.
+    pub path: String,
+    /// Nesting depth (0 for top-level fields).
+    pub depth: usize,
+    pub kind: FieldType,
+    /// Share of the documents (or parent values) that have the field, 0.0–1.0.
+    pub presence: f64,
+}
+
+impl QueryField {
+    /// The last segment of the path.
+    pub fn name(&self) -> &str {
+        self.path.rsplit('.').next().unwrap_or(&self.path)
+    }
+}
+
+/// The fields of a schema report as the query builder lists them, in the report's
+/// depth-first order, `_id` first. Array element paths (`items[].sku`) become query paths
+/// (`items.sku`); the elements themselves (`tags[]`) are the array field already listed.
+/// A path reached both ways keeps its first entry, `Mixed` when the kinds differ.
+pub fn query_fields(report: &SchemaReport) -> Vec<QueryField> {
+    let mut out: Vec<QueryField> = Vec::new();
+    for field in &report.fields {
+        if field.path.ends_with("[]") {
+            continue;
+        }
+        let path = field.path.replace("[]", "");
+        let kind = FieldType::of_type_names(field.types.iter().map(|(name, _)| name.as_str()));
+        if let Some(seen) = out.iter_mut().find(|f| f.path == path) {
+            if seen.kind != kind {
+                seen.kind = FieldType::Mixed;
+            }
+            continue;
+        }
+        if out.len() >= MAX_FIELDS {
+            break;
+        }
+        out.push(QueryField {
+            depth: path.matches('.').count(),
+            path,
+            kind,
+            presence: field.probability(),
+        });
+    }
+    if let Some(pos) = out.iter().position(|f| f.path == "_id") {
+        let id = out.remove(pos);
+        out.insert(0, id);
+    }
+    out
+}
+
 /// The names to list for what is typed in a picker: those containing the text (ignoring
 /// case), or all of them while the text is empty or already one of the names.
 pub fn filter_names<'a>(names: &'a [String], typed: &str) -> Vec<&'a String> {
@@ -127,6 +184,44 @@ mod tests {
             doc! {"z": 1, "b": 2},
         ];
         assert_eq!(field_paths(&docs), ["b", "a", "a.c", "a.c.d", "z"]);
+    }
+
+    #[test]
+    fn query_fields_follow_the_schema_with_query_paths() {
+        let docs = [
+            doc! {"name": "Ada", "_id": 1, "age": 36, "address": {"city": "x"},
+            "items": [{"sku": "a", "qty": 1}], "tags": ["a"], "when": mongodb::bson::DateTime::now(),
+            "n": Bson::Null, "mixed": 1},
+            doc! {"_id": 2, "name": "Bo", "age": 1.5, "active": true, "items": [{"sku": 3}], "n": Bson::Null,
+            "mixed": "one"},
+        ];
+        let fields = query_fields(&crate::schema::analyze(&docs));
+        let listed: Vec<(&str, usize, FieldType)> = fields
+            .iter()
+            .map(|f| (f.path.as_str(), f.depth, f.kind))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("_id", 0, FieldType::Number),
+                ("name", 0, FieldType::String),
+                ("age", 0, FieldType::Number),
+                ("address", 0, FieldType::Object),
+                ("address.city", 1, FieldType::String),
+                ("items", 0, FieldType::Array),
+                ("items.sku", 1, FieldType::Mixed),
+                ("items.qty", 1, FieldType::Number),
+                ("tags", 0, FieldType::Array),
+                ("when", 0, FieldType::Date),
+                ("n", 0, FieldType::Null),
+                ("mixed", 0, FieldType::Mixed),
+                ("active", 0, FieldType::Boolean),
+            ]
+        );
+        assert_eq!(fields[1].name(), "name");
+        assert_eq!(fields[4].name(), "city");
+        assert!((fields[12].presence - 0.5).abs() < 1e-9);
+        assert!(query_fields(&crate::schema::analyze(&[])).is_empty());
     }
 
     #[test]

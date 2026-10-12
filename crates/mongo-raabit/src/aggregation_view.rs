@@ -3,7 +3,7 @@
 
 use crate::app::{Load, MongoRaabit, ResultView, TabId, TabKind};
 use crate::egui::{Id, Ui, vec2};
-use crate::icons::{self, Icon};
+use crate::icons::Icon;
 use crate::results;
 use crate::stage_builder::{self, Mode, Suggestions};
 use crate::tools::{AggregationTab, RunResult};
@@ -31,21 +31,15 @@ enum Action {
     Code,
 }
 
-/// Default share of the width the stage list gets.
-const LIST_RATIO: f32 = 0.28;
 /// Default share of the height the stage editor gets while results are shown.
 const BODY_RATIO: f32 = 0.62;
-const LIST_MIN_WIDTH: f32 = 240.0;
 const SAMPLE_WIDTH: f32 = 80.0;
 const OPERATOR_WIDTH: f32 = 180.0;
 
-pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
-    let server = app
-        .aggregation_tab_mut(tab_id)
-        .map(|t| t.session)
-        .and_then(|s| app.session(s))
-        .map(|s| s.profile.name.clone())
-        .unwrap_or_default();
+/// The Aggregation tool window: Run and the preview sample, the stage list and the
+/// editor of the selected stage. The stage's input and output and the pipeline's results
+/// show in the center ([`output`]).
+pub fn tool(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     let collections = lookup_collections(app, tab_id);
     let read_only = app
         .aggregation_tab_mut(tab_id)
@@ -55,48 +49,48 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     };
     let mut actions = Vec::new();
-    widgets::padded(ui, |ui| header(ui, &server, tab, read_only, &mut actions));
+    widgets::padded(ui, |ui| {
+        header(ui, tab, read_only, &mut actions);
+        ui.add_space(size::SECTION_SPACING);
+        stage_list(ui, tab, &mut actions);
+    });
     ui.add(Separator);
+    widgets::padded(ui, |ui| {
+        stage_editor(ui, tab, &collections, &mut actions);
+    });
+    apply(app, tab_id, actions);
+}
+
+fn apply(app: &mut MongoRaabit, tab_id: TabId, actions: Vec<Action>) {
+    let mut code = false;
+    for action in actions {
+        match action {
+            Action::Preview => app.preview_stage(tab_id),
+            Action::Run => app.run_pipeline(tab_id),
+            Action::Code => code = true,
+        }
+    }
+    if code {
+        open_code(app, tab_id);
+    }
+}
+
+/// The Aggregation view of the center: the input and output of the selected stage and,
+/// once the pipeline ran, its results below.
+pub fn output(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
+    let Some(tab) = app.aggregation_tab_mut(tab_id) else {
+        return;
+    };
+    let mut actions = Vec::new();
     let idle = matches!(tab.result, Load::Idle);
     let size = ui.available_size();
     let tab_cell = RefCell::new(&mut *tab);
-    let actions_cell = RefCell::new(&mut actions);
-    let body = |ui: &mut Ui| {
-        let ratio_id = ui.id().with("raabit-agg-list-ratio");
-        let mut ratio = ui
-            .data(|d| d.get_temp::<f32>(ratio_id))
-            .unwrap_or(LIST_RATIO);
-        SplitPane::horizontal(("raabit-agg-list", tab_id), &mut ratio)
-            .default_ratio(LIST_RATIO)
-            .min_size(LIST_MIN_WIDTH)
-            .label("Resize stage list")
-            .show(
-                ui,
-                |ui| {
-                    widgets::padded(ui, |ui| {
-                        stage_list(
-                            ui,
-                            &mut tab_cell.borrow_mut(),
-                            &mut actions_cell.borrow_mut(),
-                        );
-                    });
-                },
-                |ui| {
-                    widgets::padded(ui, |ui| {
-                        stage_editor(
-                            ui,
-                            &mut tab_cell.borrow_mut(),
-                            &collections,
-                            &mut actions_cell.borrow_mut(),
-                        );
-                    });
-                },
-            );
-        ui.data_mut(|d| d.insert_temp(ratio_id, ratio));
+    let preview = |ui: &mut Ui| {
+        widgets::padded(ui, |ui| preview_pane(ui, &tab_cell.borrow()));
     };
     ui.allocate_ui(size, |ui| {
         if idle {
-            body(ui);
+            preview(ui);
             return;
         }
         let ratio_id = ui.id().with("raabit-agg-body-ratio");
@@ -105,107 +99,89 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             .unwrap_or(BODY_RATIO);
         SplitPane::vertical(("raabit-agg-body", tab_id), &mut ratio)
             .default_ratio(BODY_RATIO)
-            .min_sizes(size::CODE_LINE_HEIGHT * 8.0, size::CODE_LINE_HEIGHT * 6.0)
+            .min_sizes(size::CODE_LINE_HEIGHT * 6.0, size::CODE_LINE_HEIGHT * 6.0)
             .label("Resize results")
-            .show(ui, body, |ui| {
+            .show(ui, preview, |ui| {
                 let mut tab = tab_cell.borrow_mut();
                 let tab = &mut *tab;
                 result_pane(ui, tab_id, &mut tab.view, &mut tab.open, &tab.result);
             });
         ui.data_mut(|d| d.insert_temp(ratio_id, ratio));
     });
-    let mut code = None;
-    for action in actions {
-        match action {
-            Action::Preview => app.preview_stage(tab_id),
-            Action::Run => app.run_pipeline(tab_id),
-            Action::Code => code = Some(()),
-        }
+    if matches!(
+        app.aggregation_tab_mut(tab_id).map(|t| &t.result),
+        Some(Load::Idle)
+    ) && ui.input(|i| i.modifiers.command && i.key_pressed(crate::egui::Key::Enter))
+    {
+        actions.push(Action::Run);
     }
-    if code.is_some() {
-        open_code(app, tab_id);
-    }
+    apply(app, tab_id, actions);
 }
 
-/// Breadcrumb of the collection, the sample size of previews and the Run buttons.
-fn header(
-    ui: &mut Ui,
-    server: &str,
-    tab: &mut AggregationTab,
-    read_only: bool,
-    actions: &mut Vec<Action>,
-) {
+/// Run, the code of the pipeline and the sample size of the stage previews.
+fn header(ui: &mut Ui, tab: &mut AggregationTab, read_only: bool, actions: &mut Vec<Action>) {
     // A pipeline ending in `$out` / `$merge` writes: blocked on a read-only connection.
     let blocked = read_only
         && tab
             .pipeline
             .documents(None)
             .is_ok_and(|stages| mongo_raabit_core::write::pipeline_writes(&stages));
-    let muted = Tone::Muted.resolve(ui.ctx());
     ui.horizontal(|ui| {
-        icons::icon(ui, Icon::Pipeline, Tone::Accent.resolve(ui.ctx()));
-        widgets::label(ui, Tone::Muted, server);
-        icons::icon(ui, Icon::ChevronRight, muted);
-        widgets::label(ui, Tone::Secondary, &tab.db);
-        icons::icon(ui, Icon::ChevronRight, muted);
-        widgets::title(ui, &tab.collection);
-        ui.add(Tag::new("Aggregation").tone(Tone::Accent));
+        ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
+        let run = ui.add(
+            Button::primary("Run Pipeline")
+                .icon(Icon::Play)
+                .enabled(!blocked),
+        );
+        let run = if blocked {
+            run.tooltip("Read-only connection: $out and $merge write to a collection")
+        } else {
+            run
+        };
+        if run.clicked() {
+            actions.push(Action::Run);
+        }
+        if ui
+            .add(IconButton::new(Icon::Code, "Query Code"))
+            .tooltip("The pipeline as code (JS, Python, Java, C#, Go, Rust, PHP, Ruby)")
+            .clicked()
+        {
+            actions.push(Action::Code);
+        }
         if read_only {
             ui.add(Tag::new("Read-only").tone(Tone::Warning));
         }
-        ui.with_layout(
-            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-            |ui| {
-                let run = ui.add(
-                    Button::primary("Run Pipeline")
-                        .icon(Icon::Play)
-                        .enabled(!blocked),
-                );
-                let run = if blocked {
-                    run.tooltip("Read-only connection: $out and $merge write to a collection")
-                } else {
-                    run
-                };
-                if run.clicked() {
-                    actions.push(Action::Run);
-                }
-                if ui
-                    .add(Button::secondary("Query Code").icon(Icon::Code))
-                    .clicked()
-                {
-                    actions.push(Action::Code);
-                }
-                ui.add_space(size::SECONDARY_GAP);
-                widgets::label(ui, Tone::Muted, "docs");
-                let id = ui.id().with("raabit-sample");
-                let field = ui.add(
-                    NumberField::new(&mut tab.sample)
-                        .id(id)
-                        .name("Preview sample size")
-                        .width(SAMPLE_WIDTH),
-                );
-                // The preview runs when the user leaves the field after changing it.
-                let dirty = id.with("dirty");
-                if field.changed() {
-                    ui.data_mut(|d| d.insert_temp(dirty, true));
-                }
-                if field.lost_focus()
-                    && ui
-                        .data_mut(|d| d.remove_temp::<bool>(dirty))
-                        .unwrap_or(false)
-                {
-                    actions.push(Action::Preview);
-                }
-                widgets::label(ui, Tone::Muted, "Preview on first")
-                    .tooltip("Stage previews read only this many input documents (0 = all)");
-            },
+    });
+    ui.add_space(size::FORM_ROW_GAP);
+    ui.horizontal(|ui| {
+        widgets::label(ui, Tone::Muted, "Preview on first")
+            .tooltip("Stage previews read only this many input documents (0 = all)");
+        let id = ui.id().with("raabit-sample");
+        let field = ui.add(
+            NumberField::new(&mut tab.sample)
+                .id(id)
+                .name("Preview sample size")
+                .width(SAMPLE_WIDTH),
         );
+        // The preview runs when the user leaves the field after changing it.
+        let dirty = id.with("dirty");
+        if field.changed() {
+            ui.data_mut(|d| d.insert_temp(dirty, true));
+        }
+        if field.lost_focus()
+            && ui
+                .data_mut(|d| d.remove_temp::<bool>(dirty))
+                .unwrap_or(false)
+        {
+            actions.push(Action::Preview);
+        }
+        widgets::label(ui, Tone::Muted, "docs");
     });
 }
 
 /// Collection names of the tab's database, from the loaded tree (for `$lookup`).
 fn lookup_collections(app: &MongoRaabit, tab_id: TabId) -> Vec<String> {
-    let Some(TabKind::Aggregation(tab)) = app.tabs.iter().find(|t| t.id == tab_id).map(|t| &t.kind)
+    let Some(TabKind::Collection(tab)) = app.tabs.iter().find(|t| t.id == tab_id).map(|t| &t.kind)
     else {
         return Vec::new();
     };
@@ -260,7 +236,7 @@ fn stage_list(ui: &mut Ui, tab: &mut AggregationTab, actions: &mut Vec<Action>) 
     let mut remove = None;
     let mut move_by: Option<(usize, isize)> = None;
     scroll_vertical()
-        .max_height(ui.available_height() - size::CONTROL_HEIGHT - size::SECTION_SPACING)
+        .max_height(size::ROW_HEIGHT * 8.0)
         .auto_shrink([false, true])
         .show(ui, |ui| {
             for (i, stage) in tab.pipeline.stages.iter().enumerate() {
@@ -417,10 +393,10 @@ fn stage_editor(
             }
             actions.push(Action::Preview);
         }
-        if let Some(op) = stage_operator(&stage.operator) {
-            widgets::label(ui, Tone::Muted, op.description);
-        }
     });
+    if let Some(op) = stage_operator(&stage.operator) {
+        widgets::note(ui, Tone::Muted, op.description);
+    }
     let form_id = ui.make_persistent_id(("raabit-stage-form", index));
     let formable = stage_form::has_form(&stage.operator);
     let mut mode = if formable
@@ -456,13 +432,14 @@ fn stage_editor(
                     }
                 }
             }
-            if mode == Mode::Form {
-                widgets::caption(
-                    ui,
-                    "Pick fields and values; the stage code is written for you.",
-                );
-            }
         });
+        if mode == Mode::Form {
+            widgets::note(
+                ui,
+                Tone::Muted,
+                "Pick fields and values; the stage code is written for you.",
+            );
+        }
         if tab.form_hint == Some(index) && mode == Mode::Code {
             Banner::new(
                 Severity::Warning,
@@ -472,11 +449,9 @@ fn stage_editor(
         }
     }
     let editor_height = if mode == Mode::Form {
-        (ui.available_height() * 0.45)
-            .clamp(size::CODE_LINE_HEIGHT * 7.0, size::CODE_LINE_HEIGHT * 17.0)
+        size::CODE_LINE_HEIGHT * 17.0
     } else {
-        (ui.available_height() * 0.36)
-            .clamp(size::CODE_LINE_HEIGHT * 5.5, size::CODE_LINE_HEIGHT * 13.0)
+        size::CODE_LINE_HEIGHT * 12.0
     };
     if mode == Mode::Form {
         scroll_vertical()
@@ -512,8 +487,33 @@ fn stage_editor(
     if let Some(err) = &tab.stage_error {
         Banner::new(Severity::Error, err).show(ui);
     }
+    if tab.preview.is_loading() {
+        ui.horizontal(|ui| {
+            ui.add(Spinner::new().label("Previewing"));
+            widgets::label(ui, Tone::Secondary, "Previewing…");
+        });
+    }
+}
+
+/// The input and output of the selected stage, side by side.
+fn preview_pane(ui: &mut Ui, tab: &AggregationTab) {
+    let index = tab.selected;
+    ui.horizontal(|ui| {
+        widgets::title(ui, format!("Stage {}", index + 1));
+        if let Some(stage) = tab.pipeline.stages.get(index) {
+            ui.add(Tag::new(stage.operator.as_str()).tone(Tone::Accent));
+            widgets::label(
+                ui,
+                Tone::Muted,
+                "Preview of the stage selected in the Aggregation tool window",
+            );
+        }
+    });
+    ui.add_space(size::SECTION_SPACING);
     match &tab.preview {
-        Load::Idle => {}
+        Load::Idle => {
+            widgets::caption(ui, "Select a stage to preview its input and output.");
+        }
         Load::Loading => {
             ui.horizontal(|ui| {
                 ui.add(Spinner::new().label("Previewing"));

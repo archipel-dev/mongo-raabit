@@ -275,7 +275,7 @@ mod at {
         (400, 440),
     ];
     /// The "Connect…" button of the empty Connections tool window.
-    pub const OPEN_DIALOG: Point = (177, 209);
+    pub const OPEN_DIALOG: Point = (177, 217);
     pub const DIALOG_HOVER: [Point; 6] = [
         (330, 260),
         (576, 316),
@@ -285,14 +285,14 @@ mod at {
         (958, 684),
     ];
     /// The dialog's "Close" button (its secondary button, at the bottom right).
-    pub const DIALOG_CLOSE: Point = (958, 684);
+    pub const DIALOG_CLOSE: Point = (958, 644);
     /// The welcome screen's "Connect to localhost".
-    pub const CONNECT_LOCALHOST: Point = (796, 253);
+    pub const CONNECT_LOCALHOST: Point = (562, 253);
     pub const TREE_HOVER: [Point; 5] = [(150, 128), (150, 152), (150, 176), (150, 200), (150, 224)];
     /// Expander arrow of the `raabit_perf` database row (the fourth database).
-    pub const DB_ARROW: Point = (80, 224);
+    pub const DB_ARROW: Point = (80, 232);
     /// The `customers` collection row below it.
-    pub const COLLECTION: Point = (165, 248);
+    pub const COLLECTION: Point = (165, 256);
     pub const TABLE_HOVER: [Point; 6] = [
         (500, 425),
         (500, 481),
@@ -394,9 +394,8 @@ fn one_run(bin: &Path, display: &str, index: usize) -> Result<Run> {
         .args(["--dark", "--perf-report"])
         .arg(&report)
         .env("DISPLAY", display)
-        .env("HOME", &dir)
-        .env("XDG_DATA_HOME", dir.join("data"))
-        .env("XDG_CONFIG_HOME", dir.join("config"))
+        .arg("--data-dir")
+        .arg(&dir)
         .stdout(Stdio::null())
         .spawn()
         .with_context(|| format!("starting {}", bin.display()))?;

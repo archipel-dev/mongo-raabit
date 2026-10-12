@@ -339,6 +339,7 @@ pub fn show(app: &mut MongoRaabit, ui: &mut Ui) {
     let mut open_manager = false;
     let mut actions = Vec::new();
     ui.spacing_mut().item_spacing.y = size::TOOLBAR_GAP;
+    ui.add_space(size::SECTION_SPACING);
     ui.horizontal(|ui| {
         ui.add_space(size::CONTENT_INSET);
         let filter = ui.add(

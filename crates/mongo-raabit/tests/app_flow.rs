@@ -350,9 +350,10 @@ fn aggregation_sql_schema_and_index_tabs() {
 
     // SQL.
     let sql = app.open_sql(session, db, Some("sales")).unwrap();
+    assert_eq!(sql, agg, "one tab per collection");
     assert_eq!(
-        app.collection_tab_mut(sql).unwrap().mode,
-        mongo_raabit::app::QueryMode::Sql
+        app.collection_tab_mut(sql).unwrap().center,
+        mongo_raabit::app::CenterView::Sql
     );
     app.sql_tab_mut(sql).unwrap().sql = "SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY total DESC LIMIT 1".into();
     app.run_sql(sql);
@@ -391,10 +392,11 @@ fn aggregation_sql_schema_and_index_tabs() {
             .any(|f| f.path == "region" && f.top_values.len() == 3)
     );
 
-    // Indexes: create, hide, drop. They share the Structure tab with the schema.
+    // Indexes: create, hide, drop, in the Indexes tool window of the same tab.
     let idx = app.open_indexes(session, db, "sales");
     assert_eq!(idx, schema);
-    assert_eq!(app.tabs.len(), 4, "welcome, query, aggregation, structure");
+    assert_eq!(app.tabs.len(), 2, "welcome and the one tab of sales");
+    assert_eq!(app.current_tool(), mongo_raabit::app::ToolTab::Indexes);
     app.wait_idle(Duration::from_secs(10));
     assert_eq!(
         app.index_tab_mut(idx)
@@ -444,14 +446,28 @@ fn aggregation_sql_schema_and_index_tabs() {
     app.create_index(idx);
     assert!(app.index_tab_mut(idx).unwrap().error.is_some());
 
-    // Render every tab headlessly.
+    // Render every view and tool headlessly.
     let ctx = egui::Context::default();
     kit::install(&ctx, Theme::dark());
     for i in 0..app.tabs.len() {
         app.active_tab = i;
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.ui(ui));
-        });
+        for center in [
+            mongo_raabit::app::CenterView::Documents,
+            mongo_raabit::app::CenterView::Aggregation,
+            mongo_raabit::app::CenterView::Schema,
+            mongo_raabit::app::CenterView::Sql,
+            mongo_raabit::app::CenterView::Shell,
+        ] {
+            if let Some(tab) = app.collection_tab_mut(idx) {
+                tab.center = center;
+            }
+            for tool in mongo_raabit::app::ToolTab::ALL {
+                app.show_tool(tool);
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.ui(ui));
+                });
+            }
+        }
     }
     rt.block_on(async {
         conn.execute(drop(db)).await.unwrap();
@@ -591,8 +607,8 @@ fn shell_tab_runs_scripts() {
         .open_shell(session, "raabit_test_ui_shell", Some("t"))
         .unwrap();
     assert_eq!(
-        app.collection_tab_mut(tab).unwrap().mode,
-        mongo_raabit::app::QueryMode::Shell
+        app.collection_tab_mut(tab).unwrap().center,
+        mongo_raabit::app::CenterView::Shell
     );
     app.wait_idle(Duration::from_secs(10));
     let has_mongosh = matches!(

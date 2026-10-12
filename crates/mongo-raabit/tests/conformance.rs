@@ -167,7 +167,13 @@ fn connection_manager_tabs_select_on_click() {
             *page = index;
         }
     });
-    harness.get_by_label("Advanced").click();
+    harness.get_by_label("Show hidden tabs").click();
+    harness.run_ok();
+    harness
+        .get_all_by_label("Advanced")
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("Advanced in the overflow menu")
+        .click();
     harness.run();
     assert_eq!(*harness.state(), 4);
 }

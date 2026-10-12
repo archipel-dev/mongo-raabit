@@ -53,3 +53,33 @@ Use `MONGO_RAABIT_TEST_URI` for a server elsewhere, e.g.
 - **live**: a matrix over MongoDB 7.0 and 8.0 `mongo` service containers
   (`MONGO_RAABIT_TEST_URI=mongodb://127.0.0.1:27017`, `MONGO_RAABIT_REQUIRE_SERVER=1`)
   running `cargo test -p mongo-raabit-core`. A server that is not reachable fails the job.
+
+## Isolated desktop UX checks
+
+Run `raabit --dark --data-dir /tmp/raabit-ux-profile` (or `--light`) to keep
+connection profiles and host settings separate from the normal installation.
+Use a dedicated local MongoDB port for test data.
+
+The Query sidebar follows the Studio 3T visual-builder workflow: collection results
+stay in the center while Filter, Projection and Sort are edited on the right. Run
+applies the builder of the active collection; changing collection tabs preserves each
+builder. Visual and Text modes share the same query. This is an adaptation, not a claim
+of complete Studio 3T feature parity (result-cell dragging remains to be added).
+
+Standalone Search commands reveal the embedded Connections/Collection islands and
+return from a host editor to the app without creating duplicate panels. Settings are
+a modal SDK dialog and do not create another tab strip. In an IDE,
+the same commands continue to open host tool windows. Query-island tests cover both
+themes at 1280×800 and 1024×700. The Connections filter has an inset below the island
+header divider; collection metadata occupies its own row to avoid covering view controls.
+
+Manual macOS check with the updated SDK/Kit: Search reveals hidden Connections and
+Collection islands; field double-click focuses the filter value; `city = Berlin` + Run
+returns Ada and Grace from the isolated three-document fixture; Reset + Run restores
+all three. Native drag through Computer Use did not produce a drop and remains to be
+verified independently; the whole-window pointer-driven drag tests pass.
+
+The fixed-coordinate perf driver now targets the three-island welcome center and the
+inset Connections rows. `standalone_layout` guards the welcome, dialog opener and Close
+coordinates at the driver's 1280×800 size. Perf runs use `--data-dir` rather than replacing
+HOME/XDG variables. The live CI perf job must still confirm the database/tree targets.

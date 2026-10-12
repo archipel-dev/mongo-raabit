@@ -50,6 +50,15 @@ pub enum Icon {
     Filter,
     Settings,
     Lock,
+    /// A field of a document (the query builder's field list).
+    Field,
+    Sort,
+    Ascending,
+    Descending,
+    /// A field the projection returns.
+    Include,
+    /// A field the projection leaves out.
+    Exclude,
 }
 
 impl Icon {
@@ -104,6 +113,12 @@ impl Icon {
             Icon::Filter => Glyph::Filter,
             Icon::Settings => Glyph::Settings,
             Icon::Lock => Glyph::Lock,
+            Icon::Field => Glyph::Key,
+            Icon::Sort => Glyph::Sort,
+            Icon::Ascending => Glyph::ArrowUp,
+            Icon::Descending => Glyph::ArrowDown,
+            Icon::Include => Glyph::Eye,
+            Icon::Exclude => Glyph::EyeOff,
         }
     }
 }
