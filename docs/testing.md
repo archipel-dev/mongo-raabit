@@ -78,3 +78,8 @@ Collection islands; field double-click focuses the filter value; `city = Berlin`
 returns Ada and Grace from the isolated three-document fixture; Reset + Run restores
 all three. Native drag through Computer Use did not produce a drop and remains to be
 verified independently; the whole-window pointer-driven drag tests pass.
+
+The fixed-coordinate perf driver now targets the three-island welcome center and the
+inset Connections rows. `standalone_layout` guards the welcome, dialog opener and Close
+coordinates at the driver's 1280×800 size. Perf runs use `--data-dir` rather than replacing
+HOME/XDG variables. The live CI perf job must still confirm the database/tree targets.
