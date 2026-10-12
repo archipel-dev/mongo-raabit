@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Mongo Raabit MSI (WiX Toolset v5). Built by `cargo xtask dist --installer` on
+  Mongo Raabit MSI (WiX Toolset v5). Built by `cargo xtask dist` with its installer option on
   Windows, which passes:
     Version  numeric product version (from [workspace.package] version)
     Stage    absolute path of dist/raabit-<version>-windows-<arch>
