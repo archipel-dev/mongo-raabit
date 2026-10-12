@@ -29,18 +29,10 @@ const DETAIL_MIN_WIDTH: f32 = 260.0;
 const SAMPLE_WIDTH: f32 = 80.0;
 
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
-    let server = app
-        .schema_tab_mut(tab_id)
-        .map(|t| t.session)
-        .and_then(|s| app.session(s))
-        .map(|s| s.profile.name.clone())
-        .unwrap_or_default();
     let Some(tab) = app.schema_tab_mut(tab_id) else {
         return;
     };
     let SchemaTab {
-        db,
-        collection,
         size: sample,
         method,
         report,
@@ -48,12 +40,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         ..
     } = tab;
     let mut analyze = false;
-    widgets::tool_header(
+    widgets::view_toolbar(
         ui,
-        Icon::Schema,
-        Tone::Accent,
-        &[server.as_str(), db.as_str()],
-        collection,
         Tag::new("Schema").tone(Tone::Accent),
         |_| {},
         |ui| {

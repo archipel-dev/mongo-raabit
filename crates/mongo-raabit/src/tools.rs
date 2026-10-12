@@ -1,8 +1,9 @@
-//! State and background operations of the tool tabs: Aggregation Editor, SQL mode of
-//! the Query tab, and the Structure tab (Schema Explorer and Index Manager).
+//! State and background operations of the collection tools: the Aggregation Editor, the
+//! SQL and shell views, the Schema Explorer and the Index Manager. Each lives on the
+//! collection tab it belongs to; the right tool window and the center island draw it.
 
 use crate::app::bounded;
-use crate::app::{Load, MongoRaabit, ResultView, SessionId, Tab, TabId, TabKind};
+use crate::app::{CenterView, Load, MongoRaabit, ResultView, SessionId, TabId, ToolTab};
 use crate::writes::{PendingWrite, WriteOrigin};
 use mongo_raabit_core::aggregate::{Pipeline, RunOptions, Stage, StagePreview};
 use mongo_raabit_core::bson::Document;
@@ -103,21 +104,14 @@ pub struct SchemaTab {
     pub method: SampleMethod,
     pub report: Load<SchemaReport>,
     pub selected: Option<usize>,
+    /// Counts the reports received, so views can tell a new one from the last.
+    pub generation: u64,
 }
 
 pub use mongo_raabit_core::indexes::IndexForm;
 
-/// Which half of the Structure tab is shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum StructureSection {
-    #[default]
-    Schema,
-    Indexes,
-}
-
-/// Structure tab: Schema Explorer and Index Manager of one collection.
+/// Schema Explorer and Index Manager of one collection.
 pub struct StructureTab {
-    pub section: StructureSection,
     pub schema: SchemaTab,
     pub indexes: IndexTab,
 }
@@ -140,19 +134,43 @@ impl MongoRaabit {
         self.session(session)?.connection().cloned()
     }
 
-    fn push_tab(&mut self, kind: TabKind) -> TabId {
-        let id = self.next_id();
-        self.tabs.push(Tab { id, kind });
-        self.active_tab = self.tabs.len() - 1;
-        id
+    /// Shows `tool` in the right tool window (opening the window when it was hidden).
+    pub fn show_tool(&mut self, tool: ToolTab) {
+        self.tool = tool;
+        self.tool_request = Some(tool);
+        self.apply_tool_request();
     }
 
-    fn tab_kind_mut(&mut self, id: TabId) -> Option<&mut TabKind> {
-        self.tab_mut(id).map(|t| &mut t.kind)
+    /// Puts a requested tool into the layout (after a frame, when the layout is back).
+    pub(crate) fn apply_tool_request(&mut self) {
+        if let Some(tool) = self.tool_request {
+            self.layout.tool_tabs[1] = tool.index();
+            self.layout.right_hidden = false;
+            self.layout.maximized = None;
+        }
+    }
+
+    /// The tool shown in the right tool window.
+    pub fn current_tool(&self) -> ToolTab {
+        self.tool
+    }
+
+    /// The id of the active tab when it is a collection tab.
+    pub fn active_collection_tab(&self) -> Option<TabId> {
+        let tab = self.tabs.get(self.active_tab)?;
+        matches!(tab.kind, crate::app::TabKind::Collection(_)).then_some(tab.id)
+    }
+
+    /// Focuses (or opens) the collection tab of `db.collection`, without rerunning it.
+    fn collection_for_tool(&mut self, session: SessionId, db: &str, collection: &str) -> TabId {
+        let kind = self.collection_kind(session, db, collection);
+        self.open_collection(session, db, collection, kind)
     }
 
     // ----- aggregation ------------------------------------------------------------------
 
+    /// Opens the pipeline of `db.collection` in the Aggregation tool window, its output in
+    /// the center; `pipeline` replaces the tab's pipeline (from SQL, for example).
     pub fn open_aggregation(
         &mut self,
         session: SessionId,
@@ -160,14 +178,44 @@ impl MongoRaabit {
         collection: &str,
         pipeline: Option<Pipeline>,
     ) -> TabId {
-        let pipeline = pipeline.unwrap_or_else(|| Pipeline {
-            stages: vec![Stage::new("$match")],
-        });
-        let id = self.push_tab(TabKind::Aggregation(Box::new(AggregationTab {
-            session,
-            db: db.to_owned(),
-            collection: collection.to_owned(),
-            pipeline,
+        let id = self.collection_for_tool(session, db, collection);
+        let created = self.ensure_aggregation(id);
+        if let Some(pipeline) = pipeline
+            && let Some(tab) = self.aggregation_tab_mut(id)
+        {
+            tab.pipeline = pipeline;
+            tab.selected = 0;
+            tab.stage_code.clear();
+            tab.form_hint = None;
+            tab.result = Load::Idle;
+            tab.stage_error = None;
+            self.preview_stage(id);
+        } else if created {
+            self.preview_stage(id);
+        }
+        if let Some(tab) = self.collection_tab_mut(id) {
+            tab.center = CenterView::Aggregation;
+        }
+        self.show_tool(ToolTab::Aggregation);
+        id
+    }
+
+    /// Creates the aggregation state of a collection tab on first use (one `$match` stage).
+    /// Returns true when it was created.
+    pub fn ensure_aggregation(&mut self, id: TabId) -> bool {
+        let Some(tab) = self.collection_tab_mut(id) else {
+            return false;
+        };
+        if tab.aggregation.is_some() {
+            return false;
+        }
+        tab.aggregation = Some(Box::new(AggregationTab {
+            session: tab.session,
+            db: tab.db.clone(),
+            collection: tab.collection.clone(),
+            pipeline: Pipeline {
+                stages: vec![Stage::new("$match")],
+            },
             selected: 0,
             preview: Load::Idle,
             preview_seq: 0,
@@ -179,16 +227,12 @@ impl MongoRaabit {
             stage_error: None,
             stage_code: HashSet::new(),
             form_hint: None,
-        })));
-        self.preview_stage(id);
-        id
+        }));
+        true
     }
 
     pub fn aggregation_tab_mut(&mut self, id: TabId) -> Option<&mut AggregationTab> {
-        match self.tab_kind_mut(id)? {
-            TabKind::Aggregation(tab) => Some(tab),
-            _ => None,
-        }
+        self.collection_tab_mut(id)?.aggregation.as_deref_mut()
     }
 
     /// Recompute the input/output preview of the selected stage.
@@ -219,6 +263,9 @@ impl MongoRaabit {
             tab.sample,
         );
         let Some(conn) = self.connection_for(session) else {
+            if let Some(tab) = self.aggregation_tab_mut(tab_id) {
+                tab.preview = Load::Failed("not connected".into());
+            }
             return;
         };
         let options = RunOptions {
@@ -270,7 +317,13 @@ impl MongoRaabit {
             return;
         }
         tab.result = Load::Loading;
+        if let Some(tab) = self.collection_tab_mut(tab_id) {
+            tab.center = CenterView::Aggregation;
+        }
         let Some(conn) = self.connection_for(session) else {
+            if let Some(tab) = self.aggregation_tab_mut(tab_id) {
+                tab.result = Load::Failed("not connected".into());
+            }
             return;
         };
         let limit = self.settings.query_timeout();
@@ -307,10 +360,9 @@ impl MongoRaabit {
             Some(coll) => coll.to_owned(),
             None => self.first_collection(session, db)?,
         };
-        let kind = self.collection_kind(session, db, &collection);
-        let id = self.open_collection(session, db, &collection, kind);
+        let id = self.collection_for_tool(session, db, &collection);
         if let Some(tab) = self.collection_tab_mut(id) {
-            tab.mode = crate::app::QueryMode::Sql;
+            tab.center = CenterView::Sql;
         }
         Some(id)
     }
@@ -333,6 +385,9 @@ impl MongoRaabit {
         tab.result = Load::Loading;
         let (session, db) = (tab.session, tab.db.clone());
         let Some(conn) = self.connection_for(session) else {
+            if let Some(tab) = self.sql_tab_mut(tab_id) {
+                tab.result = Load::Failed("not connected".into());
+            }
             return;
         };
         let collection = translation.collection().to_owned();
@@ -359,45 +414,42 @@ impl MongoRaabit {
 
     // ----- schema -----------------------------------------------------------------------
 
+    /// Shows the schema of `db.collection` in the center.
     pub fn open_schema(&mut self, session: SessionId, db: &str, collection: &str) -> TabId {
-        self.open_structure(session, db, collection, StructureSection::Schema)
+        let id = self.collection_for_tool(session, db, collection);
+        self.ensure_structure(id);
+        if let Some(tab) = self.collection_tab_mut(id) {
+            tab.center = CenterView::Schema;
+        }
+        id
     }
 
-    /// Focuses (or opens) the Structure tab of `db.collection` on `section`.
-    pub fn open_structure(
-        &mut self,
-        session: SessionId,
-        db: &str,
-        collection: &str,
-        section: StructureSection,
-    ) -> TabId {
-        let existing = self.tabs.iter().position(|t| {
-            matches!(&t.kind, TabKind::Structure(s)
-                if s.schema.session == session && s.schema.db == db && s.schema.collection == collection)
-        });
-        if let Some(index) = existing {
-            self.active_tab = index;
-            let id = self.tabs[index].id;
-            if let Some(TabKind::Structure(tab)) = self.tab_kind_mut(id) {
-                tab.section = section;
-            }
-            return id;
+    /// Creates the schema and index state of a collection tab on first use, and starts
+    /// sampling the schema and loading the indexes. Returns true when it was created.
+    pub fn ensure_structure(&mut self, id: TabId) -> bool {
+        let sample = u64::from(self.settings.schema_sample_size);
+        let Some(tab) = self.collection_tab_mut(id) else {
+            return false;
+        };
+        if tab.structure.is_some() {
+            return false;
         }
-        let id = self.push_tab(TabKind::Structure(Box::new(StructureTab {
-            section,
+        let (session, db, collection) = (tab.session, tab.db.clone(), tab.collection.clone());
+        tab.structure = Some(Box::new(StructureTab {
             schema: SchemaTab {
                 session,
-                db: db.to_owned(),
-                collection: collection.to_owned(),
-                size: u64::from(self.settings.schema_sample_size),
+                db: db.clone(),
+                collection: collection.clone(),
+                size: sample,
                 method: SampleMethod::Random,
                 report: Load::Idle,
                 selected: None,
+                generation: 0,
             },
             indexes: IndexTab {
                 session,
-                db: db.to_owned(),
-                collection: collection.to_owned(),
+                db,
+                collection,
                 indexes: Load::Idle,
                 form: IndexForm {
                     keys: "{  : 1 }".into(),
@@ -408,17 +460,14 @@ impl MongoRaabit {
                 busy: false,
                 confirm_drop: None,
             },
-        })));
+        }));
         self.analyze_schema(id);
         self.load_indexes(id);
-        id
+        true
     }
 
     pub fn structure_tab_mut(&mut self, id: TabId) -> Option<&mut StructureTab> {
-        match self.tab_kind_mut(id)? {
-            TabKind::Structure(tab) => Some(tab),
-            _ => None,
-        }
+        self.collection_tab_mut(id)?.structure.as_deref_mut()
     }
 
     pub fn schema_tab_mut(&mut self, id: TabId) -> Option<&mut SchemaTab> {
@@ -429,7 +478,6 @@ impl MongoRaabit {
         let Some(tab) = self.schema_tab_mut(tab_id) else {
             return;
         };
-        tab.report = Load::Loading;
         let (session, db, coll, size, method) = (
             tab.session,
             tab.db.clone(),
@@ -438,8 +486,14 @@ impl MongoRaabit {
             tab.method,
         );
         let Some(conn) = self.connection_for(session) else {
+            if let Some(tab) = self.schema_tab_mut(tab_id) {
+                tab.report = Load::Failed("not connected".into());
+            }
             return;
         };
+        if let Some(tab) = self.schema_tab_mut(tab_id) {
+            tab.report = Load::Loading;
+        }
         self.jobs.spawn(
             async move {
                 conn.sample_schema(&db, &coll, size, method, Document::new())
@@ -447,6 +501,7 @@ impl MongoRaabit {
             },
             move |app: &mut MongoRaabit, result| {
                 if let Some(tab) = app.schema_tab_mut(tab_id) {
+                    tab.generation += 1;
                     tab.report = match result {
                         Ok(report) => {
                             tab.selected = report
@@ -464,8 +519,12 @@ impl MongoRaabit {
 
     // ----- indexes ----------------------------------------------------------------------
 
+    /// Shows the indexes of `db.collection` in the Indexes tool window.
     pub fn open_indexes(&mut self, session: SessionId, db: &str, collection: &str) -> TabId {
-        self.open_structure(session, db, collection, StructureSection::Indexes)
+        let id = self.collection_for_tool(session, db, collection);
+        self.ensure_structure(id);
+        self.show_tool(ToolTab::Indexes);
+        id
     }
 
     pub fn index_tab_mut(&mut self, id: TabId) -> Option<&mut IndexTab> {
@@ -476,11 +535,16 @@ impl MongoRaabit {
         let Some(tab) = self.index_tab_mut(tab_id) else {
             return;
         };
-        tab.indexes = Load::Loading;
         let (session, db, coll) = (tab.session, tab.db.clone(), tab.collection.clone());
         let Some(conn) = self.connection_for(session) else {
+            if let Some(tab) = self.index_tab_mut(tab_id) {
+                tab.indexes = Load::Failed("not connected".into());
+            }
             return;
         };
+        if let Some(tab) = self.index_tab_mut(tab_id) {
+            tab.indexes = Load::Loading;
+        }
         self.jobs.spawn(
             async move { conn.indexes(&db, &coll).await },
             move |app: &mut MongoRaabit, result| {
@@ -662,10 +726,9 @@ impl MongoRaabit {
             Some(coll) => coll.to_owned(),
             None => self.first_collection(session, db)?,
         };
-        let kind = self.collection_kind(session, db, &collection);
-        let id = self.open_collection(session, db, &collection, kind);
+        let id = self.collection_for_tool(session, db, &collection);
         if let Some(tab) = self.collection_tab_mut(id) {
-            tab.mode = crate::app::QueryMode::Shell;
+            tab.center = CenterView::Shell;
         }
         self.init_shell(id);
         Some(id)

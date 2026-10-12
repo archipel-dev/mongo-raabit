@@ -1,18 +1,20 @@
-//! Index Manager: list with sizes, usage and properties; create, hide/unhide and drop.
+//! Index Manager, the Indexes tool window: list with sizes, usage and properties; create,
+//! hide/unhide and drop. Every change is a `Write` through the confirmation
+//! (`request_write`), refused on a read-only connection.
 //!
 //! The form's validation and how indexes are described live in
 //! `mongo_raabit_core::indexes`; this module lays them out.
 
 use crate::app::{Load, MongoRaabit, TabId};
-use crate::egui::{Id, Ui};
+use crate::egui::Ui;
 use crate::icons::Icon;
 use crate::tools::IndexTab;
 use crate::widgets;
 use crate::writes::READ_ONLY_TIP;
 use archipel_sdk::kit::Tone;
 use archipel_sdk::kit::components::{
-    Banner, Button, Cell, Checkbox, Column, Form, IconButton, Severity, Spinner, Table, Tag,
-    TextField, TooltipExt,
+    Banner, Button, Checkbox, FieldLabel, IconButton, ListRow, PropertyGrid, Severity, Spinner,
+    Tag, TextField, TooltipExt,
 };
 use archipel_sdk::kit::parts::Surface;
 use archipel_sdk::kit::tokens::size;
@@ -27,18 +29,11 @@ enum Action {
     Refresh,
 }
 
-const KEYS_WIDTH: f32 = 360.0;
 const TTL_WIDTH: f32 = 120.0;
 const KEYS_TIP: &str = "1 / -1 for ascending / descending, \"text\", \"2dsphere\", \"hashed\"";
 const HIDE_TIP: &str = "Hidden indexes are kept up to date but not used by the planner";
 
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
-    let server = app
-        .index_tab_mut(tab_id)
-        .map(|t| t.session)
-        .and_then(|s| app.session(s))
-        .map(|s| s.profile.name.clone())
-        .unwrap_or_default();
     let read_only = app
         .index_tab_mut(tab_id)
         .map(|t| t.session)
@@ -47,8 +42,6 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     };
     let IndexTab {
-        db,
-        collection,
         indexes,
         form,
         form_open,
@@ -58,22 +51,12 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         ..
     } = tab;
     let mut actions = Vec::new();
-    widgets::tool_header(
-        ui,
-        Icon::Index,
-        Tone::Warning,
-        &[server.as_str(), db.as_str()],
-        collection,
-        Tag::new("Indexes").tone(Tone::Warning),
-        |ui| {
-            if read_only {
-                ui.add(Tag::new("Read-only").tone(Tone::Warning));
-            }
-            if *busy {
-                ui.add(Spinner::new().label("Working"));
-            }
-        },
-        |ui| {
+    if read_only {
+        *form_open = false;
+    }
+    widgets::padded(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
             let new = ui.add(
                 Button::primary("New Index")
                     .icon(Icon::Plus)
@@ -87,24 +70,28 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
             if new.clicked() {
                 *form_open = !*form_open;
             }
-            if ui.add(IconButton::new(Icon::Refresh, "Refresh")).clicked() {
+            if ui
+                .add(IconButton::new(Icon::Refresh, "Refresh indexes"))
+                .clicked()
+            {
                 actions.push(Action::Refresh);
             }
-        },
-    );
-    if read_only {
-        *form_open = false;
-    }
-    if *form_open || error.is_some() {
-        widgets::padded(ui, |ui| {
-            if *form_open {
-                new_index_form(ui, form, form_open, &mut actions);
+            if read_only {
+                ui.add(Tag::new("Read-only").tone(Tone::Warning));
             }
-            if let Some(err) = &*error {
-                Banner::new(Severity::Error, err).show(ui);
+            if *busy {
+                ui.add(Spinner::new().label("Working"));
             }
         });
-    }
+        if *form_open {
+            ui.add_space(size::SECTION_SPACING);
+            new_index_form(ui, form, form_open, &mut actions);
+        }
+        if let Some(err) = &*error {
+            ui.add_space(size::SECTION_SPACING);
+            Banner::new(Severity::Error, err).show(ui);
+        }
+    });
     match &*indexes {
         Load::Loading | Load::Idle => widgets::busy(ui, "Loading indexes…"),
         Load::Failed(err) => {
@@ -112,11 +99,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 Banner::new(Severity::Error, err).show(ui);
             });
         }
-        Load::Ready(list) => {
-            widgets::padded(ui, |ui| {
-                index_table(ui, tab_id, list, confirm_drop, read_only, &mut actions);
-            });
-        }
+        Load::Ready(list) => index_list(ui, tab_id, list, confirm_drop, read_only, &mut actions),
     }
     for action in actions {
         match action {
@@ -128,7 +111,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     }
 }
 
-/// The "New index" form on an island.
+/// The "New index" form on an island, one field under the other.
 fn new_index_form(
     ui: &mut Ui,
     form: &mut mongo_raabit_core::indexes::IndexForm,
@@ -137,68 +120,57 @@ fn new_index_form(
 ) {
     Surface::Island.frame(ui.ctx()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        Form::new().show(ui, |rows| {
-            rows.row("Keys:", |ui| {
-                widgets::value_field(ui, "Keys", &mut form.keys, "{ email: 1 }", KEYS_WIDTH, true)
-                    .response
-                    .tooltip(KEYS_TIP);
-            });
-            rows.row("Name:", |ui| {
-                ui.add(
-                    TextField::new(&mut form.name)
-                        .name("Name")
-                        .placeholder("generated from keys")
-                        .width(KEYS_WIDTH),
-                );
-            });
-            rows.row("Options:", |ui| {
-                ui.add(Checkbox::new(&mut form.unique, "Unique"));
-                ui.add(Checkbox::new(&mut form.sparse, "Sparse"));
-                ui.add(Checkbox::new(&mut form.hidden, "Hidden"));
-            });
-            rows.row("TTL (seconds):", |ui| {
-                ui.add(
-                    TextField::new(&mut form.ttl)
-                        .name("TTL (seconds)")
-                        .placeholder("none")
-                        .monospace(true)
-                        .width(TTL_WIDTH),
-                );
-            });
-            rows.row("Partial filter:", |ui| {
-                widgets::value_field(
-                    ui,
-                    "Partial filter",
-                    &mut form.partial,
-                    "{ active: true }",
-                    KEYS_WIDTH,
-                    true,
-                );
-            });
-            rows.fields(|ui| {
-                if ui
-                    .add(Button::primary("Create Index").icon(Icon::Check))
-                    .clicked()
-                {
-                    actions.push(Action::Create);
-                }
-                if ui.add(Button::secondary("Cancel")).clicked() {
-                    *open = false;
-                }
-            });
+        let width = ui.available_width();
+        ui.add(FieldLabel::new("Keys"));
+        widgets::value_field(ui, "Keys", &mut form.keys, "{ email: 1 }", width, true)
+            .response
+            .tooltip(KEYS_TIP);
+        ui.add(FieldLabel::new("Name"));
+        ui.add(
+            TextField::new(&mut form.name)
+                .name("Name")
+                .placeholder("generated from keys")
+                .width(width),
+        );
+        ui.horizontal_wrapped(|ui| {
+            ui.add(Checkbox::new(&mut form.unique, "Unique"));
+            ui.add(Checkbox::new(&mut form.sparse, "Sparse"));
+            ui.add(Checkbox::new(&mut form.hidden, "Hidden"));
+        });
+        ui.add(FieldLabel::new("TTL (seconds)"));
+        ui.add(
+            TextField::new(&mut form.ttl)
+                .name("TTL (seconds)")
+                .placeholder("none")
+                .monospace(true)
+                .width(TTL_WIDTH),
+        );
+        ui.add(FieldLabel::new("Partial filter"));
+        widgets::value_field(
+            ui,
+            "Partial filter",
+            &mut form.partial,
+            "{ active: true }",
+            width,
+            true,
+        );
+        ui.add_space(size::SECTION_SPACING);
+        ui.horizontal(|ui| {
+            if ui
+                .add(Button::primary("Create Index").icon(Icon::Check))
+                .clicked()
+            {
+                actions.push(Action::Create);
+            }
+            if ui.add(Button::secondary("Cancel")).clicked() {
+                *open = false;
+            }
         });
     });
 }
 
-/// Column widths and the selected index of one table, kept between frames.
-#[derive(Clone, Default)]
-struct TableMemory {
-    columns: Vec<Column>,
-    selected: Option<String>,
-}
-
-/// The totals line, the actions on the selected index and the table of indexes.
-fn index_table(
+/// The totals, the indexes as rows, and the details and actions of the selected one.
+fn index_list(
     ui: &mut Ui,
     tab_id: TabId,
     list: &[IndexInfo],
@@ -206,42 +178,70 @@ fn index_table(
     read_only: bool,
     actions: &mut Vec<Action>,
 ) {
-    let mem_id = Id::new(("raabit-indexes", tab_id, "memory"));
-    let mut mem: TableMemory = ui.data(|d| d.get_temp(mem_id)).unwrap_or_default();
-    if mem.columns.is_empty() {
-        let width = (ui.available_width() - size::CONTENT_INSET * 2.0).max(480.0);
-        mem.columns = vec![
-            Column::new("Name", (width * 0.20).round()).mono(),
-            Column::new("Keys", (width * 0.26).round()).mono(),
-            Column::new("Properties", (width * 0.28).round()),
-            Column::new("Size", (width * 0.10).round()).right(),
-            Column::new("Usage", (width * 0.16).round()).right(),
-        ];
-    }
-    let mut position = mem
-        .selected
-        .as_ref()
-        .and_then(|name| list.iter().position(|i| &i.name == name));
-    let selected = position.map(|p| &list[p]);
-
-    ui.horizontal(|ui| {
+    let mem_id = ui.id().with(("raabit-indexes-selected", tab_id));
+    let mut selected: Option<String> = ui.data(|d| d.get_temp(mem_id)).unwrap_or(None);
+    widgets::padded(ui, |ui| {
         let (count, bytes) = indexes::totals(list);
         widgets::label(
             ui,
             Tone::Secondary,
             format!("{count} indexes · {}", format::bytes(bytes)),
         );
-        ui.with_layout(
-            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-            |ui| {
-                let target = selected.filter(|i| i.name != PRIMARY_INDEX && !read_only);
+    });
+    for index in list {
+        let row = ListRow::new(&index.name)
+            .icon(Icon::Index)
+            .icon_tone(if index.hidden {
+                Tone::Muted
+            } else {
+                Tone::Warning
+            })
+            .label_tone(if index.hidden {
+                Tone::Muted
+            } else {
+                Tone::Default
+            })
+            .secondary(indexes::keys_label(index))
+            .selected(selected.as_deref() == Some(index.name.as_str()))
+            .show(ui);
+        if row.response.clicked() {
+            selected = Some(index.name.clone());
+            if confirm.as_deref() != selected.as_deref() {
+                *confirm = None;
+            }
+        }
+    }
+    if let Some(index) = selected
+        .as_ref()
+        .and_then(|name| list.iter().find(|i| &i.name == name))
+    {
+        widgets::padded(ui, |ui| {
+            PropertyGrid::new(("raabit-index-details", tab_id))
+                .mono_row("Keys", indexes::keys_label(index))
+                .row("Properties", indexes::properties_label(index))
+                .row("Size", index.size.map(format::bytes).unwrap_or_default())
+                .row("Usage", indexes::usage_label(index.ops))
+                .show(ui);
+            ui.add_space(size::SECTION_SPACING);
+            let target = (index.name != PRIMARY_INDEX && !read_only).then_some(index);
+            ui.horizontal(|ui| {
+                let hidden = index.hidden;
+                let label = if hidden { "Unhide" } else { "Hide" };
+                if ui
+                    .add(
+                        Button::secondary(label)
+                            .small(true)
+                            .enabled(target.is_some()),
+                    )
+                    .tooltip(if read_only { READ_ONLY_TIP } else { HIDE_TIP })
+                    .clicked()
+                {
+                    actions.push(Action::Hide(index.name.clone(), !hidden));
+                }
                 let confirming =
-                    target.is_some_and(|i| confirm.as_deref() == Some(i.name.as_str()));
+                    target.is_some() && confirm.as_deref() == Some(index.name.as_str());
                 if confirming {
-                    let drop = Button::danger("Confirm drop").small(true);
-                    if ui.add(drop).clicked()
-                        && let Some(index) = target
-                    {
+                    if ui.add(Button::danger("Confirm drop").small(true)).clicked() {
                         actions.push(Action::Drop(index.name.clone()));
                         *confirm = None;
                     }
@@ -258,58 +258,18 @@ fn index_table(
                     })
                     .clicked()
                 {
-                    *confirm = target.map(|i| i.name.clone());
+                    *confirm = Some(index.name.clone());
                 }
-                let hidden = target.is_some_and(|i| i.hidden);
-                let label = if hidden { "Unhide" } else { "Hide" };
-                if ui
-                    .add(
-                        Button::secondary(label)
-                            .small(true)
-                            .enabled(target.is_some()),
-                    )
-                    .tooltip(if read_only { READ_ONLY_TIP } else { HIDE_TIP })
-                    .clicked()
-                    && let Some(index) = target
-                {
-                    actions.push(Action::Hide(index.name.clone(), !index.hidden));
-                }
-            },
-        );
-    });
-
-    let before = position;
-    let height = (ui.available_height() - size::ROW_HEIGHT).max(size::ROW_HEIGHT * 4.0);
-    Table::new(
-        ("raabit-indexes", tab_id),
-        &mut mem.columns,
-        list.len(),
-        &mut position,
-    )
-    .name("Indexes")
-    .height(height)
-    .show(ui, |row, column| {
-        let index = &list[row];
-        let cell = match column {
-            0 => Cell::new(&index.name).icon(Icon::Index),
-            1 => Cell::new(indexes::keys_label(index)),
-            2 => Cell::new(indexes::properties_label(index)),
-            3 => Cell::new(index.size.map(format::bytes).unwrap_or_default()),
-            _ => Cell::new(indexes::usage_label(index.ops)),
-        };
-        if index.hidden {
-            cell.tone(Tone::Muted)
-        } else if column == 0 {
-            cell.tone(Tone::Strong)
-        } else {
-            cell.muted()
-        }
-    });
-    if position != before {
-        mem.selected = position.map(|p| list[p].name.clone());
-        if confirm.as_deref() != mem.selected.as_deref() {
-            *confirm = None;
-        }
+            });
+        });
+    } else if !list.is_empty() {
+        widgets::padded(ui, |ui| {
+            widgets::note(
+                ui,
+                Tone::Muted,
+                "Select an index to see its details, hide or drop it.",
+            );
+        });
     }
-    ui.data_mut(|d| d.insert_temp(mem_id, mem));
+    ui.data_mut(|d| d.insert_temp(mem_id, selected));
 }

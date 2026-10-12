@@ -83,15 +83,48 @@ impl Session {
     }
 }
 
-/// How the query of a collection tab is written: visually, as shell code, as SQL, or
-/// as a free mongosh script (IntelliShell).
+/// How the Query tool window writes the query of a collection tab: with the visual builder
+/// or as shell text (filter, projection, sort, skip and limit).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueryMode {
     #[default]
     Builder,
     Code,
+}
+
+/// What the center island shows for a collection tab: the documents of its query, the
+/// output of its aggregation pipeline, its schema, or the SQL and shell consoles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CenterView {
+    #[default]
+    Documents,
+    Aggregation,
+    Schema,
     Sql,
     Shell,
+}
+
+/// The content tabs of the right tool window: the tools that act on the active
+/// collection tab. Their order is the order of [`ToolTab::TITLES`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolTab {
+    #[default]
+    Query,
+    Aggregation,
+    Indexes,
+}
+
+impl ToolTab {
+    pub const ALL: [Self; 3] = [Self::Query, Self::Aggregation, Self::Indexes];
+    pub const TITLES: [&'static str; 3] = ["Query", "Pipeline", "Indexes"];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,12 +157,21 @@ pub struct CollectionTab {
     /// Inline table cell edit in progress.
     pub editing: Option<CellEdit>,
     pub mode: QueryMode,
+    /// What the center island shows.
+    pub center: CenterView,
     /// Visual query builder state (Builder mode).
     pub builder: crate::query_builder::QueryBuilder,
-    /// SQL mode state.
+    /// SQL view state.
     pub sql: crate::tools::SqlTab,
-    /// Shell mode state, created when the mode is first opened.
+    /// Shell view state, created when the view is first opened.
     pub shell: Option<Box<crate::tools::ShellTab>>,
+    /// Aggregation pipeline (Aggregation tool window) and its output, created on first use.
+    pub aggregation: Option<Box<crate::tools::AggregationTab>>,
+    /// Schema sample (fields of the Query tool window, the Schema view) and indexes
+    /// (Indexes tool window), created on first use.
+    pub structure: Option<Box<crate::tools::StructureTab>>,
+    /// The fields the Query tool window lists, kept until the sample or the page changes.
+    pub fields: crate::tool_window::FieldsCache,
 }
 
 /// An inline edit of one field of one document.
@@ -166,6 +208,7 @@ impl CollectionTab {
             query_error: None,
             editing: None,
             mode: QueryMode::default(),
+            center: CenterView::default(),
             builder: Default::default(),
             sql: crate::tools::SqlTab {
                 session,
@@ -176,17 +219,19 @@ impl CollectionTab {
                 open: HashSet::new(),
             },
             shell: None,
+            aggregation: None,
+            structure: None,
+            fields: Default::default(),
         }
     }
 }
 
-/// The three tool tabs: Query (builder, code or SQL), Aggregation and Structure
-/// (schema and indexes).
+/// The editor tabs of the center island: the welcome page and one tab per opened
+/// collection. The tools for a collection (query builder, pipeline, indexes) live in the
+/// right tool window and act on the active collection tab.
 pub enum TabKind {
     Welcome,
     Collection(Box<CollectionTab>),
-    Aggregation(Box<crate::tools::AggregationTab>),
-    Structure(Box<crate::tools::StructureTab>),
 }
 
 impl TabKind {
@@ -195,8 +240,6 @@ impl TabKind {
         match self {
             Self::Welcome => None,
             Self::Collection(t) => Some(t.session),
-            Self::Aggregation(t) => Some(t.session),
-            Self::Structure(t) => Some(t.schema.session),
         }
     }
 }
@@ -230,6 +273,12 @@ pub struct MongoRaabit {
     pub status: String,
     /// Island sizes and visibility of the window.
     pub layout: archipel_sdk::kit::components::WorkbenchState,
+    /// The tool the right tool window shows (kept here: the layout is lent to the window
+    /// while it draws).
+    pub tool: ToolTab,
+    /// A tool asked for during a frame ([`MongoRaabit::show_tool`]), applied to the layout
+    /// after it.
+    pub tool_request: Option<ToolTab>,
     /// The user's settings; the plugin refreshes them from the host every frame.
     pub settings: Settings,
     /// Requests for the host (store a setting, open Settings), taken by the plugin.
@@ -266,6 +315,16 @@ pub(crate) async fn bounded<T>(
         })
 }
 
+/// The islands at their first start: the connections on the left, the data in the
+/// middle and the collection tools on the right, wide enough for the query builder.
+pub fn default_layout() -> archipel_sdk::kit::components::WorkbenchState {
+    archipel_sdk::kit::components::WorkbenchState {
+        left_ratio: 0.18,
+        center_ratio: 0.62,
+        ..Default::default()
+    }
+}
+
 impl Default for MongoRaabit {
     fn default() -> Self {
         Self::new(ProfileStore::default_path())
@@ -299,7 +358,9 @@ impl MongoRaabit {
             selected: None,
             tree_filter: String::new(),
             status,
-            layout: Default::default(),
+            layout: default_layout(),
+            tool: ToolTab::default(),
+            tool_request: None,
             settings: Settings::default(),
             host_requests: Vec::new(),
             confirmed: None,
@@ -509,6 +570,26 @@ impl MongoRaabit {
 
     // ----- tabs --------------------------------------------------------------------------
 
+    /// The user picked `tool` in the right tool window: the center follows where the tool
+    /// has output of its own (a pipeline's output), and comes back to the documents from it.
+    pub fn tool_picked(&mut self, tool: ToolTab) {
+        let Some(id) = self.active_collection_tab() else {
+            return;
+        };
+        if tool == ToolTab::Aggregation {
+            if self.ensure_aggregation(id) {
+                self.preview_stage(id);
+            }
+            if let Some(tab) = self.collection_tab_mut(id) {
+                tab.center = CenterView::Aggregation;
+            }
+        } else if let Some(tab) = self.collection_tab_mut(id)
+            && tab.center == CenterView::Aggregation
+        {
+            tab.center = CenterView::Documents;
+        }
+    }
+
     pub fn active_tab_id(&self) -> Option<TabId> {
         self.tabs.get(self.active_tab).map(|t| t.id)
     }
@@ -622,6 +703,9 @@ impl MongoRaabit {
         else {
             if let Some(tab) = self.collection_tab_mut(tab_id) {
                 tab.result = Load::Failed("not connected".into());
+                if recount {
+                    tab.count = Load::Failed("not connected".into());
+                }
             }
             return;
         };

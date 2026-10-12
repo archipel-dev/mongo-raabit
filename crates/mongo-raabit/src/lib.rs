@@ -19,7 +19,7 @@ mod schema_view;
 mod shell_view;
 mod sql_view;
 pub mod stage_builder;
-mod structure_view;
+pub mod tool_window;
 pub mod tools;
 mod tree;
 mod values;
@@ -54,12 +54,18 @@ impl MongoRaabit {
         let area = ui.available_rect_before_wrap().shrink(gap);
         let mut ui = ui.new_child(crate::egui::UiBuilder::new().max_rect(area));
         let ui = &mut ui;
+        // The right tool window's tool is kept with the layout, which is lent to the
+        // workbench while it draws: tools asked for meanwhile are applied after the frame.
+        self.tool = app::ToolTab::from_index(layout.tool_tab(WorkbenchRegion::Right));
+        self.tool_request = None;
         Workbench::new("raabit", &mut layout)
             .tool(WorkbenchRegion::Left, "Connections", Icon::Database)
+            .tool(WorkbenchRegion::Right, tool_window::TITLE, Icon::Filter)
             .center_padded(false)
             .show_inside_with(ui, self, |place, ui, app| match place {
                 WorkbenchPlace::Tool(WorkbenchRegion::Left) => tree::show(app, ui),
                 WorkbenchPlace::ToolActions(WorkbenchRegion::Left) => tree::header_actions(app, ui),
+                WorkbenchPlace::Tool(WorkbenchRegion::Right) => tool_window::show(app, ui),
                 WorkbenchPlace::Center => {
                     app.tab_bar(ui);
                     app.tab_content(ui);
@@ -67,6 +73,12 @@ impl MongoRaabit {
                 _ => {}
             });
         self.layout = layout;
+        if self.tool_request.take().is_some() {
+            // `show_tool` set the tool; put it into the layout that is back now.
+            self.tool_request = Some(self.tool);
+            self.apply_tool_request();
+            self.tool_request = None;
+        }
         manager::show(self, ui.ctx());
         dialogs::show(self, ui.ctx());
         if self.jobs.busy() {
@@ -98,14 +110,8 @@ impl MongoRaabit {
                             core::connection::CollectionKind::View => Icon::View,
                             _ => Icon::Collection,
                         },
-                        format!("{} · Query", c.collection),
+                        c.collection.clone(),
                     ),
-                    TabKind::Aggregation(t) => {
-                        (Icon::Pipeline, format!("{} · Aggregate", t.collection))
-                    }
-                    TabKind::Structure(t) => {
-                        (Icon::Schema, format!("{} · Structure", t.schema.collection))
-                    }
                 };
                 Tab::new(title).icon(icon).closable(true)
             })
@@ -129,14 +135,6 @@ impl MongoRaabit {
             TabKind::Collection(_) => {
                 let id = tab.id;
                 collection::show(self, id, ui);
-            }
-            TabKind::Aggregation(_) => {
-                let id = tab.id;
-                aggregation_view::show(self, id, ui);
-            }
-            TabKind::Structure(_) => {
-                let id = tab.id;
-                structure_view::show(self, id, ui);
             }
         }
     }

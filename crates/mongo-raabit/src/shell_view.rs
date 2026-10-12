@@ -48,7 +48,6 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     };
     let ShellTab {
-        db,
         script,
         engine,
         force_builtin,
@@ -61,12 +60,8 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     let mut run: Option<Option<String>> = None;
     // mongosh cannot be limited to reads: a read-only connection uses the built-in shell.
     let builtin = *force_builtin || read_only;
-    widgets::tool_header(
+    widgets::view_toolbar(
         ui,
-        Icon::Shell,
-        Tone::Accent,
-        &[],
-        db,
         Tag::new("Shell").tone(Tone::Accent),
         |ui| {
             engine_tag(ui, engine, builtin);

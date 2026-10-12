@@ -113,6 +113,8 @@ struct TableState {
     columns: Vec<Column>,
     /// The selected row, to tell the rows an array expands into apart.
     row: Option<usize>,
+    /// The width the columns were last fitted to.
+    fitted: f32,
 }
 
 impl TableState {
@@ -120,14 +122,24 @@ impl TableState {
     fn reconcile(&mut self, fresh: &[String], rows: &[(usize, Bson)], available: f32) {
         let same = self.names.len() == fresh.len() && fresh.iter().all(|n| self.names.contains(n));
         if same {
+            // The island got narrower (a tool window opened): fit again, since the kit
+            // table does not scroll sideways and columns past its edge cannot be reached.
+            if available < self.fitted - 1.0 {
+                fit(&mut self.columns, available);
+                self.fitted = available;
+            }
             return;
         }
-        let first = self.names.is_empty();
         let (mut names, mut columns) = (Vec::new(), Vec::new());
         for (name, column) in self.names.iter().zip(&self.columns) {
             if fresh.contains(name) {
                 names.push(name.clone());
-                columns.push(column.clone());
+                let mut column = column.clone();
+                // Fitted narrow among many columns: room again now that fewer are shown.
+                if name != INDEX {
+                    column.width = column.width.max(column_width(rows, name));
+                }
+                columns.push(column);
             }
         }
         for name in fresh {
@@ -141,13 +153,15 @@ impl TableState {
                 columns.push(column);
             }
         }
-        if first {
-            fit(&mut columns, available);
-        }
+        fit(&mut columns, available);
+        self.fitted = available;
         self.names = names;
         self.columns = columns;
     }
 }
+
+/// The narrowest a data column is fitted to: its first letters and the ellipsis.
+const MIN_COLUMN: f32 = 44.0;
 
 /// Shrink the data columns so they fit `available` (the kit table does not scroll sideways).
 fn fit(columns: &mut [Column], available: f32) {
@@ -156,9 +170,9 @@ fn fit(columns: &mut [Column], available: f32) {
     if total <= available || total <= fixed {
         return;
     }
-    let scale = ((available - fixed - 16.0) / (total - fixed)).clamp(0.2, 1.0);
+    let scale = ((available - fixed - 16.0) / (total - fixed)).clamp(0.05, 1.0);
     for column in columns.iter_mut().skip(1) {
-        column.width = (column.width * scale).max(64.0);
+        column.width = (column.width * scale).max(MIN_COLUMN);
     }
 }
 
@@ -250,6 +264,7 @@ pub fn table(
         names,
         columns,
         row: _,
+        fitted: _,
     } = &mut state;
     let out = Table::new(id, columns, rows.len(), &mut selected)
         .name("Documents")

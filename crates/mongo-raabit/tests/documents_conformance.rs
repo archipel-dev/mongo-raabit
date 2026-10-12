@@ -179,7 +179,9 @@ fn table_harness<'a>() -> testing::Harness<'a, TableHarness> {
 #[test]
 fn a_table_cell_edit_reports_the_set_update() {
     let mut harness = table_harness();
-    harness.get_by_label("Documents").focus();
+    harness
+        .get_by_role_and_label(testing::Role::Table, "Documents")
+        .focus();
     harness.key_press(Key::ArrowDown);
     harness.run();
     assert!(matches!(
@@ -207,7 +209,9 @@ fn a_table_cell_edit_reports_the_set_update() {
 #[test]
 fn escape_cancels_a_table_cell_edit() {
     let mut harness = table_harness();
-    harness.get_by_label("Documents").focus();
+    harness
+        .get_by_role_and_label(testing::Role::Table, "Documents")
+        .focus();
     harness.key_press(Key::ArrowDown);
     harness.run();
     harness.key_press(Key::F2);
@@ -421,7 +425,9 @@ fn editing_a_table_cell_updates_the_server() {
     let Some((mut harness, conn, rt)) = live(db, ResultView::Table) else {
         return;
     };
-    harness.get_by_label("Documents").focus();
+    harness
+        .get_by_role_and_label(testing::Role::Table, "Documents")
+        .focus();
     harness.key_press(Key::ArrowDown);
     harness.run();
     // The first editable column of the row is `name`.
