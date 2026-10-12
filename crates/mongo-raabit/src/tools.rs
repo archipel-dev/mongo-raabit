@@ -5,9 +5,8 @@ use crate::app::{Load, MongoRaabit, ResultView, SessionId, Tab, TabId, TabKind};
 use mongo_raabit_core::Connection;
 use mongo_raabit_core::aggregate::{Pipeline, RunOptions, Stage, StagePreview};
 use mongo_raabit_core::bson::Document;
-use mongo_raabit_core::connection::{IndexInfo, NewIndex};
+use mongo_raabit_core::connection::IndexInfo;
 use mongo_raabit_core::schema::{SampleMethod, SchemaReport};
-use mongo_raabit_core::shell;
 use mongo_raabit_core::sql::{self, SqlTranslation};
 use std::collections::HashSet;
 use std::time::Duration;
@@ -116,46 +115,7 @@ pub struct SchemaTab {
     pub selected: Option<usize>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct IndexForm {
-    pub keys: String,
-    pub name: String,
-    pub unique: bool,
-    pub sparse: bool,
-    pub hidden: bool,
-    pub ttl: String,
-    pub partial: String,
-}
-
-impl IndexForm {
-    pub fn to_new_index(&self) -> Result<NewIndex, String> {
-        let keys = shell::parse_document(&self.keys).map_err(|e| format!("keys: {e}"))?;
-        if keys.is_empty() {
-            return Err("add at least one key, e.g. { email: 1 }".into());
-        }
-        let partial =
-            shell::parse_document(&self.partial).map_err(|e| format!("partial filter: {e}"))?;
-        let ttl = if self.ttl.trim().is_empty() {
-            None
-        } else {
-            Some(
-                self.ttl
-                    .trim()
-                    .parse::<u64>()
-                    .map_err(|_| "TTL must be seconds".to_owned())?,
-            )
-        };
-        Ok(NewIndex {
-            keys,
-            name: Some(self.name.trim().to_owned()).filter(|n| !n.is_empty()),
-            unique: self.unique,
-            sparse: self.sparse,
-            hidden: self.hidden,
-            ttl_seconds: ttl,
-            partial_filter: (!partial.is_empty()).then_some(partial),
-        })
-    }
-}
+pub use mongo_raabit_core::indexes::IndexForm;
 
 /// Which half of the Structure tab is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -634,25 +594,6 @@ mod tests {
         tab.remove_stage(9);
         assert_eq!(tab.pipeline.stages.len(), 3);
     }
-
-    #[test]
-    fn index_form_validation() {
-        let mut form = IndexForm {
-            keys: "{ email: 1, 'address.city': -1 }".into(),
-            ttl: "3600".into(),
-            partial: "{ active: true }".into(),
-            ..IndexForm::default()
-        };
-        let index = form.to_new_index().unwrap();
-        assert_eq!(index.keys.len(), 2);
-        assert_eq!(index.ttl_seconds, Some(3600));
-        assert!(index.partial_filter.is_some());
-        form.keys = "{}".into();
-        assert!(form.to_new_index().is_err());
-        form.keys = "{a: 1}".into();
-        form.ttl = "soon".into();
-        assert!(form.to_new_index().is_err());
-    }
 }
 
 // ----- shell ------------------------------------------------------------------------------
@@ -695,22 +636,8 @@ pub struct ShellTab {
     pub collections: Vec<String>,
 }
 
-/// Results as documents for the tree view: arrays of documents stay as they are, a
-/// single document or scalar is wrapped.
-pub fn shell_documents(value: &mongo_raabit_core::bson::Bson) -> Vec<Document> {
-    use mongo_raabit_core::bson::{Bson, doc};
-    match value {
-        Bson::Array(items) => items
-            .iter()
-            .map(|item| match item {
-                Bson::Document(d) => d.clone(),
-                other => doc! {"value": other.clone()},
-            })
-            .collect(),
-        Bson::Document(d) => vec![d.clone()],
-        other => vec![doc! {"value": other.clone()}],
-    }
-}
+/// Results as documents for the tree view (see [`result_documents`]).
+pub use mongo_raabit_core::shell::result_documents as shell_documents;
 
 impl MongoRaabit {
     /// Opens the Query tab of `collection` in Shell mode. Without a collection the first

@@ -595,6 +595,50 @@ pub fn complete(prefix: &str, collections: &[String]) -> Vec<String> {
     }
 }
 
+/// What to offer at a caret in a script: the suggestions and the char index where the
+/// partial word they replace starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionSite {
+    pub start: usize,
+    pub items: Vec<String>,
+}
+
+/// Completions for the script up to `caret` (a char index), with the word they replace.
+/// `None` when nothing completes there.
+pub fn completions_at(
+    script: &str,
+    caret: usize,
+    collections: &[String],
+) -> Option<CompletionSite> {
+    let byte = script
+        .char_indices()
+        .nth(caret)
+        .map_or(script.len(), |(i, _)| i);
+    let prefix = &script[..byte];
+    let items = complete(prefix, collections);
+    if items.is_empty() {
+        return None;
+    }
+    let partial = if prefix.ends_with('.') {
+        0
+    } else {
+        prefix
+            .chars()
+            .rev()
+            .take_while(|c| {
+                c.is_alphanumeric()
+                    || *c == '_'
+                    || *c == ' ' && prefix.trim_start().starts_with("sh")
+            })
+            .count()
+            .min(prefix.chars().count())
+    };
+    Some(CompletionSite {
+        start: caret.min(prefix.chars().count()) - partial.min(caret),
+        items,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,5 +687,26 @@ mod tests {
         assert!(complete("db.orders.fi", &colls).contains(&"find(".to_string()));
         assert!(complete("db.orders.find({}).li", &colls).contains(&"limit(".to_string()));
         assert_eq!(complete("sh", &colls), ["show dbs", "show collections"]);
+    }
+
+    #[test]
+    fn completion_sites_replace_the_partial_word() {
+        let collections = vec!["orders".to_owned(), "products".to_owned()];
+        let script = "db.pro";
+        let site = completions_at(script, script.chars().count(), &collections).unwrap();
+        assert_eq!(site.start, 3);
+        assert_eq!(site.items, ["products"]);
+        // After a dot nothing is replaced.
+        let site = completions_at("db.", 3, &collections).unwrap();
+        assert_eq!(site.start, 3);
+        assert!(site.items.contains(&"orders".to_owned()));
+        // Shell commands replace what was typed of them.
+        let site = completions_at("sh", 2, &collections).unwrap();
+        assert_eq!(site.items, ["show dbs", "show collections"]);
+        assert_eq!(site.start, 0);
+        // The caret decides, not the end of the script.
+        let site = completions_at("db.pro\nprint(1)", 6, &collections).unwrap();
+        assert_eq!(site.start, 3);
+        assert_eq!(completions_at("x = 5", 5, &collections), None);
     }
 }

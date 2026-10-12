@@ -7,7 +7,7 @@
 //! JSON is a subset of what this parser understands.
 
 use mongodb::bson::{
-    self, Binary, Bson, DateTime, Decimal128, Document, Regex, Timestamp, oid::ObjectId,
+    self, Binary, Bson, DateTime, Decimal128, Document, Regex, Timestamp, doc, oid::ObjectId,
     spec::BinarySubtype,
 };
 use std::fmt::Write as _;
@@ -853,6 +853,45 @@ fn format_double(v: f64) -> String {
     }
 }
 
+/// Results of a shell script as documents for a tree view: arrays of documents stay as
+/// they are, a single document or scalar is wrapped (`{ value: … }`).
+pub fn result_documents(value: &Bson) -> Vec<Document> {
+    let wrap = |item: &Bson| match item {
+        Bson::Document(d) => d.clone(),
+        other => doc! {"value": other.clone()},
+    };
+    match value {
+        Bson::Array(items) => items.iter().map(wrap).collect(),
+        other => vec![wrap(other)],
+    }
+}
+
+/// The first line of a script, cut to `max` characters, with ` …` when more follows.
+pub fn script_summary(script: &str, max: usize) -> String {
+    let first = script.lines().next().unwrap_or_default();
+    let mut text: String = if first.chars().count() > max {
+        first
+            .chars()
+            .take(max)
+            .chain(std::iter::once('…'))
+            .collect()
+    } else {
+        first.to_owned()
+    };
+    if script.lines().count() > 1 {
+        text.push_str(" …");
+    }
+    text
+}
+
+/// The characters `from..to` (char indices) of `text`, for running a selection.
+pub fn char_slice(text: &str, from: usize, to: usize) -> String {
+    text.chars()
+        .skip(from)
+        .take(to.saturating_sub(from))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,5 +978,35 @@ mod tests {
         assert_eq!(stages.len(), 2);
         assert!(parse_document_array("[1]").is_err());
         assert_eq!(parse_document_array("").unwrap(), Vec::<Document>::new());
+    }
+
+    #[test]
+    fn script_results_become_documents() {
+        assert_eq!(
+            result_documents(&Bson::Array(vec![
+                Bson::Document(doc! {"a": 1}),
+                Bson::Int32(2)
+            ])),
+            vec![doc! {"a": 1}, doc! {"value": 2}]
+        );
+        assert_eq!(
+            result_documents(&Bson::Document(doc! {"a": 1})),
+            vec![doc! {"a": 1}]
+        );
+        assert_eq!(
+            result_documents(&Bson::String("x".into())),
+            vec![doc! {"value": "x"}]
+        );
+    }
+
+    #[test]
+    fn summarizes_scripts_and_slices_selections() {
+        assert_eq!(script_summary("db.a.find()", 90), "db.a.find()");
+        assert_eq!(script_summary("db.a.find()\nprint(1)", 90), "db.a.find() …");
+        assert_eq!(script_summary("abcdef", 3), "abc…");
+        assert_eq!(script_summary("", 3), "");
+        assert_eq!(char_slice("héllo wörld", 1, 4), "éll");
+        assert_eq!(char_slice("abc", 2, 9), "c");
+        assert_eq!(char_slice("abc", 2, 1), "");
     }
 }

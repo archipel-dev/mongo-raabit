@@ -4,14 +4,16 @@
 //! from `archipel_sdk::kit::components`; what remains here is layout glue (captions, form
 //! rows, the query-bar field) and the code editor until the kit ships its own.
 
-use crate::egui::{Align, CornerRadius, FontId, Id, Layout, Response, RichText, Stroke, Ui};
-use crate::icons::Icon;
-use crate::style::Palette;
+use crate::egui::{Id, Layout, Response, RichText, Ui};
+use crate::icons::{self, Icon};
 use archipel_sdk::kit::Tone;
+use archipel_sdk::kit::components::code::{Highlighter, Span, TokenKind};
 use archipel_sdk::kit::components::{
-    Dialog, DialogAction, Dropdown, FieldLabel, IconButton, MenuItem, TextField, TextFieldOutput,
+    Dialog, DialogAction, Dropdown, FieldLabel, IconButton, MenuItem, Separator, Spinner, Tag,
+    TextField, TextFieldOutput,
 };
 use archipel_sdk::kit::tokens::{size, typography};
+use mongo_raabit_core::sql_syntax::{SqlToken, tokenize_line};
 
 /// Section caption (small, muted).
 pub fn caption(ui: &mut Ui, text: &str) {
@@ -152,13 +154,19 @@ where
     } else {
         value.to_string()
     };
-    let response = TextField::new(&mut text)
-        .id(field_id)
-        .name(name)
-        .monospace(true)
-        .width(width)
-        .show(ui)
-        .response;
+    // Allocated at its own width, so the field sits where the layout puts it also in
+    // right-to-left rows (a field laid out in the whole remaining width would not).
+    let response = ui
+        .allocate_ui(crate::egui::vec2(width, size::CONTROL_HEIGHT), |ui| {
+            TextField::new(&mut text)
+                .id(field_id)
+                .name(name)
+                .monospace(true)
+                .width(width)
+                .show(ui)
+                .response
+        })
+        .inner;
     let mut edit = NumberEdit::default();
     if response.changed()
         && let Some(parsed) = parse_number::<N>(&text)
@@ -241,22 +249,6 @@ pub fn name_picker(
     changed
 }
 
-/// A labeled form row: right-aligned label column of `label_width` then the content.
-pub fn form_row(ui: &mut Ui, label: &str, label_width: f32, add: impl FnOnce(&mut Ui)) {
-    let color = Tone::Secondary.resolve(ui.ctx());
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            crate::egui::vec2(label_width, size::CONTROL_HEIGHT),
-            Layout::right_to_left(Align::Center),
-            |ui| {
-                ui.label(RichText::new(label).color(color));
-            },
-        );
-        ui.add_space(size::SECONDARY_GAP);
-        add(ui);
-    });
-}
-
 /// Give an input that has only a placeholder an accessible name (the kit's search field
 /// has none; see "Kit gaps").
 pub fn name_input(response: &Response, name: &str, enabled: bool) {
@@ -293,52 +285,72 @@ pub fn query_field(
     .inner
 }
 
-/// Multiline code editor with mongo shell syntax coloring.
-pub fn code_editor(
+/// The header of a tool tab: the tab's icon, the `trail` of server and database (muted),
+/// the `title`, a `tag` naming the tool, `status` content after the tag (a spinner), and
+/// `actions` laid out right to left at the far end; a separator closes it.
+#[allow(clippy::too_many_arguments)]
+pub fn tool_header(
     ui: &mut Ui,
-    text: &mut String,
-    rows: usize,
-    id: impl std::hash::Hash,
-) -> Response {
-    code_editor_with(ui, text, rows, id, false)
+    icon: Icon,
+    icon_tone: Tone,
+    trail: &[&str],
+    title: &str,
+    tag: Tag,
+    status: impl FnOnce(&mut Ui),
+    actions: impl FnOnce(&mut Ui),
+) {
+    padded(ui, |ui| {
+        ui.horizontal(|ui| {
+            icons::icon(ui, icon, icon_tone.resolve(ui.ctx()));
+            let muted = Tone::Muted.resolve(ui.ctx());
+            for (i, crumb) in trail.iter().enumerate() {
+                label(
+                    ui,
+                    if i == 0 { Tone::Muted } else { Tone::Secondary },
+                    *crumb,
+                );
+                icons::icon(ui, Icon::ChevronRight, muted);
+            }
+            self::title(ui, title);
+            ui.add(tag);
+            status(ui);
+            ui.with_layout(Layout::right_to_left(crate::egui::Align::Center), actions);
+        });
+    });
+    ui.add(Separator);
 }
 
-/// Like [`code_editor`]; `fill` grows it to the available height.
-pub fn code_editor_with(
-    ui: &mut Ui,
-    text: &mut String,
-    rows: usize,
-    id: impl std::hash::Hash,
-    fill: bool,
-) -> Response {
-    let p = Palette::of(ui);
-    let font = FontId::monospace(12.5);
-    let mut layouter = |ui: &Ui, buffer: &dyn crate::egui::TextBuffer, wrap_width: f32| {
-        let mut job = crate::egui::text::LayoutJob::default();
-        crate::values::highlight_into(&mut job, buffer.as_str(), &p, font.clone());
-        job.wrap.max_width = wrap_width;
-        ui.fonts_mut(|f| f.layout_job(job))
-    };
-    crate::egui::Frame::new()
-        .fill(p.field)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(crate::egui::Margin::same(8))
-        .show(ui, |ui| {
-            if fill {
-                ui.set_min_height(ui.available_height());
-            }
-            ui.add(
-                crate::egui::TextEdit::multiline(text)
-                    .id_salt(id)
-                    .code_editor()
-                    .frame(false)
-                    .desired_rows(rows)
-                    .desired_width(f32::INFINITY)
-                    .layouter(&mut layouter),
-            )
-        })
-        .inner
+/// A centered spinner with a caption, for a view that is loading.
+pub fn busy(ui: &mut Ui, text: &str) {
+    ui.add_space(size::FORM_GROUP_SPACING * 2.0);
+    ui.vertical_centered(|ui| {
+        ui.add(Spinner::new().label(text));
+        label(ui, Tone::Secondary, text);
+    });
+}
+
+/// SQL coloring for the kit's code views and editors.
+pub struct SqlHighlighter;
+
+impl Highlighter for SqlHighlighter {
+    fn highlight_line(&self, line: &str, _state: &mut u32, out: &mut Vec<Span>) {
+        out.extend(tokenize_line(line).into_iter().map(|(range, token)| Span {
+            start: range.start,
+            end: range.end,
+            kind: match token {
+                SqlToken::Keyword => TokenKind::Keyword,
+                SqlToken::String => TokenKind::String,
+                SqlToken::QuotedName => TokenKind::Property,
+                SqlToken::Number => TokenKind::Number,
+                SqlToken::Comment => TokenKind::Comment,
+                SqlToken::Punctuation => TokenKind::Punctuation,
+            },
+        }));
+    }
+
+    fn stateless(&self) -> bool {
+        true
+    }
 }
 
 /// 1-based line and column of a byte offset.
