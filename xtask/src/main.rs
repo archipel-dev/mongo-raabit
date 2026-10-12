@@ -400,4 +400,22 @@ mod tests {
         assert_eq!((p.os, p.arch.as_str()), ("macos", "aarch64"));
         assert!(Platform::from_triple("wasm32-unknown-unknown").is_err());
     }
+
+    /// WiX rejects the whole source on an XML comment with `--` in it (WIX0104), and only
+    /// the Windows release would find out.
+    #[test]
+    fn wix_source_comments_are_valid_xml() {
+        let wxs = include_str!("../packaging/windows/raabit.wxs");
+        let mut rest = wxs;
+        while let Some(start) = rest.find("<!--") {
+            let body = &rest[start + 4..];
+            let end = body.find("-->").expect("unclosed comment");
+            let comment = &body[..end];
+            assert!(
+                !comment.contains("--") && !comment.ends_with('-'),
+                "invalid XML comment in raabit.wxs: {comment:?}"
+            );
+            rest = &body[end + 3..];
+        }
+    }
 }
