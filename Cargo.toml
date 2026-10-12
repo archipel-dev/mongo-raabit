@@ -20,8 +20,3 @@ url = { version = "2.5", features = ["serde"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
-
-# Until archipel-dev/kit#32 is merged: build against its branch (the www host is the same
-# repository, a different source for cargo). Remove after the merge.
-[patch."https://github.com/archipel-dev/kit"]
-archipel-kit = { git = "https://www.github.com/archipel-dev/kit", branch = "claude/kit-lib-android-studio-ui-jleosm" }
