@@ -584,11 +584,15 @@ mod tests {
         kit::install(&ctx, if dark { Theme::dark() } else { Theme::light() });
         let mut events = Vec::new();
         for _ in 0..2 {
+            // One event per frame: egui may run a frame's ui twice (a form whose label
+            // column moved lays itself out again); the last pass is the one shown.
+            let mut event = None;
             let _ = ctx.run(crate::egui::RawInput::default(), |ctx| {
                 crate::egui::CentralPanel::default().show(ctx, |ui| {
-                    events.push(show(ui, builder, fields));
+                    event = Some(show(ui, builder, fields));
                 });
             });
+            events.extend(event);
         }
         events
     }
