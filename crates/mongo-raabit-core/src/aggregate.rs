@@ -468,11 +468,21 @@ impl Connection {
         max_results: u64,
     ) -> Result<(Vec<Document>, Duration)> {
         let mut stages = sampled(stages, options);
-        let writes = stages
-            .last()
-            .and_then(|d| d.keys().next())
-            .is_some_and(|k| k == "$out" || k == "$merge");
-        if max_results > 0 && !writes {
+        if crate::write::pipeline_writes(&stages) {
+            // `$out` / `$merge` change data: only through the guarded write path.
+            let write = crate::write::Write::Aggregate {
+                db: db.to_owned(),
+                collection: collection.to_owned(),
+                pipeline: stages,
+            };
+            return match self.execute(write).await? {
+                crate::write::WriteOutcome::Aggregated { documents, elapsed } => {
+                    Ok((documents, elapsed))
+                }
+                _ => Ok((Vec::new(), Duration::ZERO)),
+            };
+        }
+        if max_results > 0 {
             stages.push(doc! {"$limit": i64::try_from(max_results).unwrap_or(i64::MAX)});
         }
         let start = Instant::now();

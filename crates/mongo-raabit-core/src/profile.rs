@@ -314,6 +314,9 @@ pub struct ConnectionProfile {
     pub app_name: String,
     #[serde(default)]
     pub connect_timeout_ms: Option<u64>,
+    /// Block every change to the database through this connection (see `crate::write`).
+    #[serde(default)]
+    pub read_only: bool,
     /// URI options this model does not know, preserved verbatim on round trips.
     #[serde(default)]
     pub extra_options: Vec<(String, String)>,
@@ -333,6 +336,7 @@ impl Default for ConnectionProfile {
             default_database: String::new(),
             app_name: String::new(),
             connect_timeout_ms: None,
+            read_only: false,
             extra_options: Vec::new(),
         }
     }

@@ -34,7 +34,17 @@ pub struct Connection {
     uri: Arc<str>,
     profile: Arc<ConnectionProfile>,
     server: ServerInfo,
+    /// Every change is refused (see [`Connection::execute`]). Fixed at connect.
+    read_only: bool,
     _tunnel: Option<Arc<SshTunnel>>,
+}
+
+/// How [`Connection::connect_with`] opens a connection, beyond the profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConnectOptions {
+    /// Open read-only even when the profile is not (the "open connections read-only"
+    /// setting). A read-only profile is always opened read-only.
+    pub read_only: bool,
 }
 
 impl std::fmt::Debug for Connection {
@@ -42,6 +52,7 @@ impl std::fmt::Debug for Connection {
         f.debug_struct("Connection")
             .field("profile", &self.profile.name)
             .field("server", &self.server)
+            .field("read_only", &self.read_only)
             .finish()
     }
 }
@@ -203,9 +214,21 @@ fn validate_name(kind: &str, name: &str) -> Result<()> {
 }
 
 impl Connection {
-    /// Open a connection, starting the SSH tunnel first when the profile has one.
+    /// Open a connection, starting the SSH tunnel first when the profile has one. It is
+    /// read-only when the profile is.
     pub async fn connect(profile: &ConnectionProfile, secrets: &dyn SecretStore) -> Result<Self> {
+        Self::connect_with(profile, secrets, ConnectOptions::default()).await
+    }
+
+    /// [`Connection::connect`] with options: `read_only` makes the connection read-only
+    /// whatever the profile says.
+    pub async fn connect_with(
+        profile: &ConnectionProfile,
+        secrets: &dyn SecretStore,
+        options: ConnectOptions,
+    ) -> Result<Self> {
         profile.validate()?;
+        let read_only = profile.read_only || options.read_only;
         let password = if profile.auth.mechanism.needs_password() {
             secrets.get(&profile.password_key())?
         } else {
@@ -261,6 +284,7 @@ impl Connection {
             uri: full_uri,
             profile: Arc::new(profile.clone()),
             server,
+            read_only,
             _tunnel: tunnel,
         })
     }
@@ -300,12 +324,22 @@ impl Connection {
 
     /// The connection string the driver uses, **including the password** and the SSH
     /// tunnel endpoint. Only hand it to child processes through the environment.
-    pub fn connection_uri(&self) -> &str {
+    pub(crate) fn connection_uri(&self) -> &str {
         &self.uri
     }
 
-    pub fn client(&self) -> &Client {
-        &self.client
+    /// True when every change through this connection is refused.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Fails with [`RaabitError::ReadOnly`] on a read-only connection.
+    pub(crate) fn ensure_writable(&self, what: impl FnOnce() -> String) -> Result<()> {
+        if self.read_only {
+            Err(RaabitError::ReadOnly(what()))
+        } else {
+            Ok(())
+        }
     }
 
     pub fn profile(&self) -> &ConnectionProfile {
@@ -316,12 +350,30 @@ impl Connection {
         &self.server
     }
 
-    pub fn collection(&self, db: &str, name: &str) -> mongodb::Collection<Document> {
+    pub(crate) fn collection(&self, db: &str, name: &str) -> mongodb::Collection<Document> {
         self.client.database(db).collection(name)
     }
 
-    /// Run an arbitrary database command.
+    /// Run a database command. Commands that only read (see
+    /// [`crate::write::is_read_command`]) run directly; any other goes through
+    /// [`Connection::execute`] as [`crate::write::Write::RunCommand`], so a read-only
+    /// connection refuses it.
     pub async fn run_command(&self, db: &str, command: Document) -> Result<Document> {
+        if crate::write::is_read_command(&command) {
+            return self.command(db, command).await;
+        }
+        let write = crate::write::Write::RunCommand {
+            db: db.to_owned(),
+            command,
+        };
+        match self.execute(write).await? {
+            crate::write::WriteOutcome::Command(reply) => Ok(reply),
+            _ => Ok(Document::new()),
+        }
+    }
+
+    /// Run any command, unguarded: only for commands the crate builds itself.
+    pub(crate) async fn command(&self, db: &str, command: Document) -> Result<Document> {
         Ok(self.client.database(db).run_command(command).await?)
     }
 
@@ -342,13 +394,13 @@ impl Connection {
     }
 
     /// MongoDB creates databases lazily; this creates the first collection.
-    pub async fn create_database(&self, db: &str, first_collection: &str) -> Result<()> {
+    pub(crate) async fn create_database(&self, db: &str, first_collection: &str) -> Result<()> {
         validate_name("database", db)?;
         self.create_collection(db, first_collection, Document::new())
             .await
     }
 
-    pub async fn drop_database(&self, db: &str) -> Result<()> {
+    pub(crate) async fn drop_database(&self, db: &str) -> Result<()> {
         Ok(self.client.database(db).drop().await?)
     }
 
@@ -414,7 +466,12 @@ impl Connection {
     }
 
     /// Create a collection; `options` is the `create` command body (capped, validator…).
-    pub async fn create_collection(&self, db: &str, name: &str, options: Document) -> Result<()> {
+    pub(crate) async fn create_collection(
+        &self,
+        db: &str,
+        name: &str,
+        options: Document,
+    ) -> Result<()> {
         validate_name("database", db)?;
         validate_name("collection", name)?;
         let mut command = doc! {"create": name};
@@ -423,7 +480,7 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn create_view(
+    pub(crate) async fn create_view(
         &self,
         db: &str,
         name: &str,
@@ -434,11 +491,11 @@ impl Connection {
             .await
     }
 
-    pub async fn drop_collection(&self, db: &str, name: &str) -> Result<()> {
+    pub(crate) async fn drop_collection(&self, db: &str, name: &str) -> Result<()> {
         Ok(self.collection(db, name).drop().await?)
     }
 
-    pub async fn rename_collection(
+    pub(crate) async fn rename_collection(
         &self,
         db: &str,
         from: &str,
@@ -533,7 +590,12 @@ impl Connection {
             .collect())
     }
 
-    pub async fn create_index(&self, db: &str, name: &str, index: NewIndex) -> Result<String> {
+    pub(crate) async fn create_index(
+        &self,
+        db: &str,
+        name: &str,
+        index: NewIndex,
+    ) -> Result<String> {
         if index.keys.is_empty() {
             return Err(RaabitError::Invalid(
                 "an index needs at least one key".into(),
@@ -558,7 +620,7 @@ impl Connection {
             .index_name)
     }
 
-    pub async fn drop_index(&self, db: &str, name: &str, index: &str) -> Result<()> {
+    pub(crate) async fn drop_index(&self, db: &str, name: &str, index: &str) -> Result<()> {
         if index == "_id_" {
             return Err(RaabitError::Invalid(
                 "the _id index cannot be dropped".into(),
@@ -567,7 +629,7 @@ impl Connection {
         Ok(self.collection(db, name).drop_index(index).await?)
     }
 
-    pub async fn set_index_hidden(
+    pub(crate) async fn set_index_hidden(
         &self,
         db: &str,
         name: &str,
@@ -609,7 +671,7 @@ impl Connection {
             .collect())
     }
 
-    pub async fn create_user(
+    pub(crate) async fn create_user(
         &self,
         db: &str,
         user: &str,
@@ -630,7 +692,7 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn drop_user(&self, db: &str, user: &str) -> Result<()> {
+    pub(crate) async fn drop_user(&self, db: &str, user: &str) -> Result<()> {
         self.client
             .database(db)
             .run_command(doc! {"dropUser": user})
@@ -666,7 +728,7 @@ impl Connection {
     // ----- server ----------------------------------------------------------------------
 
     pub async fn server_status(&self) -> Result<Document> {
-        self.run_command("admin", doc! {"serverStatus": 1}).await
+        self.command("admin", doc! {"serverStatus": 1}).await
     }
 
     pub async fn current_ops(&self, include_idle: bool) -> Result<Vec<CurrentOp>> {
@@ -693,8 +755,8 @@ impl Connection {
             .collect())
     }
 
-    pub async fn kill_op(&self, opid: Bson) -> Result<()> {
-        self.run_command("admin", doc! {"killOp": 1, "op": opid})
+    pub(crate) async fn kill_op(&self, opid: Bson) -> Result<()> {
+        self.command("admin", doc! {"killOp": 1, "op": opid})
             .await?;
         Ok(())
     }

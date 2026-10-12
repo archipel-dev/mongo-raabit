@@ -2,10 +2,31 @@ mod common;
 
 use mongo_raabit_core::bson::{Document, doc};
 use mongo_raabit_core::query::Query;
+use mongo_raabit_core::transfer::ImportReport;
 use mongo_raabit_core::transfer::{
     ExportFormat, ExportSource, Exporter, ImportMode, JsonMode, read_bson, read_json,
 };
+use mongo_raabit_core::{Connection, Write, WriteOutcome};
 use std::sync::atomic::AtomicBool;
+
+async fn import(
+    conn: &Connection,
+    db: &str,
+    documents: Vec<Document>,
+    mode: ImportMode,
+    cancel: &AtomicBool,
+) -> ImportReport {
+    let write = Write::Import {
+        db: db.to_owned(),
+        collection: "target".into(),
+        documents,
+        mode,
+    };
+    match conn.execute_with(write, cancel, &|_| {}).await.unwrap() {
+        WriteOutcome::Imported(report) => report,
+        other => panic!("an import reports an import, not {other:?}"),
+    }
+}
 
 #[tokio::test]
 async fn export_then_import_round_trip() {
@@ -15,9 +36,13 @@ async fn export_then_import_round_trip() {
     let docs: Vec<Document> = (0..2500)
         .map(|i| doc! {"_id": i, "name": format!("n{i}"), "nested": {"v": i % 7}})
         .collect();
-    conn.insert_documents(&db, "source", docs.clone())
-        .await
-        .unwrap();
+    conn.execute(Write::InsertDocuments {
+        db: db.clone(),
+        collection: "source".into(),
+        documents: docs.clone(),
+    })
+    .await
+    .unwrap();
     let cancel = AtomicBool::new(false);
     let source = ExportSource::Query(Query {
         sort: Some(doc! {"_id": 1}),
@@ -49,17 +74,7 @@ async fn export_then_import_round_trip() {
         }
         assert_eq!(back, docs);
 
-        let report = conn
-            .import(
-                &db,
-                "target",
-                back.clone(),
-                ImportMode::DropAndInsert,
-                &cancel,
-                &|_| {},
-            )
-            .await
-            .unwrap();
+        let report = import(&conn, &db, back.clone(), ImportMode::DropAndInsert, &cancel).await;
         assert_eq!(report.inserted, 2500);
         assert_eq!(report.failed, 0);
     }
@@ -67,34 +82,25 @@ async fn export_then_import_round_trip() {
     // Insert again: every _id collides, failures are reported but not fatal.
     let mut again = docs[..10].to_vec();
     again.push(doc! {"_id": 99_999, "name": "new"});
-    let report = conn
-        .import(
-            &db,
-            "target",
-            again.clone(),
-            ImportMode::Insert,
-            &cancel,
-            &|_| {},
-        )
-        .await
-        .unwrap();
+    let report = import(&conn, &db, again.clone(), ImportMode::Insert, &cancel).await;
     assert_eq!(report.inserted, 1);
     assert_eq!(report.failed, 10);
     assert!(report.failures[0].1.contains("duplicate key"));
 
     // Upsert replaces existing documents.
     again[0].insert("name", "changed");
-    let report = conn
-        .import(&db, "target", again, ImportMode::Upsert, &cancel, &|_| {})
-        .await
-        .unwrap();
+    let report = import(&conn, &db, again, ImportMode::Upsert, &cancel).await;
     assert_eq!(report.replaced, 11);
+    let query = Query {
+        filter: doc! {"_id": 0},
+        ..Query::default()
+    };
     let changed = conn
-        .collection(&db, "target")
-        .find_one(doc! {"_id": 0})
+        .find_page(&db, "target", &query, 0, 1)
         .await
         .unwrap()
-        .unwrap();
+        .documents
+        .remove(0);
     assert_eq!(changed.get_str("name").unwrap(), "changed");
 
     // Aggregation export.
@@ -118,5 +124,7 @@ async fn export_then_import_round_trip() {
         .await
         .unwrap();
     assert_eq!(count, 7);
-    conn.drop_database(&db).await.unwrap();
+    conn.execute(Write::DropDatabase { db: db.clone() })
+        .await
+        .unwrap();
 }

@@ -33,7 +33,9 @@ pub async fn connect(test: &str) -> Option<(Connection, String)> {
     match Connection::connect(&profile, &secrets).await {
         Ok(connection) => {
             let db = format!("raabit_test_{test}");
-            let _ = connection.drop_database(&db).await;
+            let _ = connection
+                .execute(mongo_raabit_core::Write::DropDatabase { db: db.clone() })
+                .await;
             Some((connection, db))
         }
         Err(err) => {
@@ -50,4 +52,19 @@ pub async fn connect(test: &str) -> Option<(Connection, String)> {
             None
         }
     }
+}
+
+/// A second, read-only connection to the test server (`None` when it is unavailable).
+pub async fn connect_read_only() -> Option<Connection> {
+    let (mut profile, password) = ConnectionProfile::from_uri(&test_uri()).ok()?;
+    profile.connect_timeout_ms = Some(1500);
+    let secrets = MemorySecretStore::default();
+    if let Some(password) = password {
+        use mongo_raabit_core::secrets::SecretStore;
+        secrets.set(&profile.password_key(), &password).ok()?;
+    }
+    let options = mongo_raabit_core::ConnectOptions { read_only: true };
+    Connection::connect_with(&profile, &secrets, options)
+        .await
+        .ok()
 }

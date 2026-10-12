@@ -6,6 +6,7 @@
 use crate::connection::Connection;
 use crate::error::{RaabitError, Result};
 use crate::shell;
+use crate::write::{Write, WriteOutcome};
 use futures_util::TryStreamExt;
 use mongodb::bson::{Bson, Document, doc};
 
@@ -273,6 +274,24 @@ fn arg_int(args: &[Bson], what: &str) -> Result<i64> {
     }
 }
 
+/// The shell's reply to a write, as mongosh prints it.
+fn outcome_value(outcome: WriteOutcome) -> Bson {
+    match outcome {
+        WriteOutcome::Inserted(ids) => match <[Bson; 1]>::try_from(ids) {
+            Ok([id]) => Bson::Document(doc! {"acknowledged": true, "insertedId": id}),
+            Err(ids) => Bson::Document(doc! {"acknowledged": true, "insertedIds": ids}),
+        },
+        WriteOutcome::Updated { matched, modified } => {
+            Bson::Document(doc! {"matchedCount": matched as i64, "modifiedCount": modified as i64})
+        }
+        WriteOutcome::Deleted(n) => Bson::Document(doc! {"deletedCount": n as i64}),
+        WriteOutcome::IndexCreated(name) => Bson::String(name),
+        WriteOutcome::Aggregated { documents, .. } => docs(documents),
+        WriteOutcome::Command(reply) => Bson::Document(reply),
+        WriteOutcome::Imported(_) | WriteOutcome::Done => Bson::Document(doc! {"ok": 1}),
+    }
+}
+
 fn docs(list: Vec<Document>) -> Bson {
     Bson::Array(list.into_iter().map(Bson::Document).collect())
 }
@@ -380,6 +399,14 @@ impl Connection {
                         .collect::<Result<Vec<_>>>()?,
                     _ => return Err(invalid("aggregate expects an array of stages")),
                 };
+                if crate::write::pipeline_writes(&stages) {
+                    let write = Write::Aggregate {
+                        db: db.clone(),
+                        collection: collection.clone(),
+                        pipeline: stages,
+                    };
+                    return Ok(outcome_value(self.execute(write).await?));
+                }
                 let cursor = handle.aggregate(stages).allow_disk_use(true).await?;
                 let mut list: Vec<Document> = cursor.try_collect().await?;
                 list.truncate(BATCH as usize * 4);
@@ -401,55 +428,79 @@ impl Connection {
                 ))
             }
             "insertOne" => {
-                let ids = self
-                    .insert_documents(db, &collection, vec![arg_doc(&args, 0)?])
-                    .await?;
-                Ok(Bson::Document(
-                    doc! {"acknowledged": true, "insertedId": ids.into_iter().next().unwrap_or(Bson::Null)},
-                ))
+                let write = Write::InsertDocuments {
+                    db: db.clone(),
+                    collection: collection.clone(),
+                    documents: vec![arg_doc(&args, 0)?],
+                };
+                Ok(outcome_value(self.execute(write).await?))
             }
             "insertMany" => {
-                let list = match args.first() {
+                let documents = match args.first() {
                     Some(Bson::Array(items)) => items
                         .iter()
                         .filter_map(|d| d.as_document().cloned())
                         .collect(),
                     _ => return Err(invalid("insertMany expects an array of documents")),
                 };
-                let ids = self.insert_documents(db, &collection, list).await?;
-                Ok(Bson::Document(
-                    doc! {"acknowledged": true, "insertedIds": ids},
-                ))
+                let write = Write::InsertDocuments {
+                    db: db.clone(),
+                    collection: collection.clone(),
+                    documents,
+                };
+                match self.execute(write).await? {
+                    WriteOutcome::Inserted(ids) => Ok(Bson::Document(
+                        doc! {"acknowledged": true, "insertedIds": ids},
+                    )),
+                    other => Ok(outcome_value(other)),
+                }
             }
             "updateOne" | "updateMany" => {
+                let (db, collection) = (db.clone(), collection.clone());
                 let (filter, update) = (arg_doc(&args, 0)?, arg_doc(&args, 1)?);
-                let result = if first.name == "updateOne" {
-                    handle.update_one(filter, update).await?
+                let write = if first.name == "updateOne" {
+                    Write::UpdateOne {
+                        db,
+                        collection,
+                        filter,
+                        update,
+                    }
                 } else {
-                    handle.update_many(filter, update).await?
+                    Write::UpdateMany {
+                        db,
+                        collection,
+                        filter,
+                        update,
+                    }
                 };
-                Ok(Bson::Document(
-                    doc! {"matchedCount": result.matched_count as i64, "modifiedCount": result.modified_count as i64},
-                ))
+                Ok(outcome_value(self.execute(write).await?))
             }
             "replaceOne" => {
-                let result = handle
-                    .replace_one(arg_doc(&args, 0)?, arg_doc(&args, 1)?)
-                    .await?;
-                Ok(Bson::Document(
-                    doc! {"matchedCount": result.matched_count as i64, "modifiedCount": result.modified_count as i64},
-                ))
+                let write = Write::ReplaceOne {
+                    db: db.clone(),
+                    collection: collection.clone(),
+                    filter: arg_doc(&args, 0)?,
+                    replacement: arg_doc(&args, 1)?,
+                };
+                Ok(outcome_value(self.execute(write).await?))
             }
             "deleteOne" | "deleteMany" => {
+                let (db, collection) = (db.clone(), collection.clone());
                 let filter = arg_doc(&args, 0)?;
-                let result = if first.name == "deleteOne" {
-                    handle.delete_one(filter).await?
+                let write = if first.name == "deleteOne" {
+                    Write::DeleteOne {
+                        db,
+                        collection,
+                        filter,
+                    }
                 } else {
-                    handle.delete_many(filter).await?
+                    Write::DeleteMany {
+                        db,
+                        collection,
+                        filter,
+                    }
                 };
-                Ok(Bson::Document(
-                    doc! {"deletedCount": result.deleted_count as i64},
-                ))
+                Ok(outcome_value(self.execute(write).await?))
             }
             "getIndexes" => Ok(docs(
                 self.indexes(db, &collection)
@@ -459,28 +510,35 @@ impl Connection {
                     .collect(),
             )),
             "createIndex" => {
-                let name = self
-                    .create_index(
-                        db,
-                        &collection,
-                        crate::connection::NewIndex {
-                            keys: arg_doc(&args, 0)?,
-                            ..Default::default()
-                        },
-                    )
-                    .await?;
-                Ok(Bson::String(name))
+                let write = Write::CreateIndex {
+                    db: db.clone(),
+                    collection: collection.clone(),
+                    index: crate::connection::NewIndex {
+                        keys: arg_doc(&args, 0)?,
+                        ..Default::default()
+                    },
+                };
+                Ok(outcome_value(self.execute(write).await?))
             }
             "dropIndex" => {
                 let name = args
                     .first()
                     .and_then(Bson::as_str)
                     .ok_or_else(|| invalid("dropIndex expects an index name"))?;
-                self.drop_index(db, &collection, name).await?;
+                let write = Write::DropIndex {
+                    db: db.clone(),
+                    collection: collection.clone(),
+                    name: name.to_owned(),
+                };
+                self.execute(write).await?;
                 Ok(Bson::Document(doc! {"ok": 1}))
             }
             "drop" => {
-                self.drop_collection(db, &collection).await?;
+                let write = Write::DropCollection {
+                    db: db.clone(),
+                    collection: collection.clone(),
+                };
+                self.execute(write).await?;
                 Ok(Bson::Boolean(true))
             }
             "stats" => {
@@ -525,11 +583,17 @@ impl Connection {
                     .first()
                     .and_then(Bson::as_str)
                     .ok_or_else(|| invalid("createCollection expects a name"))?;
-                self.create_collection(db, name, arg_doc(&args, 1)?).await?;
+                let write = Write::CreateCollection {
+                    db: db.to_owned(),
+                    name: name.to_owned(),
+                    options: arg_doc(&args, 1)?,
+                };
+                self.execute(write).await?;
                 Ok(Bson::Document(doc! {"ok": 1}))
             }
             "dropDatabase" => {
-                self.drop_database(db).await?;
+                self.execute(Write::DropDatabase { db: db.to_owned() })
+                    .await?;
                 Ok(Bson::Document(doc! {"ok": 1, "dropped": db}))
             }
             other => Err(invalid(format!(

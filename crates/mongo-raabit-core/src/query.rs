@@ -355,13 +355,13 @@ impl Connection {
             find.insert("limit", i64::try_from(query.limit).unwrap_or(i64::MAX));
         }
         let raw = self
-            .run_command(db, doc! {"explain": find, "verbosity": "executionStats"})
+            .command(db, doc! {"explain": find, "verbosity": "executionStats"})
             .await?;
         Ok(Explain::from_reply(raw))
     }
 
     /// Insert documents, adding `_id`s where missing. Returns the ids in order.
-    pub async fn insert_documents(
+    pub(crate) async fn insert_documents(
         &self,
         db: &str,
         collection: &str,
@@ -389,7 +389,7 @@ impl Connection {
     }
 
     /// Replace a whole document (the document editor's Save). The `_id` must not change.
-    pub async fn replace_document(
+    pub(crate) async fn replace_document(
         &self,
         db: &str,
         collection: &str,
@@ -416,7 +416,7 @@ impl Connection {
     }
 
     /// Set (or with `None`, unset) one field path of a document — inline table edits.
-    pub async fn set_field(
+    pub(crate) async fn set_field(
         &self,
         db: &str,
         collection: &str,
@@ -442,19 +442,30 @@ impl Connection {
     }
 
     /// Delete documents by `_id`. Returns how many were removed.
-    pub async fn delete_documents(&self, db: &str, collection: &str, ids: &[Bson]) -> Result<u64> {
+    pub(crate) async fn delete_documents(
+        &self,
+        db: &str,
+        collection: &str,
+        ids: &[Bson],
+    ) -> Result<u64> {
         if ids.is_empty() {
             return Ok(0);
         }
-        let result = self
-            .collection(db, collection)
-            .delete_many(doc! {"_id": {"$in": ids.to_vec()}})
-            .await?;
+        let handle = self.collection(db, collection);
+        // One document: `deleteOne`, as the confirmation shows it.
+        let result = match ids {
+            [id] => handle.delete_one(doc! {"_id": id.clone()}).await?,
+            _ => {
+                handle
+                    .delete_many(doc! {"_id": {"$in": ids.to_vec()}})
+                    .await?
+            }
+        };
         Ok(result.deleted_count)
     }
 
     /// Insert a copy of the document under a fresh `ObjectId`; returns the new id.
-    pub async fn clone_document(
+    pub(crate) async fn clone_document(
         &self,
         db: &str,
         collection: &str,

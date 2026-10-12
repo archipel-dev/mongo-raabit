@@ -207,11 +207,13 @@ fn form_built_pipelines_run_on_a_live_server() {
     let db = "raabit_test_stage_forms";
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
-            db,
-            "sales",
-            (0..30)
+        let _ = conn
+            .execute(mongo_raabit::core::Write::DropDatabase { db: db.to_owned() })
+            .await;
+        conn.execute(mongo_raabit::core::Write::InsertDocuments {
+            db: db.to_owned(),
+            collection: "sales".to_owned(),
+            documents: (0..30)
                 .map(|i| {
                     doc! {
                         "region": (["north", "south", "east"][i % 3]),
@@ -220,17 +222,17 @@ fn form_built_pipelines_run_on_a_live_server() {
                     }
                 })
                 .collect(),
-        )
+        })
         .await
         .unwrap();
-        conn.insert_documents(
-            db,
-            "regions",
-            vec![
+        conn.execute(mongo_raabit::core::Write::InsertDocuments {
+            db: db.to_owned(),
+            collection: "regions".to_owned(),
+            documents: vec![
                 doc! {"_id": "north", "manager": "Ada"},
                 doc! {"_id": "east", "manager": "Grace"},
             ],
-        )
+        })
         .await
         .unwrap();
     });
@@ -396,6 +398,8 @@ fn form_built_pipelines_run_on_a_live_server() {
         ]
     );
     rt.block_on(async {
-        conn.drop_database(db).await.unwrap();
+        conn.execute(mongo_raabit::core::Write::DropDatabase { db: db.to_owned() })
+            .await
+            .unwrap();
     });
 }

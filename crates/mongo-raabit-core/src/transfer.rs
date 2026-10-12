@@ -759,6 +759,11 @@ impl Connection {
                 find.await?
             }
             ExportSource::Aggregate(pipeline) => {
+                if crate::write::pipeline_writes(pipeline) {
+                    return Err(RaabitError::Invalid(
+                        "an export pipeline cannot end with $out or $merge".into(),
+                    ));
+                }
                 handle
                     .aggregate(pipeline.clone())
                     .allow_disk_use(true)
@@ -781,7 +786,7 @@ impl Connection {
     }
 
     /// Write documents in batches of 1000, continuing past individual failures.
-    pub async fn import(
+    pub(crate) async fn import(
         &self,
         db: &str,
         collection: &str,

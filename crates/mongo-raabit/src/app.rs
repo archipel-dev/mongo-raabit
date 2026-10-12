@@ -5,7 +5,6 @@ use crate::dialogs::{
 };
 use crate::jobs::Jobs;
 use crate::manager::ConnectionManager;
-use mongo_raabit_core::Connection;
 use mongo_raabit_core::bson::{Bson, Document};
 use mongo_raabit_core::codegen::{CodeRequest, Operation};
 use mongo_raabit_core::connection::{
@@ -14,7 +13,7 @@ use mongo_raabit_core::connection::{
 use mongo_raabit_core::profile::{ConnectionProfile, ProfileStore};
 use mongo_raabit_core::query::{Page, Query, QueryText};
 use mongo_raabit_core::secrets::{MemorySecretStore, SecretStore};
-use mongo_raabit_core::shell;
+use mongo_raabit_core::{Connection, Write, WriteOutcome};
 use mongo_raabit_core::{documents, status, tabs};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -661,24 +660,22 @@ impl MongoRaabit {
             async move {
                 match mode {
                     DocumentMode::Edit(id) => conn
-                        .replace_document(&db, &coll, &id, doc)
+                        .execute(Write::ReplaceDocument {
+                            db,
+                            collection: coll,
+                            id,
+                            replacement: doc,
+                        })
                         .await
-                        .map(|()| "Document saved".to_owned()),
-                    DocumentMode::Insert => {
-                        conn.insert_documents(&db, &coll, vec![doc])
-                            .await
-                            .map(|ids| {
-                                format!(
-                                    "Inserted document {}",
-                                    ids.first()
-                                        .map(|id| shell::to_shell_string(
-                                            id,
-                                            shell::ShellStyle::Compact
-                                        ))
-                                        .unwrap_or_default()
-                                )
-                            })
-                    }
+                        .map(|_| "Document saved".to_owned()),
+                    DocumentMode::Insert => conn
+                        .execute(Write::InsertDocuments {
+                            db,
+                            collection: coll,
+                            documents: vec![doc],
+                        })
+                        .await
+                        .map(|outcome| outcome.message()),
                 }
             },
             move |app: &mut MongoRaabit, result| match result {
@@ -702,11 +699,22 @@ impl MongoRaabit {
             return;
         };
         self.jobs.spawn(
-            async move { conn.delete_documents(&db, &coll, &ids).await },
+            async move {
+                conn.execute(Write::DeleteDocuments {
+                    db,
+                    collection: coll,
+                    ids,
+                })
+                .await
+            },
             move |app: &mut MongoRaabit, result| {
                 app.dialog = None;
                 match result {
-                    Ok(n) => {
+                    Ok(outcome) => {
+                        let n = match outcome {
+                            WriteOutcome::Deleted(n) => n,
+                            _ => 0,
+                        };
                         app.status = status::deleted_documents(n);
                         if let Some(tab) = app.collection_tab_mut(tab_id) {
                             tab.selected = None;
@@ -748,9 +756,18 @@ impl MongoRaabit {
         };
         let path = edit.path.clone();
         self.jobs.spawn(
-            async move { conn.set_field(&db, &coll, &id, &path, Some(value)).await },
+            async move {
+                conn.execute(Write::SetField {
+                    db,
+                    collection: coll,
+                    id,
+                    path,
+                    value: Some(value),
+                })
+                .await
+            },
             move |app: &mut MongoRaabit, result| match result {
-                Ok(()) => {
+                Ok(_) => {
                     app.status = format!("Updated {}", edit.path);
                     app.run_query(tab_id, false);
                 }

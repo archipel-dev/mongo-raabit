@@ -82,6 +82,11 @@ impl Connection {
         script: &str,
         timeout: Duration,
     ) -> Result<ShellOutput> {
+        // mongosh runs arbitrary JavaScript on its own connection: nothing can limit it to
+        // reads, so a read-only connection never starts it.
+        self.ensure_writable(|| {
+            "running mongosh (it cannot be limited to reads; use the built-in shell)".to_owned()
+        })?;
         // Point the URI at `db` so `db` in the script is the selected database.
         let uri = with_database(self.connection_uri(), db);
         // The prelude shares line 1 with the script so error positions stay right.

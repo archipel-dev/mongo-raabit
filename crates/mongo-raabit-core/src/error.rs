@@ -23,6 +23,9 @@ pub enum RaabitError {
     Io(#[from] std::io::Error),
     #[error("serialization error: {0}")]
     Serde(String),
+    /// A change was asked of a read-only connection; nothing was sent to the server.
+    #[error("read-only connection: {0} was blocked, nothing was changed")]
+    ReadOnly(String),
 }
 
 impl RaabitError {

@@ -3,10 +3,23 @@
 use archipel_sdk::kit::{self, Theme, egui};
 use mongo_raabit::MongoRaabit;
 use mongo_raabit::app::{Load, SessionState, TabKind};
+use mongo_raabit::core::Write;
 use mongo_raabit::core::bson::doc;
 use mongo_raabit::core::connection::CollectionKind;
 use mongo_raabit::core::profile::ConnectionProfile;
 use std::time::Duration;
+
+fn drop(db: &str) -> Write {
+    Write::DropDatabase { db: db.to_owned() }
+}
+
+fn insert(db: &str, collection: &str, documents: Vec<mongo_raabit::core::bson::Document>) -> Write {
+    Write::InsertDocuments {
+        db: db.to_owned(),
+        collection: collection.to_owned(),
+        documents,
+    }
+}
 
 fn uri() -> String {
     std::env::var("MONGO_RAABIT_TEST_URI").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".into())
@@ -32,14 +45,14 @@ fn connect_browse_query_and_page() {
     let db = "raabit_test_ui_flow";
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
+        let _ = conn.execute(drop(db)).await;
+        conn.execute(insert(
             db,
             "items",
             (0..120)
                 .map(|i| doc! {"i": i, "even": i % 2 == 0})
                 .collect(),
-        )
+        ))
         .await
         .unwrap();
     });
@@ -109,7 +122,7 @@ fn connect_browse_query_and_page() {
     app.disconnect(session);
     assert!(app.tabs.iter().all(|t| matches!(t.kind, TabKind::Welcome)));
     rt.block_on(async {
-        conn.drop_database(db).await.unwrap();
+        conn.execute(drop(db)).await.unwrap();
     });
 }
 
@@ -132,15 +145,15 @@ fn edit_insert_clone_delete_explain_and_code() {
     let db = "raabit_test_ui_crud";
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
+        let _ = conn.execute(drop(db)).await;
+        conn.execute(insert(
             db,
             "people",
             vec![
                 doc! {"_id": 1, "name": "Ada", "tier": "pro"},
                 doc! {"_id": 2, "name": "Linus"},
             ],
-        )
+        ))
         .await
         .unwrap();
     });
@@ -256,7 +269,7 @@ fn edit_insert_clone_delete_explain_and_code() {
         "db.getCollection(\"people\").find({ name: \"Ada L.\" })"
     );
     rt.block_on(async {
-        conn.drop_database(db).await.unwrap();
+        conn.execute(drop(db)).await.unwrap();
     });
 }
 
@@ -277,12 +290,12 @@ fn aggregation_sql_schema_and_index_tabs() {
     let db = "raabit_test_ui_tools";
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
+        let _ = conn.execute(drop(db)).await;
+        conn.execute(insert(
             db,
             "sales",
             (0..30).map(|i| doc! {"region": (["north", "south", "east"][i % 3]), "amount": i as i32 * 10}).collect(),
-        )
+        ))
         .await
         .unwrap();
     });
@@ -431,7 +444,7 @@ fn aggregation_sql_schema_and_index_tabs() {
         });
     }
     rt.block_on(async {
-        conn.drop_database(db).await.unwrap();
+        conn.execute(drop(db)).await.unwrap();
     });
 }
 
@@ -455,8 +468,8 @@ fn visual_query_builder_runs_its_query() {
     let db = "raabit_test_ui_query_builder";
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
+        let _ = conn.execute(drop(db)).await;
+        conn.execute(insert(
             db,
             "people",
             (0..40)
@@ -469,7 +482,7 @@ fn visual_query_builder_runs_its_query() {
                     }
                 })
                 .collect(),
-        )
+        ))
         .await
         .unwrap();
     });
@@ -541,7 +554,7 @@ fn visual_query_builder_runs_its_query() {
         egui::CentralPanel::default().show(ctx, |ui| app.ui(ui));
     });
     rt.block_on(async {
-        conn.drop_database(db).await.unwrap();
+        conn.execute(drop(db)).await.unwrap();
     });
 }
 

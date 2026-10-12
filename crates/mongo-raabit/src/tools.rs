@@ -2,7 +2,6 @@
 //! the Query tab, and the Structure tab (Schema Explorer and Index Manager).
 
 use crate::app::{Load, MongoRaabit, ResultView, SessionId, Tab, TabId, TabKind};
-use mongo_raabit_core::Connection;
 use mongo_raabit_core::aggregate::{Pipeline, RunOptions, Stage, StagePreview};
 use mongo_raabit_core::bson::Document;
 use mongo_raabit_core::connection::IndexInfo;
@@ -10,6 +9,7 @@ use mongo_raabit_core::schema::{SampleMethod, SchemaReport};
 use mongo_raabit_core::shell_eval;
 use mongo_raabit_core::sql::{self, SqlTranslation};
 use mongo_raabit_core::tabs;
+use mongo_raabit_core::{Connection, Write};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -516,24 +516,53 @@ impl MongoRaabit {
                 return;
             }
         };
-        self.index_operation(tab_id, "Index created".into(), move |conn, db, coll| async move {
-            conn.create_index(&db, &coll, index).await.map(|_| ())
-        });
+        self.index_operation(
+            tab_id,
+            "Index created".into(),
+            move |conn, db, coll| async move {
+                conn.execute(Write::CreateIndex {
+                    db,
+                    collection: coll,
+                    index,
+                })
+                .await
+                .map(|_| ())
+            },
+        );
     }
 
     pub fn drop_index(&mut self, tab_id: TabId, name: String) {
         self.index_operation(
             tab_id,
             format!("Dropped index {name}"),
-            move |conn, db, coll| async move { conn.drop_index(&db, &coll, &name).await },
+            move |conn, db, coll| async move {
+                conn.execute(Write::DropIndex {
+                    db,
+                    collection: coll,
+                    name,
+                })
+                .await
+                .map(|_| ())
+            },
         );
     }
 
     pub fn set_index_hidden(&mut self, tab_id: TabId, name: String, hidden: bool) {
         let verb = if hidden { "Hid" } else { "Unhid" };
-        self.index_operation(tab_id, format!("{verb} index {name}"), move |conn, db, coll| async move {
-            conn.set_index_hidden(&db, &coll, &name, hidden).await
-        });
+        self.index_operation(
+            tab_id,
+            format!("{verb} index {name}"),
+            move |conn, db, coll| async move {
+                conn.execute(Write::SetIndexHidden {
+                    db,
+                    collection: coll,
+                    name,
+                    hidden,
+                })
+                .await
+                .map(|_| ())
+            },
+        );
     }
 }
 

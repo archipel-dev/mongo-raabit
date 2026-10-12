@@ -355,15 +355,17 @@ fn live(
     let conn = app.session(session).unwrap().connection()?.clone();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
-            db,
-            "people",
-            vec![
+        let _ = conn
+            .execute(mongo_raabit::core::Write::DropDatabase { db: db.to_owned() })
+            .await;
+        conn.execute(mongo_raabit::core::Write::InsertDocuments {
+            db: db.to_owned(),
+            collection: "people".to_owned(),
+            documents: vec![
                 doc! {"_id": 1, "name": "Ada", "age": 36, "address": {"city": "London"}},
                 doc! {"_id": 2, "name": "Linus", "age": 54},
             ],
-        )
+        })
         .await
         .unwrap();
     });
@@ -388,11 +390,15 @@ fn find(
     id: i32,
 ) -> Document {
     rt.block_on(async {
-        conn.collection(db, "people")
-            .find_one(doc! {"_id": id})
+        let query = mongo_raabit::core::query::Query {
+            filter: doc! {"_id": id},
+            ..Default::default()
+        };
+        conn.find_page(db, "people", &query, 0, 1)
             .await
             .unwrap()
-            .unwrap()
+            .documents
+            .remove(0)
     })
 }
 
@@ -432,7 +438,11 @@ fn editing_a_table_cell_updates_the_server() {
     harness.key_press(Key::ArrowDown);
     harness.run();
     assert_eq!(selected_document(&mut harness), Some(1));
-    rt.block_on(async { conn.drop_database(db).await.unwrap() });
+    rt.block_on(async {
+        conn.execute(mongo_raabit::core::Write::DropDatabase { db: db.to_owned() })
+            .await
+            .unwrap()
+    });
 }
 
 #[test]
@@ -462,5 +472,9 @@ fn editing_a_tree_value_updates_the_server() {
     settle(&mut harness);
     let stored = find(&rt, &conn, db, 1);
     assert_eq!(stored.get("age"), Some(&Bson::Int32(37)), "{stored:?}");
-    rt.block_on(async { conn.drop_database(db).await.unwrap() });
+    rt.block_on(async {
+        conn.execute(mongo_raabit::core::Write::DropDatabase { db: db.to_owned() })
+            .await
+            .unwrap()
+    });
 }
