@@ -82,19 +82,7 @@ impl MongoRaabit {
             .iter()
             .filter(|s| s.connection().is_some())
             .count();
-        let mut line = if connected > 0 {
-            format!("{connected} connected")
-        } else {
-            "Not connected".to_owned()
-        };
-        if !self.status.is_empty() {
-            line.push_str(" · ");
-            line.push_str(&self.status);
-        }
-        if self.jobs.busy() {
-            line.push_str(" · Working…");
-        }
-        line
+        core::status::status_line(connected, &self.status, self.jobs.busy())
     }
 
     fn tab_bar(&mut self, ui: &mut Ui) {

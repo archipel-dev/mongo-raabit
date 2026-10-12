@@ -8,6 +8,7 @@ pub mod aggregate;
 pub mod builder;
 pub mod codegen;
 pub mod connection;
+pub mod connection_form;
 pub mod documents;
 pub mod error;
 pub mod fields;
@@ -23,6 +24,8 @@ pub mod shell_eval;
 pub mod sql;
 pub mod sql_syntax;
 pub mod stage_form;
+pub mod status;
+pub mod tabs;
 pub mod transfer;
 pub mod tunnel;
 

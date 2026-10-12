@@ -260,6 +260,17 @@ pub fn json_text(docs: &[Document], first_index: u64) -> String {
     text
 }
 
+/// The value an inline cell edit writes: strings stay strings, anything else is read as a
+/// shell value. `Ok(None)` when it equals the original (nothing to save).
+pub fn cell_edit_value(original: Option<&Bson>, text: &str) -> Result<Option<Bson>, String> {
+    let value = match (original, shell::parse_value(text)) {
+        (Some(Bson::String(_)), _) => Bson::String(text.to_owned()),
+        (_, Ok(value)) => value,
+        (_, Err(err)) => return Err(err.to_string()),
+    };
+    Ok((original != Some(&value)).then_some(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +357,30 @@ mod tests {
         let text = json_text(&[doc! {"a": 1}, doc! {"a": 2}], 5);
         assert!(text.starts_with("// 5\n"));
         assert!(text.contains("// 6\n"));
+    }
+
+    #[test]
+    fn cell_edits_keep_strings_and_skip_no_ops() {
+        let text = Bson::String("12".into());
+        assert_eq!(
+            cell_edit_value(Some(&text), "12").unwrap(),
+            None,
+            "unchanged"
+        );
+        assert_eq!(
+            cell_edit_value(Some(&text), "13").unwrap(),
+            Some(Bson::String("13".into())),
+            "a string stays a string"
+        );
+        assert_eq!(
+            cell_edit_value(Some(&Bson::Int32(1)), "2").unwrap(),
+            Some(Bson::Int32(2))
+        );
+        assert_eq!(cell_edit_value(Some(&Bson::Int32(1)), "1").unwrap(), None);
+        assert!(cell_edit_value(Some(&Bson::Int32(1)), "{").is_err());
+        assert_eq!(
+            cell_edit_value(None, "true").unwrap(),
+            Some(Bson::Boolean(true))
+        );
     }
 }

@@ -15,6 +15,7 @@ use mongo_raabit_core::profile::{ConnectionProfile, ProfileStore};
 use mongo_raabit_core::query::{Page, Query, QueryText};
 use mongo_raabit_core::secrets::{MemorySecretStore, SecretStore};
 use mongo_raabit_core::shell;
+use mongo_raabit_core::{documents, status, tabs};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -325,7 +326,7 @@ impl MongoRaabit {
     /// Open a session for `profile` and load its databases.
     pub fn connect(&mut self, profile: ConnectionProfile) -> SessionId {
         let id = self.next_id();
-        self.status = format!("Connecting to {}…", profile.name);
+        self.status = status::connecting(&profile.name);
         self.sessions.push(Session {
             id,
             profile: profile.clone(),
@@ -344,11 +345,7 @@ impl MongoRaabit {
                 let name = session.profile.name.clone();
                 let connected = match result {
                     Ok(conn) => {
-                        let status = format!(
-                            "Connected to {name} — MongoDB {} ({})",
-                            conn.server().version,
-                            conn.server().topology
-                        );
+                        let status = status::connected(&name, conn.server());
                         session.state = SessionState::Connected(conn);
                         Some(status)
                     }
@@ -362,7 +359,7 @@ impl MongoRaabit {
                         app.status = status;
                         app.load_databases(id);
                     }
-                    None => app.status = format!("Connection to {name} failed"),
+                    None => app.status = status::connection_failed(&name),
                 }
             },
         );
@@ -373,8 +370,8 @@ impl MongoRaabit {
         if let Some(index) = self.sessions.iter().position(|s| s.id == id) {
             let session = self.sessions.remove(index);
             self.tabs.retain(|tab| tab.kind.session() != Some(id));
-            self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
-            self.status = format!("Disconnected from {}", session.profile.name);
+            self.active_tab = tabs::clamp_active(self.active_tab, self.tabs.len());
+            self.status = status::disconnected(&session.profile.name);
             if let SessionState::Connected(conn) = session.state {
                 self.jobs.spawn(conn.disconnect(), |_, ()| {});
             }
@@ -479,9 +476,7 @@ impl MongoRaabit {
     pub fn close_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.tabs.remove(index);
-            if self.active_tab >= index && self.active_tab > 0 {
-                self.active_tab -= 1;
-            }
+            self.active_tab = tabs::active_after_close(self.active_tab, index);
         }
     }
 
@@ -712,8 +707,7 @@ impl MongoRaabit {
                 app.dialog = None;
                 match result {
                     Ok(n) => {
-                        app.status =
-                            format!("Deleted {n} document{}", if n == 1 { "" } else { "s" });
+                        app.status = status::deleted_documents(n);
                         if let Some(tab) = app.collection_tab_mut(tab_id) {
                             tab.selected = None;
                         }
@@ -741,17 +735,14 @@ impl MongoRaabit {
         else {
             return;
         };
-        let value = match (&edit.original, shell::parse_value(&edit.text)) {
-            (Some(Bson::String(_)), _) => Bson::String(edit.text.clone()),
-            (_, Ok(value)) => value,
-            (_, Err(err)) => {
+        let value = match documents::cell_edit_value(edit.original.as_ref(), &edit.text) {
+            Ok(Some(value)) => value,
+            Ok(None) => return,
+            Err(err) => {
                 self.status = format!("Not saved: {err}");
                 return;
             }
         };
-        if edit.original.as_ref() == Some(&value) {
-            return;
-        }
         let Some((conn, db, coll)) = self.tab_context(tab_id) else {
             return;
         };
@@ -813,11 +804,7 @@ impl MongoRaabit {
             }
         };
         let (session, db, coll) = (tab.session, tab.db.clone(), tab.collection.clone());
-        // Never put real passwords into generated code.
-        let uri = self
-            .session(session)
-            .map(|s| s.profile.display_uri().replace(":****@", ":<password>@"))
-            .unwrap_or_else(|| "mongodb://localhost:27017".into());
+        let uri = status::code_uri(self.session(session).map(|s| &s.profile));
         self.dialog = Some(Dialog::Code(CodeDialog {
             title: format!("Query Code  {db}.{coll}"),
             shell: query.to_shell(&coll),

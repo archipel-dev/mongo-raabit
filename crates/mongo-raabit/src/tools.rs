@@ -7,7 +7,9 @@ use mongo_raabit_core::aggregate::{Pipeline, RunOptions, Stage, StagePreview};
 use mongo_raabit_core::bson::Document;
 use mongo_raabit_core::connection::IndexInfo;
 use mongo_raabit_core::schema::{SampleMethod, SchemaReport};
+use mongo_raabit_core::shell_eval;
 use mongo_raabit_core::sql::{self, SqlTranslation};
+use mongo_raabit_core::tabs;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -47,7 +49,7 @@ impl AggregationTab {
     pub fn insert_stage(&mut self, at: usize, stage: Stage) {
         let at = at.min(self.pipeline.stages.len());
         self.pipeline.stages.insert(at, stage);
-        self.remap_stages(|i| Some(if i >= at { i + 1 } else { i }));
+        self.remap_stages(|i| Some(tabs::after_insert(i, at)));
     }
 
     /// Remove stage `index`, keeping per-stage editor modes aligned.
@@ -56,11 +58,7 @@ impl AggregationTab {
             return;
         }
         self.pipeline.stages.remove(index);
-        self.remap_stages(|i| match i.cmp(&index) {
-            std::cmp::Ordering::Less => Some(i),
-            std::cmp::Ordering::Equal => None,
-            std::cmp::Ordering::Greater => Some(i - 1),
-        });
+        self.remap_stages(|i| tabs::after_remove(i, index));
     }
 
     /// Move a stage, keeping per-stage editor modes aligned.
@@ -70,17 +68,7 @@ impl AggregationTab {
             return;
         }
         self.pipeline.move_stage(from, to);
-        self.remap_stages(|i| {
-            Some(if i == from {
-                to
-            } else if from < to && i > from && i <= to {
-                i - 1
-            } else if to < from && i >= to && i < from {
-                i + 1
-            } else {
-                i
-            })
-        });
+        self.remap_stages(|i| Some(tabs::after_move(i, from, to)));
     }
 
     fn remap_stages(&mut self, map: impl Fn(usize) -> Option<usize>) {
@@ -751,26 +739,17 @@ impl MongoRaabit {
                             .run_mongosh(&path, &db, &script, Duration::from_secs(120))
                             .await
                         {
-                            Ok(out) => {
-                                let mut output = out.stdout.trim_end().to_owned();
-                                if !out.stderr.trim().is_empty() {
-                                    if !output.is_empty() {
-                                        output.push('\n');
-                                    }
-                                    output.push_str(out.stderr.trim_end());
-                                }
-                                (
-                                    ShellEntry {
-                                        script,
-                                        output,
-                                        ok: out.success,
-                                        elapsed: out.elapsed,
-                                        value: out.value,
-                                        engine: "mongosh",
-                                    },
-                                    db,
-                                )
-                            }
+                            Ok(out) => (
+                                ShellEntry {
+                                    script,
+                                    output: shell_eval::mongosh_console(&out.stdout, &out.stderr),
+                                    ok: out.success,
+                                    elapsed: out.elapsed,
+                                    value: out.value,
+                                    engine: "mongosh",
+                                },
+                                db,
+                            ),
                             Err(err) => (
                                 ShellEntry {
                                     script,
@@ -787,29 +766,11 @@ impl MongoRaabit {
                     _ => {
                         let mut current = db;
                         let results = conn.eval_builtin(&mut current, &script).await;
-                        let mut output = String::new();
-                        let mut ok = true;
-                        let mut value = None;
-                        for evaluated in &results {
-                            match &evaluated.result {
-                                Ok(v) => {
-                                    output.push_str(&mongo_raabit_core::shell::to_shell_string(
-                                        v,
-                                        mongo_raabit_core::shell::ShellStyle::Pretty(2),
-                                    ));
-                                    value = Some(v.clone());
-                                }
-                                Err(err) => {
-                                    ok = false;
-                                    output.push_str(&format!("Error: {err}"));
-                                }
-                            }
-                            output.push('\n');
-                        }
+                        let (output, ok, value) = shell_eval::builtin_console(&results);
                         (
                             ShellEntry {
                                 script,
-                                output: output.trim_end().to_owned(),
+                                output,
                                 ok,
                                 elapsed: start.elapsed(),
                                 value,

@@ -639,6 +639,39 @@ pub fn completions_at(
     })
 }
 
+/// The console text of a mongosh run: stdout, then stderr on its own lines.
+pub fn mongosh_console(stdout: &str, stderr: &str) -> String {
+    let mut output = stdout.trim_end().to_owned();
+    if !stderr.trim().is_empty() {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(stderr.trim_end());
+    }
+    output
+}
+
+/// The console text of built-in evaluations, whether all succeeded, and the last value.
+pub fn builtin_console(results: &[Evaluated]) -> (String, bool, Option<Bson>) {
+    let mut output = String::new();
+    let mut ok = true;
+    let mut value = None;
+    for evaluated in results {
+        match &evaluated.result {
+            Ok(v) => {
+                output.push_str(&shell::to_shell_string(v, shell::ShellStyle::Pretty(2)));
+                value = Some(v.clone());
+            }
+            Err(err) => {
+                ok = false;
+                output.push_str(&format!("Error: {err}"));
+            }
+        }
+        output.push('\n');
+    }
+    (output.trim_end().to_owned(), ok, value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,5 +741,27 @@ mod tests {
         let site = completions_at("db.pro\nprint(1)", 6, &collections).unwrap();
         assert_eq!(site.start, 3);
         assert_eq!(completions_at("x = 5", 5, &collections), None);
+    }
+
+    #[test]
+    fn console_text_of_runs() {
+        assert_eq!(mongosh_console("out\n\n", ""), "out");
+        assert_eq!(mongosh_console("out\n", "warn\n"), "out\nwarn");
+        assert_eq!(mongosh_console("", "warn"), "warn");
+        let results = [
+            Evaluated {
+                statement: "1".into(),
+                result: Ok(Bson::Int32(1)),
+            },
+            Evaluated {
+                statement: "x".into(),
+                result: Err("boom".into()),
+            },
+        ];
+        let (output, ok, value) = builtin_console(&results);
+        assert_eq!(output, "1\nError: boom");
+        assert!(!ok);
+        assert_eq!(value, Some(Bson::Int32(1)));
+        assert_eq!(builtin_console(&[]), (String::new(), true, None));
     }
 }
