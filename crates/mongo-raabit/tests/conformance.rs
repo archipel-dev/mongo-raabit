@@ -22,6 +22,7 @@ fn toolbar_icon_buttons() {
         (Icon::Plug, "Connection Manager… (Ctrl+N)"),
         (Icon::Plus, "New connection"),
         (Icon::Import, "Import from connection string"),
+        (Icon::Save, "Save connection"),
         (Icon::Copy, "Duplicate"),
     ] {
         testing::conformance(label, |ui, enabled| {
@@ -45,32 +46,12 @@ fn destructive_icon_button() {
 
 #[test]
 fn buttons() {
-    testing::conformance("Connect", |ui, enabled| {
-        ui.add(
-            Button::secondary("Connect")
-                .icon(Icon::Plug)
-                .enabled(enabled),
-        )
-    })
-    .run();
-    testing::conformance("Test Connection", |ui, enabled| {
-        ui.add(
-            Button::secondary("Test Connection")
-                .icon(Icon::Pulse)
-                .enabled(enabled),
-        )
-    })
-    .run();
     testing::conformance("Connect…", |ui, enabled| {
         ui.add(
             Button::primary("Connect…")
                 .icon(Icon::Plug)
                 .enabled(enabled),
         )
-    })
-    .run();
-    testing::conformance("Close", |ui, enabled| {
-        ui.add(Button::ghost("Close").enabled(enabled))
     })
     .run();
 }
@@ -116,7 +97,8 @@ fn query_field_takes_text() {
     let mut harness = testing::harness_state(Theme::dark(), String::new(), |ui, text| {
         widgets::query_field(ui, "Filter", text, "{ }", 240.0);
     });
-    let input = harness.get_by_label("Filter");
+    let input =
+        harness.get_by_role_and_label(archipel_sdk::kit::testing::Role::TextInput, "Filter");
     input.focus();
     input.type_text("{a: 1}");
     harness.run();
@@ -256,6 +238,50 @@ fn node_menu_items() {
                 .icon(Icon::Sql)
                 .enabled(enabled),
         )
+    })
+    .run();
+}
+
+#[test]
+fn safety_checkboxes_with_comments() {
+    for (label, comment) in [
+        (
+            "Read-only",
+            "Blocks every change to the database: edits, inserts, deletes, index and collection changes, writing shell commands",
+        ),
+        (
+            "Don't ask again",
+            "Runs changes without this confirmation; turn it back on in Settings",
+        ),
+    ] {
+        testing::conformance(label, move |ui, enabled| {
+            let mut on = false;
+            ui.add(
+                Checkbox::new(&mut on, label)
+                    .comment(comment)
+                    .enabled(enabled),
+            )
+        })
+        .run();
+    }
+}
+
+#[test]
+fn settings_menu_item() {
+    testing::conformance("Settings…", |ui, enabled| {
+        ui.add(
+            MenuItem::new("Settings…")
+                .icon(Icon::Settings)
+                .enabled(enabled),
+        )
+    })
+    .run();
+}
+
+#[test]
+fn more_actions_button() {
+    testing::conformance("More actions", |ui, enabled| {
+        ui.add(IconButton::new(archipel_sdk::kit::Glyph::More, "More actions").enabled(enabled))
     })
     .run();
 }

@@ -1,14 +1,17 @@
 //! State and background operations of the tool tabs: Aggregation Editor, SQL mode of
 //! the Query tab, and the Structure tab (Schema Explorer and Index Manager).
 
+use crate::app::bounded;
 use crate::app::{Load, MongoRaabit, ResultView, SessionId, Tab, TabId, TabKind};
-use mongo_raabit_core::Connection;
+use crate::writes::{PendingWrite, WriteOrigin};
 use mongo_raabit_core::aggregate::{Pipeline, RunOptions, Stage, StagePreview};
 use mongo_raabit_core::bson::Document;
-use mongo_raabit_core::connection::{IndexInfo, NewIndex};
+use mongo_raabit_core::connection::IndexInfo;
 use mongo_raabit_core::schema::{SampleMethod, SchemaReport};
-use mongo_raabit_core::shell;
+use mongo_raabit_core::shell_eval;
 use mongo_raabit_core::sql::{self, SqlTranslation};
+use mongo_raabit_core::tabs;
+use mongo_raabit_core::{Connection, Write};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -48,7 +51,7 @@ impl AggregationTab {
     pub fn insert_stage(&mut self, at: usize, stage: Stage) {
         let at = at.min(self.pipeline.stages.len());
         self.pipeline.stages.insert(at, stage);
-        self.remap_stages(|i| Some(if i >= at { i + 1 } else { i }));
+        self.remap_stages(|i| Some(tabs::after_insert(i, at)));
     }
 
     /// Remove stage `index`, keeping per-stage editor modes aligned.
@@ -57,11 +60,7 @@ impl AggregationTab {
             return;
         }
         self.pipeline.stages.remove(index);
-        self.remap_stages(|i| match i.cmp(&index) {
-            std::cmp::Ordering::Less => Some(i),
-            std::cmp::Ordering::Equal => None,
-            std::cmp::Ordering::Greater => Some(i - 1),
-        });
+        self.remap_stages(|i| tabs::after_remove(i, index));
     }
 
     /// Move a stage, keeping per-stage editor modes aligned.
@@ -71,17 +70,7 @@ impl AggregationTab {
             return;
         }
         self.pipeline.move_stage(from, to);
-        self.remap_stages(|i| {
-            Some(if i == from {
-                to
-            } else if from < to && i > from && i <= to {
-                i - 1
-            } else if to < from && i >= to && i < from {
-                i + 1
-            } else {
-                i
-            })
-        });
+        self.remap_stages(|i| Some(tabs::after_move(i, from, to)));
     }
 
     fn remap_stages(&mut self, map: impl Fn(usize) -> Option<usize>) {
@@ -116,46 +105,7 @@ pub struct SchemaTab {
     pub selected: Option<usize>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct IndexForm {
-    pub keys: String,
-    pub name: String,
-    pub unique: bool,
-    pub sparse: bool,
-    pub hidden: bool,
-    pub ttl: String,
-    pub partial: String,
-}
-
-impl IndexForm {
-    pub fn to_new_index(&self) -> Result<NewIndex, String> {
-        let keys = shell::parse_document(&self.keys).map_err(|e| format!("keys: {e}"))?;
-        if keys.is_empty() {
-            return Err("add at least one key, e.g. { email: 1 }".into());
-        }
-        let partial =
-            shell::parse_document(&self.partial).map_err(|e| format!("partial filter: {e}"))?;
-        let ttl = if self.ttl.trim().is_empty() {
-            None
-        } else {
-            Some(
-                self.ttl
-                    .trim()
-                    .parse::<u64>()
-                    .map_err(|_| "TTL must be seconds".to_owned())?,
-            )
-        };
-        Ok(NewIndex {
-            keys,
-            name: Some(self.name.trim().to_owned()).filter(|n| !n.is_empty()),
-            unique: self.unique,
-            sparse: self.sparse,
-            hidden: self.hidden,
-            ttl_seconds: ttl,
-            partial_filter: (!partial.is_empty()).then_some(partial),
-        })
-    }
-}
+pub use mongo_raabit_core::indexes::IndexForm;
 
 /// Which half of the Structure tab is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -186,7 +136,7 @@ pub struct IndexTab {
 }
 
 impl MongoRaabit {
-    fn connection_for(&self, session: SessionId) -> Option<Connection> {
+    pub(crate) fn connection_for(&self, session: SessionId) -> Option<Connection> {
         self.session(session)?.connection().cloned()
     }
 
@@ -305,15 +255,32 @@ impl MongoRaabit {
                 return;
             }
         };
-        tab.result = Load::Loading;
         let (session, db, coll) = (tab.session, tab.db.clone(), tab.collection.clone());
+        if mongo_raabit_core::write::pipeline_writes(&stages) {
+            // `$out` / `$merge` change data: the guarded write path, with its confirmation.
+            self.request_write(PendingWrite {
+                session,
+                write: Write::Aggregate {
+                    db,
+                    collection: coll,
+                    pipeline: stages,
+                },
+                origin: WriteOrigin::Pipeline(tab_id),
+            });
+            return;
+        }
+        tab.result = Load::Loading;
         let Some(conn) = self.connection_for(session) else {
             return;
         };
+        let limit = self.settings.query_timeout();
         self.jobs.spawn(
             async move {
-                conn.aggregate(&db, &coll, stages, RunOptions::default(), RUN_LIMIT)
-                    .await
+                bounded(
+                    limit,
+                    conn.aggregate(&db, &coll, stages, RunOptions::default(), RUN_LIMIT),
+                )
+                .await
             },
             move |app: &mut MongoRaabit, result| {
                 if let Some(tab) = app.aggregation_tab_mut(tab_id) {
@@ -370,10 +337,14 @@ impl MongoRaabit {
         };
         let collection = translation.collection().to_owned();
         let pipeline = translation.pipeline();
+        let limit = self.settings.query_timeout();
         self.jobs.spawn(
             async move {
-                conn.aggregate(&db, &collection, pipeline, RunOptions::default(), RUN_LIMIT)
-                    .await
+                bounded(
+                    limit,
+                    conn.aggregate(&db, &collection, pipeline, RunOptions::default(), RUN_LIMIT),
+                )
+                .await
             },
             move |app: &mut MongoRaabit, result| {
                 if let Some(tab) = app.sql_tab_mut(tab_id) {
@@ -418,7 +389,7 @@ impl MongoRaabit {
                 session,
                 db: db.to_owned(),
                 collection: collection.to_owned(),
-                size: 1000,
+                size: u64::from(self.settings.schema_sample_size),
                 method: SampleMethod::Random,
                 report: Load::Idle,
                 selected: None,
@@ -523,38 +494,22 @@ impl MongoRaabit {
         );
     }
 
-    /// Run an index change, then reload the list.
-    fn index_operation<F>(
+    /// Ask for an index change; the list reloads after it ran.
+    fn index_operation(
         &mut self,
         tab_id: TabId,
         done: String,
-        op: impl FnOnce(Connection, String, String) -> F + Send + 'static,
-    ) where
-        F: std::future::Future<Output = mongo_raabit_core::Result<()>> + Send + 'static,
-    {
+        write: impl FnOnce(String, String) -> Write,
+    ) {
         let Some(tab) = self.index_tab_mut(tab_id) else {
             return;
         };
-        tab.busy = true;
-        tab.error = None;
         let (session, db, coll) = (tab.session, tab.db.clone(), tab.collection.clone());
-        let Some(conn) = self.connection_for(session) else {
-            return;
-        };
-        self.jobs
-            .spawn(op(conn, db, coll), move |app: &mut MongoRaabit, result| {
-                if let Some(tab) = app.index_tab_mut(tab_id) {
-                    tab.busy = false;
-                    match result {
-                        Ok(()) => {
-                            tab.form_open = false;
-                            app.status = done;
-                            app.load_indexes(tab_id);
-                        }
-                        Err(err) => tab.error = Some(err.to_string()),
-                    }
-                }
-            });
+        self.request_write(PendingWrite {
+            session,
+            write: write(db, coll),
+            origin: WriteOrigin::Index(tab_id, done),
+        });
     }
 
     pub fn create_index(&mut self, tab_id: TabId) {
@@ -568,8 +523,12 @@ impl MongoRaabit {
                 return;
             }
         };
-        self.index_operation(tab_id, "Index created".into(), move |conn, db, coll| async move {
-            conn.create_index(&db, &coll, index).await.map(|_| ())
+        self.index_operation(tab_id, "Index created".into(), move |db, collection| {
+            Write::CreateIndex {
+                db,
+                collection,
+                index,
+            }
         });
     }
 
@@ -577,15 +536,26 @@ impl MongoRaabit {
         self.index_operation(
             tab_id,
             format!("Dropped index {name}"),
-            move |conn, db, coll| async move { conn.drop_index(&db, &coll, &name).await },
+            move |db, collection| Write::DropIndex {
+                db,
+                collection,
+                name,
+            },
         );
     }
 
     pub fn set_index_hidden(&mut self, tab_id: TabId, name: String, hidden: bool) {
         let verb = if hidden { "Hid" } else { "Unhid" };
-        self.index_operation(tab_id, format!("{verb} index {name}"), move |conn, db, coll| async move {
-            conn.set_index_hidden(&db, &coll, &name, hidden).await
-        });
+        self.index_operation(
+            tab_id,
+            format!("{verb} index {name}"),
+            move |db, collection| Write::SetIndexHidden {
+                db,
+                collection,
+                name,
+                hidden,
+            },
+        );
     }
 }
 
@@ -634,25 +604,6 @@ mod tests {
         tab.remove_stage(9);
         assert_eq!(tab.pipeline.stages.len(), 3);
     }
-
-    #[test]
-    fn index_form_validation() {
-        let mut form = IndexForm {
-            keys: "{ email: 1, 'address.city': -1 }".into(),
-            ttl: "3600".into(),
-            partial: "{ active: true }".into(),
-            ..IndexForm::default()
-        };
-        let index = form.to_new_index().unwrap();
-        assert_eq!(index.keys.len(), 2);
-        assert_eq!(index.ttl_seconds, Some(3600));
-        assert!(index.partial_filter.is_some());
-        form.keys = "{}".into();
-        assert!(form.to_new_index().is_err());
-        form.keys = "{a: 1}".into();
-        form.ttl = "soon".into();
-        assert!(form.to_new_index().is_err());
-    }
 }
 
 // ----- shell ------------------------------------------------------------------------------
@@ -695,22 +646,8 @@ pub struct ShellTab {
     pub collections: Vec<String>,
 }
 
-/// Results as documents for the tree view: arrays of documents stay as they are, a
-/// single document or scalar is wrapped.
-pub fn shell_documents(value: &mongo_raabit_core::bson::Bson) -> Vec<Document> {
-    use mongo_raabit_core::bson::{Bson, doc};
-    match value {
-        Bson::Array(items) => items
-            .iter()
-            .map(|item| match item {
-                Bson::Document(d) => d.clone(),
-                other => doc! {"value": other.clone()},
-            })
-            .collect(),
-        Bson::Document(d) => vec![d.clone()],
-        other => vec![doc! {"value": other.clone()}],
-    }
-}
+/// Results as documents for the tree view (see [`result_documents`]).
+pub use mongo_raabit_core::shell::result_documents as shell_documents;
 
 impl MongoRaabit {
     /// Opens the Query tab of `collection` in Shell mode. Without a collection the first
@@ -793,7 +730,8 @@ impl MongoRaabit {
         self.collection_tab_mut(id)?.shell.as_deref_mut()
     }
 
-    /// Run the shell tab's script (or `selection`, when given).
+    /// Run the shell tab's script (or `selection`, when given). A script that calls write
+    /// methods is confirmed first when the settings ask for it.
     pub fn run_shell(&mut self, tab_id: TabId, selection: Option<String>) {
         let Some(tab) = self.shell_tab_mut(tab_id) else {
             return;
@@ -805,8 +743,30 @@ impl MongoRaabit {
         if script.trim().is_empty() {
             return;
         }
+        let (session, db) = (tab.session, tab.db.clone());
+        // A read-only connection cannot write anyway: no question to ask.
+        if !self.session_read_only(session) && self.confirm_script(tab_id, &db, &script) {
+            return;
+        }
+        self.run_shell_script(tab_id, script);
+    }
+
+    /// Run `script` in the shell tab now. On a read-only connection it always runs in
+    /// the built-in shell, whose writes the core refuses (mongosh cannot be limited).
+    pub fn run_shell_script(&mut self, tab_id: TabId, script: String) {
+        let read_only = self
+            .shell_tab_mut(tab_id)
+            .map(|t| t.session)
+            .is_some_and(|s| self.session_read_only(s));
+        let timeout = self.settings.query_timeout();
+        let Some(tab) = self.shell_tab_mut(tab_id) else {
+            return;
+        };
+        if tab.running {
+            return;
+        }
         tab.running = true;
-        let engine = if tab.force_builtin {
+        let engine = if tab.force_builtin || read_only {
             ShellEngine::Builtin
         } else {
             tab.engine.clone()
@@ -820,30 +780,18 @@ impl MongoRaabit {
                 let start = std::time::Instant::now();
                 match engine {
                     ShellEngine::Mongosh { path, .. } => {
-                        match conn
-                            .run_mongosh(&path, &db, &script, Duration::from_secs(120))
-                            .await
-                        {
-                            Ok(out) => {
-                                let mut output = out.stdout.trim_end().to_owned();
-                                if !out.stderr.trim().is_empty() {
-                                    if !output.is_empty() {
-                                        output.push('\n');
-                                    }
-                                    output.push_str(out.stderr.trim_end());
-                                }
-                                (
-                                    ShellEntry {
-                                        script,
-                                        output,
-                                        ok: out.success,
-                                        elapsed: out.elapsed,
-                                        value: out.value,
-                                        engine: "mongosh",
-                                    },
-                                    db,
-                                )
-                            }
+                        match conn.run_mongosh(&path, &db, &script, timeout).await {
+                            Ok(out) => (
+                                ShellEntry {
+                                    script,
+                                    output: shell_eval::mongosh_console(&out.stdout, &out.stderr),
+                                    ok: out.success,
+                                    elapsed: out.elapsed,
+                                    value: out.value,
+                                    engine: "mongosh",
+                                },
+                                db,
+                            ),
                             Err(err) => (
                                 ShellEntry {
                                     script,
@@ -860,29 +808,11 @@ impl MongoRaabit {
                     _ => {
                         let mut current = db;
                         let results = conn.eval_builtin(&mut current, &script).await;
-                        let mut output = String::new();
-                        let mut ok = true;
-                        let mut value = None;
-                        for evaluated in &results {
-                            match &evaluated.result {
-                                Ok(v) => {
-                                    output.push_str(&mongo_raabit_core::shell::to_shell_string(
-                                        v,
-                                        mongo_raabit_core::shell::ShellStyle::Pretty(2),
-                                    ));
-                                    value = Some(v.clone());
-                                }
-                                Err(err) => {
-                                    ok = false;
-                                    output.push_str(&format!("Error: {err}"));
-                                }
-                            }
-                            output.push('\n');
-                        }
+                        let (output, ok, value) = shell_eval::builtin_console(&results);
                         (
                             ShellEntry {
                                 script,
-                                output: output.trim_end().to_owned(),
+                                output,
                                 ok,
                                 elapsed: start.elapsed(),
                                 value,

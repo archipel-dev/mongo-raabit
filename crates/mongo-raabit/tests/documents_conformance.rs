@@ -6,7 +6,7 @@ mod common;
 
 use archipel_sdk::kit::components::code::JavaScript;
 use archipel_sdk::kit::components::{
-    Banner, Button, Checkbox, CodeEditor, Dropdown, IconButton, SegmentedControl, Severity,
+    Banner, Checkbox, CodeEditor, Dropdown, IconButton, SegmentedControl, Severity,
 };
 use archipel_sdk::kit::egui::{Key, Modifiers, vec2};
 use archipel_sdk::kit::testing::{self, Queryable};
@@ -48,36 +48,6 @@ fn toolbar_icon_buttons() {
                 .tone(Tone::Error)
                 .enabled(enabled),
         )
-    })
-    .run();
-}
-
-#[test]
-fn dialog_buttons() {
-    testing::conformance("Format", |ui, enabled| {
-        ui.add(
-            Button::secondary("Format")
-                .icon(Icon::Json)
-                .enabled(enabled),
-        )
-    })
-    .run();
-    for label in ["Insert", "Save"] {
-        testing::conformance(label, |ui, enabled| {
-            ui.add(Button::primary(label).icon(Icon::Check).enabled(enabled))
-        })
-        .run();
-    }
-    testing::conformance("Cancel", |ui, enabled| {
-        ui.add(Button::secondary("Cancel").enabled(enabled))
-    })
-    .run();
-    testing::conformance("Copy", |ui, enabled| {
-        ui.add(Button::primary("Copy").icon(Icon::Copy).enabled(enabled))
-    })
-    .run();
-    testing::conformance("Delete", |ui, enabled| {
-        ui.add(Button::danger("Delete").enabled(enabled))
     })
     .run();
 }
@@ -194,7 +164,7 @@ fn table_harness<'a>() -> testing::Harness<'a, TableHarness> {
         events: Vec::new(),
     };
     let mut harness = testing::harness_state(Theme::dark(), state, |ui, s: &mut TableHarness| {
-        if let Some(event) = results::table(ui, &mut s.tab, &s.docs, 1) {
+        if let Some(event) = results::table(ui, &mut s.tab, &s.docs, 1, true) {
             if let TableEvent::Select(i) = &event {
                 s.tab.selected = Some(*i);
             }
@@ -264,8 +234,14 @@ fn a_header_click_sorts_by_that_field() {
         panic!("no sort reported");
     };
     assert_eq!((field.as_str(), *descending), ("age", false));
-    assert_eq!(results::sort_text("age", false), "{ age: 1 }");
-    assert_eq!(results::sort_text("a.b", true), "{ \"a.b\": -1 }");
+    assert_eq!(
+        mongo_raabit_core::documents::sort_text("age", false),
+        "{ age: 1 }"
+    );
+    assert_eq!(
+        mongo_raabit_core::documents::sort_text("a.b", true),
+        "{ \"a.b\": -1 }"
+    );
 }
 
 struct TreeHarness {
@@ -367,6 +343,8 @@ fn live(
     let (mut profile, _) = ConnectionProfile::from_uri(&uri()).unwrap();
     profile.connect_timeout_ms = Some(1500);
     let mut app = MongoRaabit::new(None);
+    // These flows exercise the writes; the confirmation has its own tests (confirm.rs).
+    app.settings.confirm_writes = false;
     let session = app.connect(profile);
     app.wait_idle(Duration::from_secs(10));
     if let SessionState::Failed(err) = &app.session(session).unwrap().state {
@@ -379,15 +357,17 @@ fn live(
     let conn = app.session(session).unwrap().connection()?.clone();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
-            db,
-            "people",
-            vec![
+        let _ = conn
+            .execute(mongo_raabit::core::Write::DropDatabase { db: db.to_owned() })
+            .await;
+        conn.execute(mongo_raabit::core::Write::InsertDocuments {
+            db: db.to_owned(),
+            collection: "people".to_owned(),
+            documents: vec![
                 doc! {"_id": 1, "name": "Ada", "age": 36, "address": {"city": "London"}},
                 doc! {"_id": 2, "name": "Linus", "age": 54},
             ],
-        )
+        })
         .await
         .unwrap();
     });
@@ -412,11 +392,15 @@ fn find(
     id: i32,
 ) -> Document {
     rt.block_on(async {
-        conn.collection(db, "people")
-            .find_one(doc! {"_id": id})
+        let query = mongo_raabit::core::query::Query {
+            filter: doc! {"_id": id},
+            ..Default::default()
+        };
+        conn.find_page(db, "people", &query, 0, 1)
             .await
             .unwrap()
-            .unwrap()
+            .documents
+            .remove(0)
     })
 }
 
@@ -456,7 +440,11 @@ fn editing_a_table_cell_updates_the_server() {
     harness.key_press(Key::ArrowDown);
     harness.run();
     assert_eq!(selected_document(&mut harness), Some(1));
-    rt.block_on(async { conn.drop_database(db).await.unwrap() });
+    rt.block_on(async {
+        conn.execute(mongo_raabit::core::Write::DropDatabase { db: db.to_owned() })
+            .await
+            .unwrap()
+    });
 }
 
 #[test]
@@ -486,5 +474,9 @@ fn editing_a_tree_value_updates_the_server() {
     settle(&mut harness);
     let stored = find(&rt, &conn, db, 1);
     assert_eq!(stored.get("age"), Some(&Bson::Int32(37)), "{stored:?}");
-    rt.block_on(async { conn.drop_database(db).await.unwrap() });
+    rt.block_on(async {
+        conn.execute(mongo_raabit::core::Write::DropDatabase { db: db.to_owned() })
+            .await
+            .unwrap()
+    });
 }

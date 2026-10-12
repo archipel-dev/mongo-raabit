@@ -2,13 +2,13 @@
 //! plan and query code.
 
 use crate::app::{Load, MongoRaabit, TabId};
-use crate::egui::{RichText, Ui};
+use crate::egui::Ui;
 use crate::icons::Icon;
 use crate::widgets;
-use archipel_sdk::kit::components::code::JavaScript;
+use archipel_sdk::kit::components::code::{ExtendedJson, JavaScript};
 use archipel_sdk::kit::components::{
-    Banner, Button, Cell, Checkbox, CodeEditor, CodeView, Column, Dialog as KitDialog,
-    DialogAction, Dropdown, Severity, Spinner, Tag, TreeRow, TreeTable,
+    Banner, Cell, Checkbox, CodeEditor, CodeView, Column, Dialog as KitDialog, DialogAction,
+    Dropdown, Severity, Spinner, Tag, TreeRow, TreeTable,
 };
 use archipel_sdk::kit::tokens::size;
 use archipel_sdk::kit::{Glyph, Tone, ValueKind};
@@ -17,6 +17,21 @@ use mongo_raabit_core::codegen::{self, CodeRequest, Language};
 use mongo_raabit_core::query::{Explain, PlanStage};
 use mongo_raabit_core::shell::{self, ShellStyle};
 use std::collections::HashSet;
+
+/// Width of the document dialog.
+const DOCUMENT_WIDTH: f32 = 760.0;
+
+/// The share of the window a dialog may take (the kit's default), and the shortest a code
+/// view gets.
+const DIALOG_SHARE: f32 = 0.8;
+const MIN_VIEW_HEIGHT: f32 = 120.0;
+
+/// Height of a code view that fills a dialog without making its body scroll: `max` in a
+/// tall window, less when the window is short. `reserve` is what the rest of the dialog
+/// (title, buttons, other content) takes.
+fn view_height(ctx: &crate::egui::Context, reserve: f32, max: f32) -> f32 {
+    (ctx.content_rect().height() * DIALOG_SHARE - reserve).clamp(MIN_VIEW_HEIGHT, max)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DocumentMode {
@@ -28,6 +43,9 @@ pub enum DocumentMode {
 pub struct DocumentEditor {
     pub tab: TabId,
     pub mode: DocumentMode,
+    /// The document as it was loaded (edits only): Save replaces it only while the
+    /// stored document is still exactly this.
+    pub original: Option<Document>,
     pub text: String,
     pub error: Option<String>,
     pub saving: bool,
@@ -38,6 +56,7 @@ impl DocumentEditor {
         Self {
             tab,
             mode: DocumentMode::Edit(document.get("_id").cloned().unwrap_or(Bson::Null)),
+            original: Some(document.clone()),
             text: shell::document_to_shell(document, ShellStyle::Pretty(2)),
             error: None,
             saving: false,
@@ -48,6 +67,7 @@ impl DocumentEditor {
         Self {
             tab,
             mode: DocumentMode::Insert,
+            original: None,
             text: template
                 .map(|d| shell::document_to_shell(d, ShellStyle::Pretty(2)))
                 .unwrap_or_else(|| "{\n  \n}".into()),
@@ -85,11 +105,42 @@ pub struct ConfirmDelete {
     pub busy: bool,
 }
 
+/// What a write confirmation runs when the user picks Run.
+pub enum Confirmed {
+    Write(Box<crate::writes::PendingWrite>),
+    /// A shell script that calls write methods.
+    Script {
+        tab: TabId,
+        script: String,
+    },
+}
+
+/// "Run this change?": the query in mongosh syntax, what it affects, Cancel and Run.
+pub struct ConfirmWrite {
+    /// Matches the background preview to this dialog.
+    pub id: u64,
+    pub title: String,
+    pub shell: String,
+    pub destructive: bool,
+    /// What the write affects ("2 documents will be modified"), counted in the background.
+    pub summary: Load<String>,
+    /// The count behind `summary`; the outcome is checked against it after the run.
+    pub affected: Option<mongo_raabit_core::Affected>,
+    /// "Don't ask again": turns the confirmation off when Run is picked.
+    pub dont_ask: bool,
+    /// The write runs; the dialog closes when it finishes.
+    pub running: bool,
+    /// The dialog this one replaced (the document editor), shown again after it.
+    pub back: Option<Box<Dialog>>,
+    pub action: Confirmed,
+}
+
 pub enum Dialog {
     Document(DocumentEditor),
     Explain(ExplainDialog),
     Code(CodeDialog),
     Delete(ConfirmDelete),
+    ConfirmWrite(ConfirmWrite),
 }
 
 /// Render the open dialog, if any.
@@ -102,10 +153,119 @@ pub fn show(app: &mut MongoRaabit, ctx: &crate::egui::Context) {
         Dialog::Explain(explain) => explain_dialog(ctx, explain),
         Dialog::Code(code) => code_dialog(ctx, code),
         Dialog::Delete(confirm) => delete_dialog(app, ctx, confirm),
+        Dialog::ConfirmWrite(confirm) => confirm_write(app, ctx, confirm),
     };
-    // A save/delete started above may already have replaced or closed the dialog.
-    if keep && app.dialog.is_none() {
-        app.dialog = Some(dialog);
+    if !keep {
+        return;
+    }
+    // A save/delete started above may already have replaced or closed the dialog; a
+    // write confirmation that replaced it brings it back afterwards.
+    match &mut app.dialog {
+        None => app.dialog = Some(dialog),
+        Some(Dialog::ConfirmWrite(confirm))
+            if confirm.back.is_none() && !matches!(dialog, Dialog::ConfirmWrite(_)) =>
+        {
+            confirm.back = Some(Box::new(dialog));
+        }
+        Some(_) => {}
+    }
+    if let Some((pending, expected)) = app.confirmed.take() {
+        app.run_write_checked(pending, expected);
+    }
+}
+
+/// Width of the write confirmation.
+const CONFIRM_WIDTH: f32 = 720.0;
+/// Tallest the query view of the confirmation grows.
+const CONFIRM_VIEW_MAX: f32 = 320.0;
+
+fn confirm_write(
+    app: &mut MongoRaabit,
+    ctx: &crate::egui::Context,
+    confirm: &mut ConfirmWrite,
+) -> bool {
+    let lines = confirm.shell.lines().count().max(1) as f32;
+    let max = view_height(ctx, 260.0, CONFIRM_VIEW_MAX);
+    let height = (lines * size::CODE_LINE_HEIGHT + size::CODE_LINE_HEIGHT)
+        .clamp((size::CODE_LINE_HEIGHT * 2.0).min(max), max);
+    let counted = !matches!(confirm.summary, Load::Idle | Load::Loading);
+    let destructive = confirm.destructive;
+    let action = KitDialog::new(confirm.title.as_str())
+        .icon(if destructive {
+            Glyph::Warning
+        } else {
+            Icon::Edit.glyph()
+        })
+        .width(CONFIRM_WIDTH.min(ctx.content_rect().width() - 40.0))
+        .content(|ui| {
+            widgets::caption(ui, "This runs on the server:");
+            CodeView::new(&confirm.shell)
+                .id(crate::egui::Id::new(("raabit-confirm-write", confirm.id)))
+                .label("Query to run")
+                .highlighter(&ExtendedJson)
+                .height(height)
+                .show(ui);
+            match &confirm.summary {
+                Load::Idle | Load::Loading => {
+                    ui.horizontal(|ui| {
+                        ui.add(Spinner::new().label("Counting affected documents"));
+                        widgets::label(ui, Tone::Secondary, "Counting affected documents…");
+                    });
+                }
+                Load::Ready(summary) => {
+                    let tone = if destructive {
+                        Tone::Warning
+                    } else {
+                        Tone::Secondary
+                    };
+                    widgets::label(ui, tone, summary.as_str());
+                }
+                Load::Failed(err) => {
+                    Banner::new(Severity::Warning, err.clone()).show(ui);
+                }
+            }
+            ui.add(
+                Checkbox::new(&mut confirm.dont_ask, "Don't ask again")
+                    .comment("Runs changes without this confirmation; turn it back on in Settings"),
+            );
+            if confirm.running {
+                ui.add(Spinner::new().label("Running"));
+            }
+        })
+        .secondary("Cancel")
+        .primary("Run")
+        .danger(destructive)
+        .primary_enabled(counted && !confirm.running)
+        .show(ctx);
+    match action {
+        Some(DialogAction::Primary) => {
+            if confirm.dont_ask {
+                app.stop_confirming_writes();
+            }
+            match &confirm.action {
+                Confirmed::Write(pending) => {
+                    // Runs once this dialog is back in place (see `show`), so the outcome
+                    // finds it there.
+                    // The stored write itself runs: nothing is rebuilt from the views.
+                    confirm.running = true;
+                    app.confirmed = Some(((**pending).clone(), confirm.affected.clone()));
+                    true
+                }
+                Confirmed::Script { tab, script } => {
+                    app.dialog = confirm.back.take().map(|b| *b);
+                    app.run_shell_script(*tab, script.clone());
+                    false
+                }
+            }
+        }
+        Some(_) => {
+            app.dialog = confirm.back.take().map(|b| *b);
+            if let Confirmed::Write(pending) = &confirm.action {
+                app.write_cancelled(&pending.origin);
+            }
+            false
+        }
+        None => true,
     }
 }
 
@@ -115,83 +275,86 @@ fn document_editor(
     editor: &mut DocumentEditor,
 ) -> bool {
     let title = match &editor.mode {
-        DocumentMode::Edit(id) => format!("Edit Document  {}", crate::values::preview(id)),
+        DocumentMode::Edit(id) => format!(
+            "Edit Document  {}",
+            mongo_raabit_core::documents::preview(id)
+        ),
         DocumentMode::Insert => "Add Document".to_owned(),
     };
-    let mut save = false;
-    let mut cancel = false;
-    let open = widgets::modal(ctx, &title, Icon::Edit, 760.0, |ui| {
-        widgets::caption(
-            ui,
-            "Document in mongo shell syntax — ObjectId(), ISODate(), NumberLong() and Extended JSON are accepted",
-        );
-        ui.add(
-            CodeEditor::new(&mut editor.text)
-                .id(crate::egui::Id::new("raabit-doc-text"))
-                .label("Document")
-                .highlighter(&JavaScript)
-                .line_numbers(true)
-                .tab_indents(false)
-                .height(380.0),
-        );
-        match editor.parse() {
-            Ok(doc) => {
-                Banner::new(
-                    Severity::Success,
-                    format!("Valid document · {} top-level fields", doc.len()),
-                )
-                .show(ui);
+    let saving = editor.saving;
+    let editor_height = view_height(ctx, 300.0, 380.0);
+    let label = if editor.mode == DocumentMode::Insert {
+        "Insert"
+    } else {
+        "Save"
+    };
+    let action = KitDialog::new(title)
+        .icon(Icon::Edit.glyph())
+        .width(DOCUMENT_WIDTH.min(ctx.content_rect().width() - 40.0))
+        .content(|ui| {
+            widgets::caption(
+                ui,
+                "Document in mongo shell syntax — ObjectId(), ISODate(), NumberLong() and Extended JSON are accepted",
+            );
+            ui.add(
+                CodeEditor::new(&mut editor.text)
+                    .id(crate::egui::Id::new("raabit-doc-text"))
+                    .label("Document")
+                    .highlighter(&ExtendedJson)
+                    .line_numbers(true)
+                    .tab_indents(false)
+                    .height(editor_height),
+            );
+            match editor.parse() {
+                Ok(doc) => {
+                    Banner::new(
+                        Severity::Success,
+                        format!("Valid document · {} top-level fields", doc.len()),
+                    )
+                    .show(ui);
+                }
+                Err(err) => {
+                    Banner::new(Severity::Error, err).show(ui);
+                }
             }
-            Err(err) => {
-                Banner::new(Severity::Error, err).show(ui);
+            if let Some(err) = &editor.error {
+                Banner::new(Severity::Error, err.clone()).show(ui);
             }
-        }
-        if let Some(err) = &editor.error {
-            Banner::new(Severity::Error, err.clone()).show(ui);
-        }
-        ui.horizontal(|ui| {
-            if ui
-                .add(Button::secondary("Format").icon(Icon::Json))
-                .clicked()
-                && let Ok(doc) = editor.parse()
-            {
+            if editor.saving {
+                ui.add(Spinner::new().label("Saving"));
+            }
+        })
+        .tertiary("Format")
+        .secondary("Cancel")
+        .primary(label)
+        .primary_enabled(!saving)
+        .show(ctx);
+    match action {
+        Some(DialogAction::Tertiary) => {
+            if let Ok(doc) = editor.parse() {
                 editor.text = shell::document_to_shell(&doc, ShellStyle::Pretty(2));
             }
-            ui.with_layout(
-                crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                |ui| {
-                    let label = if editor.mode == DocumentMode::Insert {
-                        "Insert"
-                    } else {
-                        "Save"
-                    };
-                    if editor.saving {
-                        ui.add(Spinner::new().label("Saving"));
-                    } else if ui.add(Button::primary(label).icon(Icon::Check)).clicked()
-                        || ui.input(|i| {
-                            i.modifiers.command && i.key_pressed(crate::egui::Key::Enter)
-                        })
-                    {
-                        save = true;
-                    }
-                    if ui.add(Button::secondary("Cancel")).clicked() {
-                        cancel = true;
-                    }
-                },
-            );
-        });
-    });
-    if save {
-        match editor.parse() {
-            Ok(doc) => {
-                editor.saving = true;
-                editor.error = None;
-                app.save_document(editor.tab, editor.mode.clone(), doc);
-            }
-            Err(err) => editor.error = Some(err),
+            true
         }
+        Some(DialogAction::Primary) => {
+            match editor.parse() {
+                Ok(doc) => {
+                    editor.saving = true;
+                    editor.error = None;
+                    app.save_document(
+                        editor.tab,
+                        editor.mode.clone(),
+                        editor.original.clone(),
+                        doc,
+                    );
+                }
+                Err(err) => editor.error = Some(err),
+            }
+            true
+        }
+        Some(_) => false,
+        None => true,
     }
-    open && !cancel
 }
 
 fn delete_dialog(
@@ -217,17 +380,10 @@ fn delete_dialog(
         .message("This cannot be undone.")
         .content(|ui| {
             for id in &ids {
-                ui.label(
-                    RichText::new(id)
-                        .monospace()
-                        .color(Tone::Secondary.resolve(ui.ctx())),
-                );
+                widgets::mono_label(ui, Tone::Secondary, id);
             }
             if n > 5 {
-                ui.label(
-                    RichText::new(format!("… and {} more", n - 5))
-                        .color(Tone::Muted.resolve(ui.ctx())),
-                );
+                widgets::label(ui, Tone::Muted, format!("… and {} more", n - 5));
             }
             if busy {
                 ui.add(Spinner::new().label("Deleting"));
@@ -251,16 +407,15 @@ fn delete_dialog(
 }
 
 fn explain_dialog(ctx: &crate::egui::Context, explain: &mut ExplainDialog) -> bool {
-    widgets::modal(
-        ctx,
-        &explain.title,
-        Icon::Explain,
-        980.0,
-        |ui| match &explain.result {
+    let action = KitDialog::new(explain.title.as_str())
+        .icon(Icon::Explain.glyph())
+        .width(980.0_f32.min(ctx.content_rect().width() - 40.0))
+        .secondary("Close")
+        .content(|ui| match &explain.result {
             Load::Idle | Load::Loading => {
                 ui.horizontal(|ui| {
                     ui.add(Spinner::new().label("Running explain"));
-                    ui.label("Running explain…");
+                    widgets::label(ui, Tone::Secondary, "Running explain…");
                 });
             }
             Load::Failed(err) => {
@@ -308,14 +463,15 @@ fn explain_dialog(ctx: &crate::egui::Context, explain: &mut ExplainDialog) -> bo
                     CodeView::new(&raw)
                         .id(crate::egui::Id::new("raabit-explain-raw"))
                         .label("Raw explain output")
-                        .highlighter(&JavaScript)
+                        .highlighter(&ExtendedJson)
                         .folding(true)
                         .height(200.0)
                         .show(ui);
                 }
             }
-        },
-    )
+        })
+        .show(ctx);
+    action.is_none()
 }
 
 /// One stage of the plan, flattened for the tree table.
@@ -423,47 +579,56 @@ impl std::fmt::Display for Lang {
     }
 }
 
+/// The code the dialog shows for its language.
+fn code_text(code: &CodeDialog) -> String {
+    match code.language {
+        None => code.shell.clone(),
+        Some(language) => codegen::generate(language, &code.request),
+    }
+}
+
 fn code_dialog(ctx: &crate::egui::Context, code: &mut CodeDialog) -> bool {
-    widgets::modal(ctx, &code.title, Icon::Code, 900.0, |ui| {
-        let mut options = vec![Lang(None)];
-        options.extend(Language::ALL.map(|l| Lang(Some(l))));
-        let mut chosen = Lang(code.language);
-        ui.add(
-            Dropdown::new("raabit-code-language", &mut chosen, options)
-                .label("Language")
-                .width(200.0),
-        );
-        code.language = chosen.0;
-        let text = match code.language {
-            None => code.shell.clone(),
-            Some(language) => codegen::generate(language, &code.request),
-        };
-        let revision = code.language.map_or(0, |l| {
-            Language::ALL.iter().position(|x| *x == l).unwrap_or(0) as u64 + 1
-        });
-        CodeView::new(&text)
-            .id(crate::egui::Id::new("raabit-code-view"))
-            .label("Query code")
-            .highlighter(&JavaScript)
-            .line_numbers(true)
-            .revision(revision)
-            .height(420.0)
-            .show(ui);
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(format!("{} lines", text.lines().count()))
-                    .color(Tone::Muted.resolve(ui.ctx())),
+    let title = code.title.clone();
+    let height = view_height(ctx, 280.0, 420.0);
+    let action = KitDialog::new(title)
+        .icon(Icon::Code.glyph())
+        .width(900.0_f32.min(ctx.content_rect().width() - 40.0))
+        .content(|ui| {
+            let mut options = vec![Lang(None)];
+            options.extend(Language::ALL.map(|l| Lang(Some(l))));
+            let mut chosen = Lang(code.language);
+            ui.add(
+                Dropdown::new("raabit-code-language", &mut chosen, options)
+                    .label("Language")
+                    .width(200.0),
             );
-            ui.with_layout(
-                crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                |ui| {
-                    if ui.add(Button::primary("Copy").icon(Icon::Copy)).clicked() {
-                        ui.ctx().copy_text(text.clone());
-                    }
-                },
-            );
-        });
-    })
+            code.language = chosen.0;
+            let text = code_text(code);
+            let revision = code.language.map_or(0, |l| {
+                Language::ALL.iter().position(|x| *x == l).unwrap_or(0) as u64 + 1
+            });
+            CodeView::new(&text)
+                .id(crate::egui::Id::new("raabit-code-view"))
+                .label("Query code")
+                .highlighter(&JavaScript)
+                .line_numbers(true)
+                .revision(revision)
+                .height(height)
+                .show(ui);
+            widgets::label(ui, Tone::Muted, format!("{} lines", text.lines().count()));
+        })
+        .secondary("Close")
+        .primary("Copy")
+        .show(ctx);
+    match action {
+        // Copy leaves the dialog open, to copy another language too.
+        Some(DialogAction::Primary) => {
+            ctx.copy_text(code_text(code));
+            true
+        }
+        Some(_) => false,
+        None => true,
+    }
 }
 
 #[cfg(test)]

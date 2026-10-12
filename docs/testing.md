@@ -9,7 +9,9 @@ cargo test -p mongo-raabit-core   # includes the live tests when a server is rea
 
 `crates/mongo-raabit-core/tests/live_*.rs` run against a real `mongod`. They use
 `MONGO_RAABIT_TEST_URI` (default `mongodb://127.0.0.1:27017`), create databases named
-`raabit_test_*` and drop them first, so use a throwaway server.
+`raabit_test_*` and drop them first, so use a throwaway server. `live_write_paths.rs` runs
+every `Write` variant on its own scratch database (`raabit_wp_<test>_<pid>`), dropped at
+the end; see [safety.md](safety.md).
 
 When the server is unreachable the tests print `skipping …` and pass. Set
 `MONGO_RAABIT_REQUIRE_SERVER=1` to make that a failure instead (CI does); `0` or empty

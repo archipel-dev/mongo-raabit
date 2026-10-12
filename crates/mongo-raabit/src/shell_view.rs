@@ -1,303 +1,300 @@
 //! Shell mode of the Query tab (IntelliShell equivalent): script editor with completion, console output
 //! and a result tree. Uses the installed mongosh, or the built-in evaluator.
+//!
+//! Completion sites, result documents and the run summaries are computed in
+//! `mongo_raabit_core`; this module lays them out.
 
 use crate::app::{MongoRaabit, TabId};
-use crate::egui::text::{CCursor, CCursorRange};
-use crate::egui::{CornerRadius, FontId, RichText, Stroke, Ui, vec2};
+use crate::egui::{Id, RichText, Ui};
 use crate::icons::{self, Icon};
 use crate::results;
-use crate::style::{self, Palette};
-use crate::tools::{ShellEngine, shell_documents};
-use crate::values;
+use crate::tools::{ShellEngine, ShellEntry, ShellTab, shell_documents};
 use crate::widgets;
 use archipel_sdk::kit::Tone;
-use archipel_sdk::kit::components::{Button, IconButton, Separator, Tag};
+use archipel_sdk::kit::components::code::{ExtendedJson, JavaScript};
+use archipel_sdk::kit::components::{
+    Button, Checkbox, CodeEditor, CodeView, Completion, Completions, EmptyState, IconButton,
+    Spinner, SplitPane, Tag, Tooltip, TooltipExt,
+};
+use archipel_sdk::kit::parts::scroll_vertical;
+use archipel_sdk::kit::tokens::size;
+use mongo_raabit_core::format;
+use mongo_raabit_core::shell::script_summary;
 use mongo_raabit_core::shell_eval;
+use std::collections::HashSet;
+
+/// Default share of the height the editor gets.
+const EDITOR_RATIO: f32 = 0.38;
+const EDITOR_MIN_HEIGHT: f32 = size::CODE_LINE_HEIGHT * 5.0;
+const CONSOLE_MIN_HEIGHT: f32 = size::CODE_LINE_HEIGHT * 4.0;
+/// Default share of the width the console gets beside the result tree.
+const CONSOLE_RATIO: f32 = 0.52;
+const PANE_MIN_WIDTH: f32 = 200.0;
+/// Characters of a script's first line shown in the console.
+const SUMMARY_CHARS: usize = 90;
+/// Most lines of one run's output shown before its block scrolls.
+const OUTPUT_LINES: usize = 14;
+const HINT: &str = "Ctrl+Enter runs the script or the selection · Ctrl+Space completes";
+const READ_ONLY_SHELL_TIP: &str = "Read-only connection: scripts run in the built-in shell, which refuses writes (mongosh cannot be limited to reads)";
+const BUILTIN_TIP: &str = "Evaluate with the built-in shell even though mongosh is installed";
+const BUILTIN_ENGINE_TIP: &str = "Evaluates show/use and db.<collection> commands with the driver. Install mongosh for full JavaScript.";
 
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
-    let p = Palette::of(ui);
+    let read_only = app
+        .shell_tab_mut(tab_id)
+        .map(|t| t.session)
+        .is_some_and(|s| app.session_read_only(s));
     let Some(tab) = app.shell_tab_mut(tab_id) else {
         return;
     };
+    let ShellTab {
+        db,
+        script,
+        engine,
+        force_builtin,
+        history,
+        running,
+        open,
+        collections,
+        ..
+    } = tab;
     let mut run: Option<Option<String>> = None;
-    crate::egui::Frame::new().inner_margin(crate::egui::Margin { left: 14, right: 14, top: 10, bottom: 8 }).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            icons::icon(ui, Icon::Shell, p.accent);
-            ui.label(RichText::new(&tab.db).size(15.0).strong().color(p.text_strong));
-            match &tab.engine {
-                ShellEngine::Detecting => {
-                    ui.spinner();
-                }
-                ShellEngine::Mongosh { version, .. } if !tab.force_builtin => {
-                    ui.add(Tag::new(format!("mongosh {version}")).tone(Tone::Accent));
-                }
-                ShellEngine::Mongosh { .. } | ShellEngine::Builtin => {
-                    ui.add(Tag::new("built-in shell").tone(Tone::Warning)).on_hover_text(
-                        "Evaluates show/use and db.<collection> commands with the driver. Install mongosh for full JavaScript.",
-                    );
-                }
+    // mongosh cannot be limited to reads: a read-only connection uses the built-in shell.
+    let builtin = *force_builtin || read_only;
+    widgets::tool_header(
+        ui,
+        Icon::Shell,
+        Tone::Accent,
+        &[],
+        db,
+        Tag::new("Shell").tone(Tone::Accent),
+        |ui| {
+            engine_tag(ui, engine, builtin);
+            if read_only {
+                ui.add(Tag::new("Read-only").tone(Tone::Warning))
+                    .tooltip(READ_ONLY_SHELL_TIP);
             }
-            ui.with_layout(crate::egui::Layout::right_to_left(crate::egui::Align::Center), |ui| {
-                if tab.running {
-                    ui.spinner();
-                } else if ui.add(Button::primary("Run").icon(Icon::Play)).on_hover_text("Run script (Ctrl+Enter)").clicked() {
-                    run = Some(None);
-                }
-                if matches!(tab.engine, ShellEngine::Mongosh { .. }) {
-                    ui.checkbox(&mut tab.force_builtin, "Built-in");
-                }
-                if ui.add(IconButton::new(Icon::Trash, "Clear output")).clicked() {
-                    tab.history.clear();
-                }
-            });
-        });
-    });
-    ui.add(Separator);
-    let editor_height = (ui.available_height() * 0.34).clamp(120.0, 300.0);
-    crate::egui::Frame::new()
-        .inner_margin(crate::egui::Margin {
-            left: 14,
-            right: 14,
-            top: 10,
-            bottom: 4,
-        })
-        .show(ui, |ui| {
-            let response = crate::egui::ScrollArea::vertical()
-                .id_salt(("raabit-shell-editor", tab_id))
-                .max_height(editor_height)
-                .show(ui, |ui| {
-                    widgets::code_editor(ui, &mut tab.script, 8, ("raabit-shell", tab_id))
-                })
-                .inner;
-            // Completion for the token before the cursor.
-            let ctx = ui.ctx().clone();
-            let mut state = crate::egui::TextEdit::load_state(&ctx, response.id);
-            let cursor = state
-                .as_ref()
-                .and_then(|s| s.cursor.char_range())
-                .map(|r| r.primary.index)
-                .unwrap_or(tab.script.chars().count());
-            let byte = tab
-                .script
-                .char_indices()
-                .nth(cursor)
-                .map_or(tab.script.len(), |(i, _)| i);
-            let prefix = &tab.script[..byte];
-            let completions = if response.has_focus() {
-                shell_eval::complete(prefix, &tab.collections)
-            } else {
-                Vec::new()
-            };
-            let mut accept: Option<String> = None;
-            if response.has_focus()
-                && ui.input(|i| i.modifiers.command && i.key_pressed(crate::egui::Key::Enter))
+        },
+        |ui| {
+            if *running {
+                ui.add(Spinner::new().label("Running"));
+            } else if ui
+                .add(Button::primary("Run").icon(Icon::Play))
+                .tooltip_with(Tooltip::new("Run script").shortcut("Ctrl+Enter"))
+                .clicked()
             {
-                // Run the selection when there is one, otherwise the whole script.
-                let selection = state
-                    .as_ref()
-                    .and_then(|s| s.cursor.char_range())
-                    .filter(|r| !r.is_empty())
-                    .map(|r| {
-                        let [a, b] = r.sorted_cursors();
-                        tab.script
-                            .chars()
-                            .skip(a.index)
-                            .take(b.index - a.index)
-                            .collect::<String>()
-                    });
-                run = Some(selection);
+                run = Some(None);
             }
-            if !completions.is_empty()
-                && ui.input_mut(|i| {
-                    i.consume_key(crate::egui::Modifiers::CTRL, crate::egui::Key::Space)
-                })
-            {
-                accept = completions.first().cloned();
-            }
-            ui.horizontal_wrapped(|ui| {
-                ui.set_min_height(24.0);
-                if completions.is_empty() {
-                    widgets::caption(
-                        ui,
-                        "Ctrl+Enter runs the script or the selection · type db. for completions",
-                    );
+            if matches!(engine, ShellEngine::Mongosh { .. }) {
+                if read_only {
+                    let mut on = true;
+                    ui.add(Checkbox::new(&mut on, "Built-in").enabled(false))
+                        .tooltip(READ_ONLY_SHELL_TIP);
                 } else {
-                    widgets::caption(ui, "Ctrl+Space");
-                    for completion in &completions {
-                        let chip = crate::egui::Button::new(
-                            RichText::new(completion)
-                                .font(FontId::monospace(12.0))
-                                .color(p.text),
-                        )
-                        .fill(p.raised)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(12));
-                        if ui.add(chip).clicked() {
-                            accept = Some(completion.clone());
-                        }
+                    ui.add(Checkbox::new(force_builtin, "Built-in"))
+                        .tooltip(BUILTIN_TIP);
+                }
+            }
+            if ui
+                .add(IconButton::new(Icon::Trash, "Clear output"))
+                .tooltip("Clear output")
+                .clicked()
+            {
+                history.clear();
+            }
+        },
+    );
+    let ratio_id = ui.id().with(("raabit-shell-ratio", tab_id));
+    let mut ratio = ui
+        .data(|d| d.get_temp::<f32>(ratio_id))
+        .unwrap_or(EDITOR_RATIO);
+    SplitPane::vertical(("raabit-shell-body", tab_id), &mut ratio)
+        .default_ratio(EDITOR_RATIO)
+        .min_sizes(EDITOR_MIN_HEIGHT, CONSOLE_MIN_HEIGHT)
+        .label("Resize console")
+        .show(
+            ui,
+            |ui| {
+                widgets::padded(ui, |ui| {
+                    if let Some(selection) = editor(ui, tab_id, script, collections) {
+                        run = Some(selection);
                     }
-                }
-            });
-            if let Some(completion) = accept {
-                // Replace the partial word before the cursor with the completion.
-                let partial = prefix
-                    .chars()
-                    .rev()
-                    .take_while(|c| {
-                        c.is_alphanumeric()
-                            || *c == '_'
-                            || *c == ' ' && prefix.trim_start().starts_with("sh")
-                    })
-                    .count();
-                let partial = if prefix.ends_with('.') {
-                    0
-                } else {
-                    partial.min(prefix.chars().count())
-                };
-                let start_char = cursor - partial;
-                let start_byte = tab
-                    .script
-                    .char_indices()
-                    .nth(start_char)
-                    .map_or(tab.script.len(), |(i, _)| i);
-                tab.script.replace_range(start_byte..byte, &completion);
-                let new_cursor = start_char + completion.chars().count();
-                if let Some(state) = state.as_mut() {
-                    state
-                        .cursor
-                        .set_char_range(Some(CCursorRange::one(CCursor::new(new_cursor))));
-                }
-                if let Some(state) = state {
-                    state.store(&ctx, response.id);
-                }
-                response.request_focus();
-            }
-        });
-    ui.add(Separator);
-    let last_value = tab.history.last().and_then(|e| e.value.clone());
-    let height = ui.available_height();
-    ui.horizontal_top(|ui| {
-        let console_width = if last_value.is_some() {
-            ui.available_width() * 0.48
-        } else {
-            ui.available_width()
-        };
-        ui.vertical(|ui| {
-            ui.set_width(console_width);
-            ui.set_height(height);
-            crate::egui::ScrollArea::vertical()
-                .id_salt(("raabit-shell-console", tab_id))
-                .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    crate::egui::Frame::new()
-                        .inner_margin(crate::egui::Margin::symmetric(14, 10))
-                        .show(ui, |ui| {
-                            if tab.history.is_empty() {
-                                widgets::caption(ui, "Output appears here.");
-                            }
-                            for entry in &tab.history {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new("›")
-                                            .font(FontId::monospace(13.0))
-                                            .color(p.accent_text),
-                                    );
-                                    let first = entry.script.lines().next().unwrap_or_default();
-                                    let more = if entry.script.lines().count() > 1 {
-                                        " …"
-                                    } else {
-                                        ""
-                                    };
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "{}{more}",
-                                            values::truncate(first, 90)
-                                        ))
-                                        .font(FontId::monospace(12.5))
-                                        .color(p.text_strong),
-                                    );
-                                    ui.with_layout(
-                                        crate::egui::Layout::right_to_left(
-                                            crate::egui::Align::Center,
-                                        ),
-                                        |ui| {
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "{} · {}",
-                                                    entry.engine,
-                                                    style::duration(entry.elapsed)
-                                                ))
-                                                .size(11.0)
-                                                .color(p.text_info),
-                                            );
-                                            if !entry.ok {
-                                                icons::icon(ui, Icon::Warning, p.error);
-                                            }
-                                        },
-                                    );
-                                });
-                                let mut job = crate::egui::text::LayoutJob::default();
-                                if entry.ok {
-                                    values::highlight_into(
-                                        &mut job,
-                                        &entry.output,
-                                        &p,
-                                        FontId::monospace(12.0),
-                                    );
-                                } else {
-                                    job.append(
-                                        &entry.output,
-                                        0.0,
-                                        crate::egui::TextFormat {
-                                            font_id: FontId::monospace(12.0),
-                                            color: p.error,
-                                            ..Default::default()
-                                        },
-                                    );
-                                }
-                                ui.add(crate::egui::Label::new(job).selectable(true).wrap());
-                                ui.add_space(10.0);
-                            }
-                        });
                 });
-        });
-        if let Some(value) = &last_value {
-            let (sep, _) = ui.allocate_exact_size(vec2(1.0, height), crate::egui::Sense::hover());
-            ui.painter().rect_filled(sep, 0.0, p.separator);
-            ui.vertical(|ui| {
-                ui.set_height(height);
-                let docs = shell_documents(value);
-                crate::egui::Frame::new()
-                    .inner_margin(crate::egui::Margin {
-                        left: 12,
-                        right: 12,
-                        top: 8,
-                        bottom: 4,
-                    })
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("Result").strong());
-                            ui.add(Tag::new(format!("{} items", docs.len())).tone(Tone::Accent));
-                        });
+            },
+            |ui| output(ui, tab_id, history, open),
+        );
+    ui.data_mut(|d| d.insert_temp(ratio_id, ratio));
+    if let Some(selection) = run {
+        app.run_shell(tab_id, selection);
+    }
+}
+
+/// Which engine runs the scripts.
+fn engine_tag(ui: &mut Ui, engine: &ShellEngine, force_builtin: bool) {
+    match engine {
+        ShellEngine::Detecting => {
+            ui.add(Spinner::new().label("Detecting mongosh"));
+        }
+        ShellEngine::Mongosh { version, .. } if !force_builtin => {
+            ui.add(Tag::new(format!("mongosh {version}")).tone(Tone::Accent));
+        }
+        ShellEngine::Mongosh { .. } | ShellEngine::Builtin => {
+            ui.add(Tag::new("built-in shell").tone(Tone::Warning))
+                .tooltip(BUILTIN_ENGINE_TIP);
+        }
+    }
+}
+
+/// The script editor with completion. Returns what the user asked to run with Ctrl+Enter:
+/// the selection, or `None` for the whole script.
+fn editor(
+    ui: &mut Ui,
+    tab_id: TabId,
+    script: &mut String,
+    collections: &[String],
+) -> Option<Option<String>> {
+    let id = Id::new(("raabit-shell", tab_id));
+    let completer = |text: &str, caret: usize| {
+        let site = shell_eval::completions_at(text, caret, collections)?;
+        Some(Completions {
+            start: site.start,
+            end: caret,
+            items: site
+                .items
+                .into_iter()
+                .map(|item| Completion::new(item.as_str(), item.as_str()))
+                .collect(),
+        })
+    };
+    let hint = crate::egui::vec2(0.0, size::COMMENT_LINE_HEIGHT + size::SECTION_SPACING);
+    let height = (ui.available_height() - hint.y).max(size::CODE_LINE_HEIGHT * 3.0);
+    let output = CodeEditor::new(script)
+        .label("Script")
+        .highlighter(&JavaScript)
+        .completer(&completer)
+        .id(id)
+        .height(height)
+        .show(ui);
+    widgets::caption(ui, HINT);
+    let focused = ui.memory(|m| m.has_focus(id));
+    if !focused || !ui.input(|i| i.modifiers.command && i.key_pressed(crate::egui::Key::Enter)) {
+        return None;
+    }
+    // Run the selection when there is one, otherwise the whole script.
+    let selection = output
+        .selection
+        .and_then(|range| script.get(range))
+        .map(str::to_owned);
+    Some(selection)
+}
+
+/// The console, and beside it the tree of the last run's value.
+fn output(ui: &mut Ui, tab_id: TabId, history: &[ShellEntry], open: &mut HashSet<String>) {
+    let last_value = history.last().and_then(|e| e.value.clone());
+    let Some(value) = last_value else {
+        console(ui, tab_id, history);
+        return;
+    };
+    let ratio_id = ui.id().with(("raabit-shell-io-ratio", tab_id));
+    let mut ratio = ui
+        .data(|d| d.get_temp::<f32>(ratio_id))
+        .unwrap_or(CONSOLE_RATIO);
+    SplitPane::horizontal(("raabit-shell-io", tab_id), &mut ratio)
+        .default_ratio(CONSOLE_RATIO)
+        .min_size(PANE_MIN_WIDTH)
+        .label("Resize result")
+        .show(
+            ui,
+            |ui| console(ui, tab_id, history),
+            |ui| {
+                let docs = shell_documents(&value);
+                widgets::padded(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        widgets::title(ui, "Result");
+                        ui.add(Tag::new(format!("{} items", docs.len())).tone(Tone::Accent));
                     });
+                });
                 if let Some(results::TreeEvent::Toggle(key)) = results::tree(
                     ui,
                     results::TreeState {
-                        id: crate::egui::Id::new(("raabit-shell-tree", tab_id)),
-                        open: &tab.open,
+                        id: Id::new(("raabit-shell-tree", tab_id)),
+                        open,
                         selected: None,
                     },
                     &docs,
                     1,
-                ) && !tab.open.remove(&key)
+                ) && !open.remove(&key)
                 {
-                    tab.open.insert(key);
+                    open.insert(key);
+                }
+            },
+        );
+    ui.data_mut(|d| d.insert_temp(ratio_id, ratio));
+}
+
+/// What every run printed, oldest first, following the newest.
+fn console(ui: &mut Ui, tab_id: TabId, history: &[ShellEntry]) {
+    if history.is_empty() {
+        EmptyState::new("No output yet")
+            .icon(Icon::Shell)
+            .hint("Run a script with Ctrl+Enter.")
+            .show(ui);
+        return;
+    }
+    scroll_vertical()
+        .id_salt(("raabit-shell-console", tab_id))
+        .stick_to_bottom(true)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            widgets::padded(ui, |ui| {
+                for (index, entry) in history.iter().enumerate() {
+                    entry_block(ui, tab_id, index, entry);
                 }
             });
-        }
+        });
+}
+
+/// One run: the script's first line, engine and time, and its output.
+fn entry_block(ui: &mut Ui, tab_id: TabId, index: usize, entry: &ShellEntry) {
+    let strong = Tone::Strong.resolve(ui.ctx());
+    ui.horizontal(|ui| {
+        widgets::label(ui, Tone::Accent, "›");
+        ui.label(
+            RichText::new(script_summary(&entry.script, SUMMARY_CHARS))
+                .monospace()
+                .color(strong),
+        );
+        ui.with_layout(
+            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+            |ui| {
+                widgets::label(
+                    ui,
+                    Tone::Muted,
+                    format!("{} · {}", entry.engine, format::duration(entry.elapsed)),
+                );
+                if !entry.ok {
+                    icons::icon(ui, Icon::Warning, Tone::Error.resolve(ui.ctx()));
+                }
+            },
+        );
     });
-    if let Some(selection) = run {
-        app.run_shell(tab_id, selection);
+    if entry.ok {
+        let lines = entry.output.lines().count().clamp(1, OUTPUT_LINES);
+        CodeView::new(&entry.output)
+            .label("Output")
+            .highlighter(&ExtendedJson)
+            .wrap(true)
+            .id(Id::new(("raabit-shell-output", tab_id, index)))
+            .revision(crate::egui::util::hash(&entry.output))
+            .height(lines as f32 * size::CODE_LINE_HEIGHT + size::CODE_PADDING * 2.0)
+            .show(ui);
+    } else {
+        let error = Tone::Error.resolve(ui.ctx());
+        ui.add(
+            crate::egui::Label::new(RichText::new(&entry.output).monospace().color(error))
+                .selectable(true)
+                .wrap(),
+        );
     }
+    ui.add_space(size::SECTION_SPACING);
 }

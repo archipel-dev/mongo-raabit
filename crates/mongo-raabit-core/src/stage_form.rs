@@ -936,6 +936,29 @@ pub enum ProjectAction {
     RenameTo(String),
 }
 
+impl ProjectAction {
+    /// Labels of the kinds of action, in the order of [`kind_index`](Self::kind_index).
+    pub const KIND_LABELS: [&'static str; 3] = ["keep", "remove", "rename to"];
+
+    /// Which of [`KIND_LABELS`](Self::KIND_LABELS) this action is.
+    pub fn kind_index(&self) -> usize {
+        match self {
+            Self::Include => 0,
+            Self::Exclude => 1,
+            Self::RenameTo(_) => 2,
+        }
+    }
+
+    /// A fresh action of the kind `index` (out of range: the default, keep).
+    pub fn from_kind_index(index: usize) -> Self {
+        match index {
+            1 => Self::Exclude,
+            2 => Self::RenameTo(String::new()),
+            _ => Self::Include,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProjectRow {
     pub field: String,
@@ -1229,6 +1252,16 @@ impl AddFieldsForm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_action_kinds_round_trip() {
+        for (index, label) in ProjectAction::KIND_LABELS.iter().enumerate() {
+            let action = ProjectAction::from_kind_index(index);
+            assert_eq!(action.kind_index(), index, "{label}");
+        }
+        assert_eq!(ProjectAction::from_kind_index(9), ProjectAction::Include);
+        assert_eq!(ProjectAction::RenameTo("x".into()).kind_index(), 2);
+    }
     use crate::aggregate::{STAGE_OPERATORS, Stage};
     use mongodb::bson::{DateTime, doc};
 

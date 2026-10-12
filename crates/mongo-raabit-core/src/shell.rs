@@ -7,7 +7,7 @@
 //! JSON is a subset of what this parser understands.
 
 use mongodb::bson::{
-    self, Binary, Bson, DateTime, Decimal128, Document, Regex, Timestamp, oid::ObjectId,
+    self, Binary, Bson, DateTime, Decimal128, Document, Regex, Timestamp, doc, oid::ObjectId,
     spec::BinarySubtype,
 };
 use std::fmt::Write as _;
@@ -807,12 +807,20 @@ fn write_value(out: &mut String, value: &Bson, style: ShellStyle, level: usize) 
             }
         },
         Bson::RegularExpression(regex) => {
-            let _ = write!(
-                out,
-                "/{}/{}",
-                regex.pattern.replace('/', "\\/"),
-                regex.options
-            );
+            if regex_literal_safe(&regex.pattern) {
+                let _ = write!(out, "/{}/{}", regex.pattern, regex.options);
+            } else {
+                // Patterns a `/…/` literal cannot carry unchanged (a slash, a line break,
+                // a quote or bracket the statement splitter would count, a trailing
+                // backslash) print as a constructor with the pattern as a string.
+                out.push_str("RegExp(");
+                write_string(out, &regex.pattern);
+                if !regex.options.is_empty() {
+                    out.push_str(", ");
+                    write_string(out, &regex.options);
+                }
+                out.push(')');
+            }
         }
         Bson::Timestamp(ts) => {
             let _ = write!(out, "Timestamp({}, {})", ts.time, ts.increment);
@@ -849,8 +857,95 @@ fn format_double(v: f64) -> String {
     } else if v.fract() == 0.0 && v.abs() < 1e15 {
         format!("{v:.1}")
     } else {
-        format!("{v}")
+        let text = format!("{v}");
+        if text.contains(['.', 'e', 'E']) {
+            text
+        } else {
+            // Whole numbers from 1e15 print without a point ("1000000000000000"), which
+            // reads back as an integer: the exponent form stays a double.
+            format!("{v:e}")
+        }
     }
+}
+
+/// True when `/pattern/` reads back as exactly `pattern` through [`parse_value`] and the
+/// script splitter: no slash, line break or quote, brackets that pair up (the splitter
+/// counts them), no `[…]` class left open, not empty, not starting with `*` (`/*` opens a comment) and not ending
+/// in an unpaired backslash.
+fn regex_literal_safe(pattern: &str) -> bool {
+    let trailing_backslashes = pattern.chars().rev().take_while(|c| *c == '\\').count();
+    let count = |c: char| pattern.chars().filter(|x| *x == c).count();
+    let mut depth = 0i64;
+    let nested = pattern.chars().all(|c| {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ => {}
+        }
+        depth >= 0
+    });
+    // The literal parser ends a pattern at the first `/` outside a `[…]` class, so a
+    // class still open at the end would swallow the closing slash.
+    let mut in_class = false;
+    let mut escaped = false;
+    for c in pattern.chars() {
+        match (escaped, c) {
+            (true, _) => escaped = false,
+            (false, '\\') => escaped = true,
+            (false, '[') => in_class = true,
+            (false, ']') => in_class = false,
+            _ => {}
+        }
+    }
+    !in_class
+        && !pattern.is_empty()
+        && !pattern.starts_with('*')
+        && trailing_backslashes % 2 == 0
+        && !pattern.contains(['/', '\n', '\r', '"', '\''])
+        && nested
+        && depth == 0
+        && count('(') == count(')')
+        && count('[') == count(']')
+        && count('{') == count('}')
+}
+
+/// Results of a shell script as documents for a tree view: arrays of documents stay as
+/// they are, a single document or scalar is wrapped (`{ value: … }`).
+pub fn result_documents(value: &Bson) -> Vec<Document> {
+    let wrap = |item: &Bson| match item {
+        Bson::Document(d) => d.clone(),
+        other => doc! {"value": other.clone()},
+    };
+    match value {
+        Bson::Array(items) => items.iter().map(wrap).collect(),
+        other => vec![wrap(other)],
+    }
+}
+
+/// The first line of a script, cut to `max` characters, with ` …` when more follows.
+pub fn script_summary(script: &str, max: usize) -> String {
+    let first = script.lines().next().unwrap_or_default();
+    let mut text: String = if first.chars().count() > max {
+        first
+            .chars()
+            .take(max)
+            .chain(std::iter::once('…'))
+            .collect()
+    } else {
+        first.to_owned()
+    };
+    if script.lines().count() > 1 {
+        text.push_str(" …");
+    }
+    text
+}
+
+/// The characters `from..to` (char indices) of `text`, for running a selection.
+pub fn char_slice(text: &str, from: usize, to: usize) -> String {
+    text.chars()
+        .skip(from)
+        .take(to.saturating_sub(from))
+        .collect()
 }
 
 #[cfg(test)]
@@ -920,6 +1015,48 @@ mod tests {
     }
 
     #[test]
+    fn edge_values_round_trip_exactly() {
+        // Whole doubles from 1e15 printed without a point and read back as integers.
+        for v in [1e15, -1e15, 9_007_199_254_740_993.0, 1e20, f64::MAX, -0.0] {
+            let text = to_shell_string(&Bson::Double(v), ShellStyle::Compact);
+            match parse_value(&text).unwrap() {
+                Bson::Double(back) => assert_eq!(back.to_bits(), v.to_bits(), "{text}"),
+                other => panic!("{text} read back as {other:?}"),
+            }
+        }
+        assert_eq!(
+            to_shell_string(&Bson::Double(1e15), ShellStyle::Compact),
+            "1e15"
+        );
+        // Regular expressions a literal cannot carry print as RegExp("…").
+        for pattern in [
+            "a/b",
+            "x[/]",
+            "({[\\]})",
+            "line\nbreak",
+            "q\"uote",
+            "*",
+            "",
+            "end\\",
+        ] {
+            let regex = Bson::RegularExpression(Regex {
+                pattern: pattern.into(),
+                options: "i".into(),
+            });
+            let text = to_shell_string(&regex, ShellStyle::Compact);
+            assert_eq!(parse_value(&text).unwrap(), regex, "{text}");
+        }
+        let plain = Bson::RegularExpression(Regex {
+            pattern: "^[a-z]+\\d(x|y)$".into(),
+            options: String::new(),
+        });
+        assert_eq!(
+            to_shell_string(&plain, ShellStyle::Compact),
+            "/^[a-z]+\\d(x|y)$/"
+        );
+    }
+
+    #[test]
     fn reports_errors_with_offsets() {
         let err = parse_document("{a: 1,, }").unwrap_err();
         assert_eq!(err.offset, 6);
@@ -939,5 +1076,35 @@ mod tests {
         assert_eq!(stages.len(), 2);
         assert!(parse_document_array("[1]").is_err());
         assert_eq!(parse_document_array("").unwrap(), Vec::<Document>::new());
+    }
+
+    #[test]
+    fn script_results_become_documents() {
+        assert_eq!(
+            result_documents(&Bson::Array(vec![
+                Bson::Document(doc! {"a": 1}),
+                Bson::Int32(2)
+            ])),
+            vec![doc! {"a": 1}, doc! {"value": 2}]
+        );
+        assert_eq!(
+            result_documents(&Bson::Document(doc! {"a": 1})),
+            vec![doc! {"a": 1}]
+        );
+        assert_eq!(
+            result_documents(&Bson::String("x".into())),
+            vec![doc! {"value": "x"}]
+        );
+    }
+
+    #[test]
+    fn summarizes_scripts_and_slices_selections() {
+        assert_eq!(script_summary("db.a.find()", 90), "db.a.find()");
+        assert_eq!(script_summary("db.a.find()\nprint(1)", 90), "db.a.find() …");
+        assert_eq!(script_summary("abcdef", 3), "abc…");
+        assert_eq!(script_summary("", 3), "");
+        assert_eq!(char_slice("héllo wörld", 1, 4), "éll");
+        assert_eq!(char_slice("abc", 2, 9), "c");
+        assert_eq!(char_slice("abc", 2, 1), "");
     }
 }

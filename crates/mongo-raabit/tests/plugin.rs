@@ -2,10 +2,10 @@
 
 use archipel_sdk::api::{
     EditorTabRequest, Permission, Plugin, PluginHost, PluginManifest, Value, ViewContext,
-    ViewPlacement,
+    ViewFrame, ViewPlacement,
 };
 use archipel_sdk::kit::Theme;
-use archipel_sdk::testing::{DataDir, Fixture, RecordingHost, audit, view_harness};
+use archipel_sdk::testing::{DataDir, Fixture, Queryable, RecordingHost, audit, view_harness};
 use mongo_raabit::MongoRaabitPlugin;
 use mongo_raabit::plugin::{DATABASES_VIEW, DATABASES_WINDOW, OPEN, SHOW_DATABASES, VIEW};
 
@@ -60,8 +60,18 @@ fn commands_open_the_tab_and_the_tool_window() {
 #[test]
 fn main_screen_passes_the_kit_audit_in_both_themes() {
     for theme in [Theme::dark(), Theme::light()] {
+        // The app fills its area: a window fitted to the content would be a few points wide.
         let fixture = Fixture::new(MongoRaabitPlugin::new(), ID);
-        let mut harness = view_harness(theme, fixture, app_view());
+        let view = app_view();
+        let mut harness = archipel_sdk::kit::testing::harness_state_sized(
+            theme,
+            archipel_sdk::kit::egui::vec2(1000.0, 640.0),
+            fixture,
+            move |ui, fixture| {
+                let Fixture { plugin, host } = fixture;
+                plugin.render_view(&view, &mut ViewFrame::new(ui), host);
+            },
+        );
         harness.run();
         audit(&mut harness).assert_clean();
     }
@@ -96,4 +106,58 @@ fn connections_are_stored_in_the_hosts_data_dir() {
         app_view(),
     );
     harness.run();
+}
+
+#[test]
+fn the_settings_page_holds_every_setting() {
+    use mongo_raabit::core::settings;
+    let contributions = MongoRaabitPlugin::new().contributions();
+    let page = &contributions.settings_pages[0];
+    let keys: Vec<&str> = page.fields.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            settings::CONFIRM_WRITES,
+            settings::NEW_CONNECTIONS_READ_ONLY,
+            settings::PAGE_SIZE,
+            settings::SCHEMA_SAMPLE_SIZE,
+            settings::QUERY_TIMEOUT_SECS,
+        ]
+    );
+    assert!(page.fields.iter().all(|f| f.description.is_some()));
+    assert_eq!(page.fields[0].kind.default_value(), Value::Bool(true));
+}
+
+#[test]
+fn the_views_read_and_write_the_hosts_settings() {
+    use archipel_sdk::api::json;
+    use mongo_raabit::core::settings;
+    use mongo_raabit::plugin::OPEN_SETTINGS;
+    let mut host = RecordingHost::new(ID);
+    host.set_setting(settings::PAGE_SIZE, json!(100.0)).unwrap();
+    let fixture = Fixture::with_host(MongoRaabitPlugin::new(), host);
+    let view = app_view();
+    let mut harness = archipel_sdk::kit::testing::harness_state_sized(
+        Theme::dark(),
+        archipel_sdk::kit::egui::vec2(1000.0, 640.0),
+        fixture,
+        move |ui, fixture| {
+            let Fixture { plugin, host } = fixture;
+            plugin.render_view(&view, &mut ViewFrame::new(ui), host);
+        },
+    );
+    harness.run();
+    // "Settings…" in the Connections header menu asks the host to open Settings.
+    harness.get_by_label("More actions").click();
+    harness.run();
+    harness.get_by_label("Settings…").click();
+    harness.run();
+    let host = &harness.state().host;
+    assert!(
+        host.dispatched
+            .iter()
+            .any(|(command, _)| command == OPEN_SETTINGS)
+    );
+    // Reading the settings never writes them.
+    assert_eq!(host.setting(settings::PAGE_SIZE), Some(json!(100.0)));
 }

@@ -266,31 +266,32 @@ fn unix_ms() -> u128 {
 mod at {
     pub type Point = (u32, u32);
     pub const WELCOME_HOVER: [Point; 6] = [
-        (700, 186),
-        (785, 186),
-        (785, 236),
-        (850, 236),
-        (700, 130),
+        (700, 163),
+        (796, 163),
+        (796, 213),
+        (850, 213),
+        (700, 110),
         (400, 400),
     ];
-    pub const TOOLBAR_CONNECT: Point = (193, 18);
+    /// The "Connect…" button of the empty Connections tool window.
+    pub const OPEN_DIALOG: Point = (177, 169);
     pub const DIALOG_HOVER: [Point; 6] = [
-        (330, 196),
-        (583, 276),
-        (681, 276),
-        (580, 334),
-        (740, 182),
-        (958, 671),
+        (330, 220),
+        (576, 276),
+        (672, 276),
+        (760, 276),
+        (740, 192),
+        (958, 644),
     ];
-    /// The dialog's "Close" button.
-    pub const DIALOG_CLOSE: Point = (392, 627);
+    /// The dialog's "Close" button (its secondary button, at the bottom right).
+    pub const DIALOG_CLOSE: Point = (958, 644);
     /// The welcome screen's "Connect to localhost".
-    pub const CONNECT_LOCALHOST: Point = (785, 236);
-    pub const TREE_HOVER: [Point; 5] = [(100, 115), (100, 139), (100, 163), (100, 187), (100, 211)];
+    pub const CONNECT_LOCALHOST: Point = (796, 213);
+    pub const TREE_HOVER: [Point; 5] = [(150, 88), (150, 112), (150, 136), (150, 160), (150, 184)];
     /// Expander arrow of the `raabit_perf` database row (the fourth database).
-    pub const DB_ARROW: Point = (37, 211);
+    pub const DB_ARROW: Point = (80, 184);
     /// The `customers` collection row below it.
-    pub const COLLECTION: Point = (100, 235);
+    pub const COLLECTION: Point = (165, 208);
     pub const TABLE_HOVER: [Point; 6] = [
         (500, 385),
         (500, 441),
@@ -423,9 +424,9 @@ fn drive(child: &mut Child, display: &str, report: &Path, spawn_ms: u128) -> Res
     d.hover(&at::WELCOME_HOVER)?;
     screen("welcome", spawn_ms);
 
-    // Connection dialog: open from the toolbar, move over its tabs and fields, close.
+    // Connection dialog: open from the Connections tool window, move over it, close.
     let start = unix_ms();
-    d.click(at::TOOLBAR_CONNECT.0, at::TOOLBAR_CONNECT.1)?;
+    d.click(at::OPEN_DIALOG.0, at::OPEN_DIALOG.1)?;
     sleep(Duration::from_millis(600));
     d.hover(&at::DIALOG_HOVER)?;
     d.click(at::DIALOG_CLOSE.0, at::DIALOG_CLOSE.1)?;
@@ -495,7 +496,16 @@ fn drive(child: &mut Child, display: &str, report: &Path, spawn_ms: u128) -> Res
             .map(|(_, ms)| *ms)
             .collect();
         if ms.is_empty() {
-            bail!("no frames recorded on the {name} screen");
+            let first = frames.first().map_or(-1.0, |(t, _)| *t - spawn_ms as f64);
+            let last = frames.last().map_or(-1.0, |(t, _)| *t - spawn_ms as f64);
+            bail!(
+                "no frames recorded on the {name} screen ({} to {} ms after spawn); the app \
+                 painted {} frames, the first {first:.0} ms and the last {last:.0} ms after \
+                 spawn, its first frame {first_frame_ms:.0} ms after it started",
+                start as f64 - spawn_ms as f64,
+                end as f64 - spawn_ms as f64,
+                frames.len(),
+            );
         }
         ms.sort_by(f64::total_cmp);
         let p95 = ms[((ms.len() as f64 * 0.95).ceil() as usize).clamp(1, ms.len()) - 1];

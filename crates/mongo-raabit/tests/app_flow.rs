@@ -3,10 +3,23 @@
 use archipel_sdk::kit::{self, Theme, egui};
 use mongo_raabit::MongoRaabit;
 use mongo_raabit::app::{Load, SessionState, TabKind};
+use mongo_raabit::core::Write;
 use mongo_raabit::core::bson::doc;
 use mongo_raabit::core::connection::CollectionKind;
 use mongo_raabit::core::profile::ConnectionProfile;
 use std::time::Duration;
+
+fn drop(db: &str) -> Write {
+    Write::DropDatabase { db: db.to_owned() }
+}
+
+fn insert(db: &str, collection: &str, documents: Vec<mongo_raabit::core::bson::Document>) -> Write {
+    Write::InsertDocuments {
+        db: db.to_owned(),
+        collection: collection.to_owned(),
+        documents,
+    }
+}
 
 fn uri() -> String {
     std::env::var("MONGO_RAABIT_TEST_URI").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".into())
@@ -17,6 +30,8 @@ fn connect_browse_query_and_page() {
     let (mut profile, _) = ConnectionProfile::from_uri(&uri()).unwrap();
     profile.connect_timeout_ms = Some(1500);
     let mut app = MongoRaabit::new(None);
+    // These flows exercise the writes; the confirmation has its own tests (confirm.rs).
+    app.settings.confirm_writes = false;
     let session = app.connect(profile);
     app.wait_idle(Duration::from_secs(10));
     let state = &app.session(session).unwrap().state;
@@ -32,14 +47,14 @@ fn connect_browse_query_and_page() {
     let db = "raabit_test_ui_flow";
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
+        let _ = conn.execute(drop(db)).await;
+        conn.execute(insert(
             db,
             "items",
             (0..120)
                 .map(|i| doc! {"i": i, "even": i % 2 == 0})
                 .collect(),
-        )
+        ))
         .await
         .unwrap();
     });
@@ -109,7 +124,7 @@ fn connect_browse_query_and_page() {
     app.disconnect(session);
     assert!(app.tabs.iter().all(|t| matches!(t.kind, TabKind::Welcome)));
     rt.block_on(async {
-        conn.drop_database(db).await.unwrap();
+        conn.execute(drop(db)).await.unwrap();
     });
 }
 
@@ -120,6 +135,8 @@ fn edit_insert_clone_delete_explain_and_code() {
     let (mut profile, _) = ConnectionProfile::from_uri(&uri()).unwrap();
     profile.connect_timeout_ms = Some(1500);
     let mut app = MongoRaabit::new(None);
+    // These flows exercise the writes; the confirmation has its own tests (confirm.rs).
+    app.settings.confirm_writes = false;
     let session = app.connect(profile);
     app.wait_idle(Duration::from_secs(10));
     let Some(conn) = app.session(session).unwrap().connection().cloned() else {
@@ -132,15 +149,15 @@ fn edit_insert_clone_delete_explain_and_code() {
     let db = "raabit_test_ui_crud";
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
+        let _ = conn.execute(drop(db)).await;
+        conn.execute(insert(
             db,
             "people",
             vec![
                 doc! {"_id": 1, "name": "Ada", "tier": "pro"},
                 doc! {"_id": 2, "name": "Linus"},
             ],
-        )
+        ))
         .await
         .unwrap();
     });
@@ -158,9 +175,11 @@ fn edit_insert_clone_delete_explain_and_code() {
         editor.mode,
         DocumentMode::Edit(mongo_raabit::core::bson::Bson::Int32(1))
     );
+    let original = editor.original.clone();
     app.save_document(
         tab,
         DocumentMode::Edit(1.into()),
+        original,
         doc! {"_id": 1, "name": "Ada L.", "tier": "pro"},
     );
     app.wait_idle(Duration::from_secs(10));
@@ -172,9 +191,11 @@ fn edit_insert_clone_delete_explain_and_code() {
 
     // A failing save keeps the editor open with the error.
     app.edit_selected(tab);
+    let original = app.selected_document(tab);
     app.save_document(
         tab,
         DocumentMode::Edit(1.into()),
+        original,
         doc! {"_id": 99, "name": "x"},
     );
     app.wait_idle(Duration::from_secs(10));
@@ -214,7 +235,7 @@ fn edit_insert_clone_delete_explain_and_code() {
     assert_eq!(doc.get_f64("score").unwrap(), 41.5);
 
     // Insert and clone.
-    app.save_document(tab, DocumentMode::Insert, doc! {"name": "Grace"});
+    app.save_document(tab, DocumentMode::Insert, None, doc! {"name": "Grace"});
     app.wait_idle(Duration::from_secs(10));
     app.clone_selected(tab);
     let Some(Dialog::Document(editor)) = &app.dialog else {
@@ -223,7 +244,7 @@ fn edit_insert_clone_delete_explain_and_code() {
     assert_eq!(editor.mode, DocumentMode::Insert);
     assert!(!editor.text.contains("_id"));
     let cloned = editor.parse().unwrap();
-    app.save_document(tab, DocumentMode::Insert, cloned);
+    app.save_document(tab, DocumentMode::Insert, None, cloned);
     app.wait_idle(Duration::from_secs(10));
     assert_eq!(app.collection_tab_mut(tab).unwrap().count, Load::Ready(4));
 
@@ -256,7 +277,7 @@ fn edit_insert_clone_delete_explain_and_code() {
         "db.getCollection(\"people\").find({ name: \"Ada L.\" })"
     );
     rt.block_on(async {
-        conn.drop_database(db).await.unwrap();
+        conn.execute(drop(db)).await.unwrap();
     });
 }
 
@@ -265,6 +286,8 @@ fn aggregation_sql_schema_and_index_tabs() {
     let (mut profile, _) = ConnectionProfile::from_uri(&uri()).unwrap();
     profile.connect_timeout_ms = Some(1500);
     let mut app = MongoRaabit::new(None);
+    // These flows exercise the writes; the confirmation has its own tests (confirm.rs).
+    app.settings.confirm_writes = false;
     let session = app.connect(profile);
     app.wait_idle(Duration::from_secs(10));
     let Some(conn) = app.session(session).unwrap().connection().cloned() else {
@@ -277,12 +300,12 @@ fn aggregation_sql_schema_and_index_tabs() {
     let db = "raabit_test_ui_tools";
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
+        let _ = conn.execute(drop(db)).await;
+        conn.execute(insert(
             db,
             "sales",
             (0..30).map(|i| doc! {"region": (["north", "south", "east"][i % 3]), "amount": i as i32 * 10}).collect(),
-        )
+        ))
         .await
         .unwrap();
     });
@@ -431,7 +454,7 @@ fn aggregation_sql_schema_and_index_tabs() {
         });
     }
     rt.block_on(async {
-        conn.drop_database(db).await.unwrap();
+        conn.execute(drop(db)).await.unwrap();
     });
 }
 
@@ -443,6 +466,8 @@ fn visual_query_builder_runs_its_query() {
     let (mut profile, _) = ConnectionProfile::from_uri(&uri()).unwrap();
     profile.connect_timeout_ms = Some(1500);
     let mut app = MongoRaabit::new(None);
+    // These flows exercise the writes; the confirmation has its own tests (confirm.rs).
+    app.settings.confirm_writes = false;
     let session = app.connect(profile);
     app.wait_idle(Duration::from_secs(10));
     let Some(conn) = app.session(session).unwrap().connection().cloned() else {
@@ -455,8 +480,8 @@ fn visual_query_builder_runs_its_query() {
     let db = "raabit_test_ui_query_builder";
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let _ = conn.drop_database(db).await;
-        conn.insert_documents(
+        let _ = conn.execute(drop(db)).await;
+        conn.execute(insert(
             db,
             "people",
             (0..40)
@@ -469,7 +494,7 @@ fn visual_query_builder_runs_its_query() {
                     }
                 })
                 .collect(),
-        )
+        ))
         .await
         .unwrap();
     });
@@ -541,7 +566,7 @@ fn visual_query_builder_runs_its_query() {
         egui::CentralPanel::default().show(ctx, |ui| app.ui(ui));
     });
     rt.block_on(async {
-        conn.drop_database(db).await.unwrap();
+        conn.execute(drop(db)).await.unwrap();
     });
 }
 
@@ -551,6 +576,8 @@ fn shell_tab_runs_scripts() {
     let (mut profile, _) = ConnectionProfile::from_uri(&uri()).unwrap();
     profile.connect_timeout_ms = Some(1500);
     let mut app = MongoRaabit::new(None);
+    // These flows exercise the writes; the confirmation has its own tests (confirm.rs).
+    app.settings.confirm_writes = false;
     let session = app.connect(profile);
     app.wait_idle(Duration::from_secs(10));
     if app.session(session).unwrap().connection().is_none() {
@@ -611,4 +638,130 @@ fn shell_tab_runs_scripts() {
     app.shell_tab_mut(tab).unwrap().force_builtin = true;
     app.run_shell(tab, Some("db.dropDatabase()".into()));
     app.wait_idle(Duration::from_secs(10));
+}
+
+#[test]
+fn confirmed_inline_edit_and_read_only_session() {
+    use archipel_sdk::kit::testing::{self as kit_testing, Queryable};
+    use mongo_raabit::app::CellEdit;
+    use mongo_raabit::dialogs::Dialog;
+    use mongo_raabit::tools::ShellEngine;
+    let (mut profile, _) = ConnectionProfile::from_uri(&uri()).unwrap();
+    profile.connect_timeout_ms = Some(1500);
+    let mut app = MongoRaabit::new(None);
+    assert!(app.settings.confirm_writes);
+    let session = app.connect(profile.clone());
+    app.wait_idle(Duration::from_secs(10));
+    let Some(conn) = app.session(session).unwrap().connection().cloned() else {
+        eprintln!(
+            "skipping confirmed_inline_edit_and_read_only_session: no MongoDB server at {}",
+            uri()
+        );
+        return;
+    };
+    let db = "raabit_test_ui_confirm";
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let _ = conn.execute(drop(db)).await;
+        conn.execute(insert(
+            db,
+            "people",
+            vec![
+                doc! {"_id": 1, "name": "Ada"},
+                doc! {"_id": 2, "name": "Linus"},
+            ],
+        ))
+        .await
+        .unwrap();
+    });
+    app.open_collection(session, db, "people", CollectionKind::Collection);
+    app.wait_idle(Duration::from_secs(10));
+    let tab = app.active_tab_id().unwrap();
+    app.collection_tab_mut(tab).unwrap().editing = Some(CellEdit {
+        doc_index: 0,
+        path: "name".into(),
+        text: "Ada L.".into(),
+        original: Some("Ada".into()),
+        focus: false,
+    });
+    app.commit_cell_edit(tab);
+    app.wait_idle(Duration::from_secs(10));
+    {
+        let Some(Dialog::ConfirmWrite(confirm)) = &app.dialog else {
+            panic!("the edit asks first");
+        };
+        assert_eq!(
+            confirm.shell,
+            "db.getCollection(\"people\").updateOne({\n  _id: 1,\n  name: {\n    $eq: \"Ada\",\n    $type: \"string\",\n    $not: {\n      $type: \"array\"\n    }\n  }\n}, {\n  $set: {\n    name: \"Ada L.\"\n  }\n})"
+        );
+        assert_eq!(
+            confirm.summary,
+            Load::Ready("1 document will be modified".into())
+        );
+    }
+    let name = |app: &mut MongoRaabit| {
+        app.run_query(tab, false);
+        app.wait_idle(Duration::from_secs(10));
+        app.selected_document(tab);
+        app.collection_tab_mut(tab)
+            .unwrap()
+            .result
+            .ready()
+            .unwrap()
+            .documents[0]
+            .get_str("name")
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(name(&mut app), "Ada", "nothing is written before Run");
+
+    let mut harness = kit_testing::harness_state_sized(
+        Theme::dark(),
+        egui::vec2(1280.0, 800.0),
+        app,
+        |ui, app: &mut MongoRaabit| mongo_raabit::dialogs::show(app, ui.ctx()),
+    );
+    harness.run_ok();
+    harness.get_by_label("Run").click();
+    harness.run_ok();
+    let app = harness.state_mut();
+    app.wait_idle(Duration::from_secs(10));
+    assert!(app.dialog.is_none());
+    assert_eq!(name(app), "Ada L.");
+
+    // A read-only session: the shell's writes are refused, reads work.
+    profile.read_only = true;
+    profile.id = "read-only".into();
+    let read_only = app.connect(profile);
+    app.wait_idle(Duration::from_secs(10));
+    assert!(app.session_read_only(read_only));
+    let shell = app.open_shell(read_only, db, Some("people")).unwrap();
+    app.wait_idle(Duration::from_secs(10));
+    assert_ne!(
+        app.shell_tab_mut(shell).unwrap().engine,
+        ShellEngine::Detecting
+    );
+    app.shell_tab_mut(shell).unwrap().script =
+        "db.people.countDocuments()\ndb.people.deleteMany({})".into();
+    app.run_shell(shell, None);
+    assert!(
+        app.dialog.is_none(),
+        "no question on a read-only connection"
+    );
+    app.wait_idle(Duration::from_secs(10));
+    let entry = app
+        .shell_tab_mut(shell)
+        .unwrap()
+        .history
+        .last()
+        .cloned()
+        .unwrap();
+    assert_eq!(entry.engine, "built-in");
+    assert!(!entry.ok);
+    assert!(entry.output.contains("read-only"), "{}", entry.output);
+    let count = rt.block_on(async { conn.count(db, "people", &Default::default()).await.unwrap() });
+    assert_eq!(count, 2);
+    rt.block_on(async {
+        conn.execute(drop(db)).await.unwrap();
+    });
 }

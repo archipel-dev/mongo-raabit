@@ -5,21 +5,27 @@ use crate::app::{CollectionTab, Load, MongoRaabit, QueryMode, ResultView, TabId}
 use crate::egui::{RichText, Ui};
 use crate::icons::{self, Icon};
 use crate::results::{self, DocCommand, TableEvent, TreeEvent};
-use crate::style;
 use crate::tree::ToolKind;
 use crate::widgets;
+use crate::writes::READ_ONLY_TIP_LOWER;
 use archipel_sdk::kit::components::{
     Banner, Button, Dropdown, EmptyState, IconButton, SegmentedControl, Separator, Severity,
-    Spinner, Tag,
+    Spinner, Tag, TooltipExt,
 };
 use archipel_sdk::kit::tokens::size;
 use archipel_sdk::kit::{Glyph, Tone};
 use mongo_raabit_core::connection::CollectionKind;
+use mongo_raabit_core::format;
+
+/// Room the query bar leaves for the Run button.
+const RUN_RESERVE: f32 = 110.0;
+const PAGE_SIZE_WIDTH: f32 = 110.0;
 
 pub const PAGE_SIZES: [u64; 5] = [20, 50, 100, 250, 1000];
 
 enum Action {
     Add,
+    Select(usize),
     Doc(DocCommand, Option<usize>),
     CommitEdit,
     Explain,
@@ -40,63 +46,51 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         .session(server)
         .map(|s| s.profile.name.clone())
         .unwrap_or_default();
+    let read_only = app.session_read_only(server);
     let Some(tab) = app.collection_tab_mut(tab_id) else {
         return;
     };
     let mut actions = Vec::new();
     let mut tool = None;
     let mut sql = false;
-    crate::egui::Frame::new()
-        .inner_margin(crate::egui::Margin {
-            left: 14,
-            right: 14,
-            top: 10,
-            bottom: 6,
-        })
-        .show(ui, |ui| {
-            header(ui, tab, &server_name, &mut tool);
-            ui.add_space(8.0);
-            mode_switch(ui, tab);
-            if matches!(tab.mode, QueryMode::Sql | QueryMode::Shell) {
-                sql = true;
-                return;
-            }
-            ui.add_space(6.0);
-            match tab.mode {
-                QueryMode::Builder => {
-                    let fields = tab
-                        .result
-                        .ready()
-                        .map(|page| crate::query_builder::field_names(&page.documents))
-                        .unwrap_or_default();
-                    match crate::query_builder::show(
-                        ui,
-                        &crate::style::Palette::of(ui),
-                        &mut tab.builder,
-                        &fields,
-                    ) {
-                        crate::query_builder::Event::None => {}
-                        crate::query_builder::Event::Changed => {
-                            tab.query = tab.builder.to_query_text();
-                        }
-                        crate::query_builder::Event::Run => {
-                            tab.query = tab.builder.to_query_text();
-                            actions.push(Action::Run { recount: true });
-                        }
+    header(ui, tab, &server_name, read_only, &mut tool);
+    widgets::padded(ui, |ui| {
+        mode_switch(ui, tab);
+        if matches!(tab.mode, QueryMode::Sql | QueryMode::Shell) {
+            sql = true;
+            return;
+        }
+        ui.add_space(size::SECTION_SPACING);
+        match tab.mode {
+            QueryMode::Builder => {
+                let fields = tab
+                    .result
+                    .ready()
+                    .map(|page| crate::query_builder::field_names(&page.documents))
+                    .unwrap_or_default();
+                match crate::query_builder::show(ui, &mut tab.builder, &fields) {
+                    crate::query_builder::Event::None => {}
+                    crate::query_builder::Event::Changed => {
+                        tab.query = tab.builder.to_query_text();
+                    }
+                    crate::query_builder::Event::Run => {
+                        tab.query = tab.builder.to_query_text();
+                        actions.push(Action::Run { recount: true });
                     }
                 }
-                _ => query_bar(ui, tab, &mut actions),
             }
-            if let Some(err) = tab.query_error.clone() {
-                ui.add_space(4.0);
-                let banner = Banner::new(Severity::Error, err).dismissible(true).show(ui);
-                if banner.dismissed {
-                    tab.query_error = None;
-                }
+            _ => query_bar(ui, tab, &mut actions),
+        }
+        if let Some(err) = tab.query_error.clone() {
+            ui.add_space(size::ISLAND_GAP);
+            let banner = Banner::new(Severity::Error, err).dismissible(true).show(ui);
+            if banner.dismissed {
+                tab.query_error = None;
             }
-            ui.add_space(8.0);
-            result_toolbar(ui, tab, &mut actions);
-        });
+        }
+        ui.add_space(size::SECTION_SPACING);
+        result_toolbar(ui, tab, read_only, &mut actions);
+    });
     if sql {
         ui.add(Separator);
         if app.collection_tab_mut(tab_id).map(|t| t.mode) == Some(QueryMode::Shell) {
@@ -114,7 +108,7 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
         return;
     }
     ui.add(Separator);
-    result_area(ui, tab, &mut actions);
+    result_area(ui, tab, read_only, &mut actions);
     if let Some(kind) = tool
         && let Some(tab) = app.collection_tab_mut(tab_id)
     {
@@ -157,6 +151,11 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
                 }
             }
             Action::Add => app.add_document(tab_id),
+            Action::Select(index) => {
+                if let Some(tab) = app.collection_tab_mut(tab_id) {
+                    tab.selected = Some(index);
+                }
+            }
             Action::CommitEdit => app.commit_cell_edit(tab_id),
             Action::Explain => app.explain(tab_id),
             Action::Code => app.query_code(tab_id),
@@ -190,63 +189,77 @@ fn tone_text(ui: &Ui, tone: Tone, text: impl Into<String>) -> RichText {
     RichText::new(text).color(tone.resolve(ui.ctx()))
 }
 
-fn header(ui: &mut Ui, tab: &CollectionTab, server: &str, tool: &mut Option<ToolKind>) {
-    ui.horizontal(|ui| {
-        let icon = match tab.kind {
-            CollectionKind::View => Icon::View,
-            CollectionKind::TimeSeries => Icon::TimeSeries,
-            CollectionKind::GridFsBucket => Icon::Bucket,
-            _ => Icon::Collection,
-        };
-        let accent = Tone::Accent.resolve(ui.ctx());
-        let muted = Tone::Muted.resolve(ui.ctx());
-        icons::icon(ui, icon, accent);
-        ui.label(tone_text(ui, Tone::Muted, server));
-        icons::icon(ui, Icon::ChevronRight, muted);
-        ui.label(tone_text(ui, Tone::Secondary, &tab.db));
-        icons::icon(ui, Icon::ChevronRight, muted);
-        ui.label(
-            tone_text(ui, Tone::Strong, &tab.collection)
-                .size(15.0)
-                .strong(),
-        );
-        if tab.kind == CollectionKind::View {
-            ui.add(Tag::new("view").tone(Tone::Accent));
+/// Why a read-only connection's write actions are disabled.
+const READ_ONLY_HINT: &str =
+    "Read-only connection: edits, inserts, deletes and index changes are blocked";
+
+/// The document count of the header.
+fn count_tag(ui: &mut Ui, count: &Load<u64>) {
+    match count {
+        Load::Ready(n) => {
+            ui.add(Tag::new(format!("{} documents", format::group(*n))).tone(Tone::Accent));
         }
-        ui.with_layout(
-            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-            |ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                for (icon, tip, kind) in [
-                    (
-                        Icon::Schema,
-                        "Structure (schema and indexes)",
-                        ToolKind::Schema,
-                    ),
-                    (Icon::Pipeline, "Aggregation", ToolKind::Aggregation),
-                ] {
-                    if ui.add(IconButton::new(icon, tip)).clicked() {
-                        *tool = Some(kind);
-                    }
+        Load::Loading => {
+            ui.add(Spinner::new().label("Counting documents"));
+        }
+        Load::Failed(err) => {
+            ui.add(Tag::new("count failed").tone(Tone::Error))
+                .on_hover_text(err);
+        }
+        Load::Idle => {}
+    }
+}
+
+/// The tab's header: where the collection lives, what it is, how many documents it holds
+/// and the shortcuts to its tools.
+fn header(
+    ui: &mut Ui,
+    tab: &CollectionTab,
+    server: &str,
+    read_only: bool,
+    tool: &mut Option<ToolKind>,
+) {
+    let (icon, kind) = match tab.kind {
+        CollectionKind::View => (Icon::View, "View"),
+        CollectionKind::TimeSeries => (Icon::TimeSeries, "Time series"),
+        CollectionKind::GridFsBucket => (Icon::Bucket, "Bucket"),
+        CollectionKind::System => (Icon::Collection, "System"),
+        CollectionKind::Collection => (Icon::Collection, "Collection"),
+    };
+    widgets::tool_header(
+        ui,
+        icon,
+        Tone::Accent,
+        &[server, tab.db.as_str()],
+        &tab.collection,
+        Tag::new(kind).tone(if tab.kind == CollectionKind::View {
+            Tone::Accent
+        } else {
+            Tone::Secondary
+        }),
+        |ui| {
+            if read_only {
+                ui.add(Tag::new("Read-only").tone(Tone::Warning))
+                    .tooltip(READ_ONLY_HINT);
+            }
+            count_tag(ui, &tab.count);
+        },
+        |ui| {
+            ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
+            for (icon, tip, kind) in [
+                (
+                    Icon::Schema,
+                    "Structure (schema and indexes)",
+                    ToolKind::Schema,
+                ),
+                (Icon::Pipeline, "Aggregation", ToolKind::Aggregation),
+            ] {
+                if ui.add(IconButton::new(icon, tip)).clicked() {
+                    *tool = Some(kind);
                 }
-                ui.add_space(10.0);
-                ui.spacing_mut().item_spacing.x = 6.0;
-                match &tab.count {
-                    Load::Ready(n) => {
-                        ui.add(Tag::new(format!("{} documents", group(*n))).tone(Tone::Accent));
-                    }
-                    Load::Loading => {
-                        ui.add(Spinner::new().label("Counting documents"));
-                    }
-                    Load::Failed(err) => {
-                        ui.add(Tag::new("count failed").tone(Tone::Error))
-                            .on_hover_text(err);
-                    }
-                    Load::Idle => {}
-                }
-            },
-        );
-    });
+            }
+        },
+    );
 }
 
 /// Builder | Code | SQL. Switching from Code back to the builder takes over the code
@@ -270,10 +283,10 @@ fn mode_switch(ui: &mut Ui, tab: &mut CollectionTab) {
 }
 
 fn query_bar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
-    ui.spacing_mut().item_spacing = crate::egui::vec2(6.0, 6.0);
+    ui.spacing_mut().item_spacing = crate::egui::vec2(size::FORM_LABEL_GAP, size::FORM_LABEL_GAP);
     let mut enter = false;
     ui.horizontal(|ui| {
-        let width = ui.available_width() - 110.0;
+        let width = ui.available_width() - RUN_RESERVE;
         let r = widgets::query_field(
             ui,
             "Filter",
@@ -291,7 +304,7 @@ fn query_bar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
         }
     });
     ui.horizontal(|ui| {
-        let total = ui.available_width() - 6.0 * 5.0;
+        let total = ui.available_width() - size::FORM_LABEL_GAP * 5.0;
         let r = widgets::query_field(
             ui,
             "Projection",
@@ -319,17 +332,14 @@ fn query_bar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
     }
 }
 
-/// `1234567` → `1,234,567`.
-pub fn group(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
+/// The page sizes offered: the usual ones and the tab's own (from Settings).
+fn page_sizes(current: u64) -> Vec<PageSize> {
+    let mut sizes = PAGE_SIZES.to_vec();
+    if !sizes.contains(&current) {
+        sizes.push(current);
+        sizes.sort_unstable();
     }
-    out
+    sizes.into_iter().map(PageSize).collect()
 }
 
 /// A page size as the dropdown shows it.
@@ -342,7 +352,23 @@ impl std::fmt::Display for PageSize {
     }
 }
 
-fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
+/// A write action of the toolbar: on a read-only connection disabled, its tooltip (the
+/// label) saying why. The kit's icon buttons take no separate disabled reason (see "Kit
+/// gaps"), so the reason joins the label.
+fn write_button(icon: Icon, label: &str, enabled: bool, read_only: bool) -> IconButton {
+    if read_only {
+        IconButton::new(icon, format!("{label} ({READ_ONLY_TIP_LOWER})")).enabled(false)
+    } else {
+        IconButton::new(icon, label).enabled(enabled)
+    }
+}
+
+fn result_toolbar(
+    ui: &mut Ui,
+    tab: &mut CollectionTab,
+    read_only: bool,
+    actions: &mut Vec<Action>,
+) {
     ui.horizontal(|ui| {
         ui.add(SegmentedControl::new(
             &mut tab.view,
@@ -352,26 +378,33 @@ fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action
                 (ResultView::Json, "JSON"),
             ],
         ));
-        ui.add_space(6.0);
+        ui.add_space(size::SECONDARY_GAP);
         let has_selection = tab.selected.is_some();
         ui.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
         if ui
-            .add(IconButton::new(Icon::Plus, "Add document"))
+            .add(write_button(Icon::Plus, "Add document", true, read_only))
             .clicked()
         {
             actions.push(Action::Add);
         }
         if ui
-            .add(
-                IconButton::new(Icon::Edit, "Edit document (double-click a row)")
-                    .enabled(has_selection),
-            )
+            .add(write_button(
+                Icon::Edit,
+                "Edit document (double-click a row)",
+                has_selection,
+                read_only,
+            ))
             .clicked()
         {
             actions.push(Action::Doc(DocCommand::Edit, None));
         }
         if ui
-            .add(IconButton::new(Icon::Copy, "Clone document").enabled(has_selection))
+            .add(write_button(
+                Icon::Copy,
+                "Clone document",
+                has_selection,
+                read_only,
+            ))
             .clicked()
         {
             actions.push(Action::Doc(DocCommand::Clone, None));
@@ -384,15 +417,14 @@ fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action
         }
         if ui
             .add(
-                IconButton::new(Icon::Trash, "Delete document")
-                    .enabled(has_selection)
+                write_button(Icon::Trash, "Delete document", has_selection, read_only)
                     .tone(Tone::Error),
             )
             .clicked()
         {
             actions.push(Action::Doc(DocCommand::Delete, None));
         }
-        ui.add_space(6.0);
+        ui.add_space(size::SECONDARY_GAP);
         if ui
             .add(IconButton::new(Icon::Explain, "Explain query plan"))
             .clicked()
@@ -408,9 +440,9 @@ fn result_toolbar(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action
         {
             actions.push(Action::Code);
         }
-        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.spacing_mut().item_spacing.x = size::FORM_LABEL_GAP;
         if tab.view == ResultView::Table && !tab.drill.is_empty() {
-            ui.add_space(8.0);
+            ui.add_space(size::SECONDARY_GAP);
             if let Some(depth) = results::breadcrumb(ui, &tab.drill) {
                 tab.drill.truncate(depth);
             }
@@ -433,20 +465,14 @@ fn paging(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
     {
         actions.push(Action::Page(tab.page + 1));
     }
-    let first = page.map(|pg| pg.first_index()).unwrap_or(0);
-    let last = page
-        .map(|pg| first + pg.documents.len() as u64)
-        .unwrap_or(0)
-        .saturating_sub(1);
-    let total = match &tab.count {
-        Load::Ready(n) => format!(" of {}", group(*n)),
-        _ => String::new(),
-    };
-    let range = if first == 0 {
-        "No documents".to_owned()
-    } else {
-        format!("{}–{}{}", group(first), group(last), total)
-    };
+    let range = format::page_range(
+        page.map_or(0, |pg| pg.first_index()),
+        page.map_or(0, |pg| pg.documents.len() as u64),
+        match &tab.count {
+            Load::Ready(n) => Some(*n),
+            _ => None,
+        },
+    );
     ui.label(tone_text(ui, Tone::Secondary, range));
     if ui
         .add(IconButton::new(Icon::ChevronLeft, "Previous page").enabled(tab.page > 0))
@@ -459,10 +485,10 @@ fn paging(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
         Dropdown::new(
             ("raabit-page-size", &tab.db, &tab.collection),
             &mut chosen,
-            PAGE_SIZES.map(PageSize),
+            page_sizes(tab.page_size),
         )
         .label("Page size")
-        .width(110.0),
+        .width(PAGE_SIZE_WIDTH),
     );
     if chosen.0 != tab.page_size {
         actions.push(Action::PageSize(chosen.0));
@@ -471,8 +497,8 @@ fn paging(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
         ui.add(Spinner::new().label("Loading page"));
     }
     if let Some(page) = page {
-        ui.add_space(6.0);
-        ui.label(tone_text(ui, Tone::Muted, style::duration(page.elapsed)))
+        ui.add_space(size::SECONDARY_GAP);
+        ui.label(tone_text(ui, Tone::Muted, format::duration(page.elapsed)))
             .on_hover_text("Query time of this page");
         icons::icon(ui, Icon::TimeSeries, Tone::Muted.resolve(ui.ctx()));
     }
@@ -487,7 +513,7 @@ struct Snapshot {
     docs: std::sync::Arc<Vec<mongo_raabit_core::bson::Document>>,
 }
 
-fn result_area(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) {
+fn result_area(ui: &mut Ui, tab: &mut CollectionTab, read_only: bool, actions: &mut Vec<Action>) {
     let snapshot_id = crate::egui::Id::new(("raabit-page", &tab.db, &tab.collection));
     // The page is lent to the view for this frame; background jobs only apply their
     // results between frames.
@@ -503,10 +529,11 @@ fn result_area(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) 
                     &snapshot.docs,
                     snapshot.first,
                     snapshot.seq,
+                    read_only,
                     actions,
                 ),
                 None => {
-                    ui.add_space(40.0);
+                    ui.add_space(size::FORM_GROUP_SPACING * 2.0);
                     ui.vertical_centered(|ui| {
                         ui.add(Spinner::new().label("Running query"));
                         ui.label(tone_text(ui, Tone::Secondary, "Running query…"));
@@ -516,12 +543,12 @@ fn result_area(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) 
         }
         Load::Failed(err) => {
             ui.data_mut(|d| d.remove::<Snapshot>(snapshot_id));
-            ui.add_space(8.0);
+            ui.add_space(size::SECONDARY_GAP);
             Banner::new(Severity::Error, err.clone()).show(ui);
         }
         Load::Ready(page) if page.documents.is_empty() => {
             ui.data_mut(|d| d.remove::<Snapshot>(snapshot_id));
-            ui.add_space(24.0);
+            ui.add_space(size::FORM_GROUP_SPACING);
             EmptyState::new("No documents match the query")
                 .icon(Glyph::Filter)
                 .hint("Change the filter or reset the query.")
@@ -538,7 +565,7 @@ fn result_area(ui: &mut Ui, tab: &mut CollectionTab, actions: &mut Vec<Action>) 
                 };
                 ui.data_mut(|d| d.insert_temp(snapshot_id, snapshot));
             }
-            documents(ui, tab, &page.documents, first, tab.seq, actions);
+            documents(ui, tab, &page.documents, first, tab.seq, read_only, actions);
         }
     }
     tab.result = result;
@@ -551,19 +578,28 @@ fn documents(
     docs: &[mongo_raabit_core::bson::Document],
     first: u64,
     version: u64,
+    read_only: bool,
     actions: &mut Vec<Action>,
 ) {
+    // A read-only connection shows the documents; it cannot open them for editing.
+    let open = |i: usize| {
+        if read_only {
+            Action::Select(i)
+        } else {
+            Action::Doc(DocCommand::Edit, Some(i))
+        }
+    };
     match tab.view {
-        ResultView::Table => match results::table(ui, tab, docs, first) {
+        ResultView::Table => match results::table(ui, tab, docs, first, !read_only) {
             Some(TableEvent::Drill(field)) => tab.drill.push(field),
             Some(TableEvent::Select(i)) => tab.selected = Some(i),
-            Some(TableEvent::Open(i)) => actions.push(Action::Doc(DocCommand::Edit, Some(i))),
+            Some(TableEvent::Open(i)) => actions.push(open(i)),
             Some(TableEvent::Edit(edit)) => {
                 tab.editing = Some(edit);
                 actions.push(Action::CommitEdit);
             }
             Some(TableEvent::Sort { field, descending }) => {
-                tab.query.sort = results::sort_text(&field, descending);
+                tab.query.sort = mongo_raabit_core::documents::sort_text(&field, descending);
                 actions.push(Action::Run { recount: false });
             }
             None => {}
@@ -577,7 +613,7 @@ fn documents(
             },
             docs,
             first,
-            true,
+            !read_only,
         ) {
             Some(TreeEvent::Toggle(key)) => {
                 if !tab.open.remove(&key) {
@@ -585,7 +621,7 @@ fn documents(
                 }
             }
             Some(TreeEvent::Select(i)) => tab.selected = Some(i),
-            Some(TreeEvent::Open(i)) => actions.push(Action::Doc(DocCommand::Edit, Some(i))),
+            Some(TreeEvent::Open(i)) => actions.push(open(i)),
             Some(TreeEvent::Edit(edit)) => {
                 tab.editing = Some(edit);
                 actions.push(Action::CommitEdit);
@@ -599,15 +635,5 @@ fn documents(
             first,
             Some(version),
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn groups_digits() {
-        assert_eq!(super::group(0), "0");
-        assert_eq!(super::group(1200), "1,200");
-        assert_eq!(super::group(1_234_567), "1,234,567");
     }
 }

@@ -311,6 +311,11 @@ impl Stage {
         }
     }
 
+    /// The body on one line, for lists.
+    pub fn summary(&self) -> String {
+        self.body.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
     /// The stage as a pipeline document.
     pub fn to_document(&self) -> Result<Document> {
         if !self.operator.starts_with('$') || self.operator.len() < 2 {
@@ -452,8 +457,12 @@ fn sampled(mut stages: Vec<Document>, options: RunOptions) -> Vec<Document> {
     stages
 }
 
+/// Most documents an aggregation run from the views loads into memory.
+pub const MAX_RESULTS: u64 = 10_000;
+
 impl Connection {
-    /// Run an aggregation and collect at most `max_results` documents.
+    /// Run an aggregation and collect at most `max_results` documents (0, and anything
+    /// above [`MAX_RESULTS`], is [`MAX_RESULTS`]), bounded by the query timeout.
     pub async fn aggregate(
         &self,
         db: &str,
@@ -463,18 +472,32 @@ impl Connection {
         max_results: u64,
     ) -> Result<(Vec<Document>, Duration)> {
         let mut stages = sampled(stages, options);
-        let writes = stages
-            .last()
-            .and_then(|d| d.keys().next())
-            .is_some_and(|k| k == "$out" || k == "$merge");
-        if max_results > 0 && !writes {
-            stages.push(doc! {"$limit": i64::try_from(max_results).unwrap_or(i64::MAX)});
+        if crate::write::pipeline_writes(&stages) {
+            // `$out` / `$merge` change data: only through the guarded write path.
+            let write = crate::write::Write::Aggregate {
+                db: db.to_owned(),
+                collection: collection.to_owned(),
+                pipeline: stages,
+            };
+            return match self.execute(write).await? {
+                crate::write::WriteOutcome::Aggregated { documents, elapsed } => {
+                    Ok((documents, elapsed))
+                }
+                _ => Ok((Vec::new(), Duration::ZERO)),
+            };
         }
+        // Never unbounded: 0 ("all") and larger limits load at most `MAX_RESULTS`.
+        let max_results = match max_results {
+            0 => MAX_RESULTS,
+            n => n.min(MAX_RESULTS),
+        };
+        stages.push(doc! {"$limit": i64::try_from(max_results).unwrap_or(i64::MAX)});
         let start = Instant::now();
         let cursor = self
             .collection(db, collection)
             .aggregate(stages)
             .allow_disk_use(options.allow_disk_use)
+            .max_time(self.query_timeout())
             .await?;
         let docs: Vec<Document> = cursor.try_collect().await?;
         Ok((docs, start.elapsed()))
@@ -542,6 +565,16 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn summarizes_a_body_on_one_line() {
+        let stage = Stage {
+            operator: "$match".into(),
+            body: "{\n  a:   1,\n  b: 2\n}".into(),
+            enabled: true,
+        };
+        assert_eq!(stage.summary(), "{ a: 1, b: 2 }");
+    }
     use super::*;
 
     #[test]

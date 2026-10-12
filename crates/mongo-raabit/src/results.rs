@@ -6,63 +6,19 @@ use crate::app::{CellEdit, CollectionTab};
 use crate::egui::{Id, Rect, Ui};
 use crate::icons::Icon;
 use crate::values;
-use archipel_sdk::kit::components::code::JavaScript;
+use archipel_sdk::kit::Glyph;
+use archipel_sdk::kit::components::code::ExtendedJson;
 use archipel_sdk::kit::components::{
-    Cell, CodeView, Column, EmptyState, Link, SortOrder, Table, TreeRow as KitRow, TreeTable,
+    Breadcrumbs, Cell, CodeView, Column, EmptyState, SortOrder, Table, TreeRow as KitRow, TreeTable,
 };
 use archipel_sdk::kit::tokens::size;
-use archipel_sdk::kit::{Glyph, Tone};
 use mongo_raabit_core::bson::{Bson, Document};
+use mongo_raabit_core::documents::{
+    TreeRow, cell_value, editable_prefix, inline_text, join_path, json_text, preview, settable,
+    sort_text, table_columns, table_rows, tree_rows,
+};
 use mongo_raabit_core::shell;
 use std::sync::Arc;
-
-/// Rows shown by the table for the current drill path: (source document index, row).
-pub fn table_rows(docs: &[Document], drill: &[String]) -> Vec<(usize, Bson)> {
-    let mut rows = Vec::new();
-    for (index, doc) in docs.iter().enumerate() {
-        let mut current = vec![Bson::Document(doc.clone())];
-        for segment in drill {
-            let mut next = Vec::new();
-            for value in current {
-                if let Bson::Document(d) = value
-                    && let Some(v) = d.get(segment)
-                {
-                    match v {
-                        // Arrays expand into one row per element.
-                        Bson::Array(items) => next.extend(items.iter().cloned()),
-                        other => next.push(other.clone()),
-                    }
-                }
-            }
-            current = next;
-        }
-        rows.extend(current.into_iter().map(|v| (index, v)));
-    }
-    rows
-}
-
-/// Column names: union of the rows' document keys in first-seen order, or a single
-/// `value` column for scalar rows.
-pub fn table_columns(rows: &[(usize, Bson)]) -> Vec<String> {
-    let mut columns: Vec<String> = Vec::new();
-    let mut scalar = false;
-    for (_, row) in rows {
-        match row {
-            Bson::Document(d) => {
-                for key in d.keys() {
-                    if !columns.iter().any(|c| c == key) {
-                        columns.push(key.clone());
-                    }
-                }
-            }
-            _ => scalar = true,
-        }
-    }
-    if scalar {
-        columns.insert(0, "value".into());
-    }
-    columns
-}
 
 /// Initial column width from the header and the first rows' previews.
 fn column_width(rows: &[(usize, Bson)], name: &str) -> f32 {
@@ -73,13 +29,11 @@ fn column_width(rows: &[(usize, Bson)], name: &str) -> f32 {
         .filter_map(|(_, row)| match row {
             Bson::Document(d) => d.get(name).map(|v| match v {
                 Bson::Document(_) | Bson::Array(_) => {
-                    values::preview(v).chars().count() as f32 * 6.6 + 30.0
+                    preview(v).chars().count() as f32 * 6.6 + 30.0
                 }
-                other => values::preview(other).chars().count() as f32 * 7.6 + 16.0,
+                other => preview(other).chars().count() as f32 * 7.6 + 16.0,
             }),
-            other if name == "value" => {
-                Some(values::preview(other).chars().count() as f32 * 7.6 + 16.0)
-            }
+            other if name == "value" => Some(preview(other).chars().count() as f32 * 7.6 + 16.0),
             _ => None,
         })
         .fold(0.0_f32, f32::max);
@@ -109,41 +63,6 @@ pub enum TableEvent {
     },
 }
 
-/// Dotted path of the drill position when it only crosses embedded documents (inline
-/// edits need a unique field path; rows expanded from arrays have none).
-pub fn editable_prefix(doc: &Document, drill: &[String]) -> Option<String> {
-    let mut current = doc;
-    for segment in drill {
-        current = current.get(segment)?.as_document()?;
-    }
-    Some(drill.join("."))
-}
-
-fn join_path(prefix: &str, name: &str) -> String {
-    if prefix.is_empty() {
-        name.to_owned()
-    } else {
-        format!("{prefix}.{name}")
-    }
-}
-
-/// Fields that `$set` can reach by a dotted path.
-fn settable(segment: &str) -> bool {
-    !segment.is_empty() && !segment.contains('.') && !segment.starts_with('$')
-}
-
-/// The text an inline edit starts from. Only scalars whose cell shows exactly that text
-/// are edited in place (dates and the like go through the document editor).
-fn inline_text(value: &Bson) -> Option<String> {
-    match value {
-        Bson::String(s) if values::preview(value) == *s => Some(s.clone()),
-        Bson::Int32(_) | Bson::Int64(_) | Bson::Double(_) | Bson::Boolean(_) | Bson::Null => {
-            Some(values::preview(value))
-        }
-        _ => None,
-    }
-}
-
 fn edit_of(doc_index: usize, path: String, text: String, original: &Bson) -> CellEdit {
     CellEdit {
         doc_index,
@@ -156,25 +75,11 @@ fn edit_of(doc_index: usize, path: String, text: String, original: &Bson) -> Cel
 
 /// Breadcrumb for the drill path; returns the new depth when a crumb was clicked.
 pub fn breadcrumb(ui: &mut Ui, drill: &[String]) -> Option<usize> {
-    let mut target = None;
-    let muted = Tone::Muted.resolve(ui.ctx());
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if drill.is_empty() {
-            ui.label("documents");
-        } else if ui.add(Link::new("documents")).clicked() {
-            target = Some(0);
-        }
-        for (i, segment) in drill.iter().enumerate() {
-            archipel_sdk::kit::icons::show(ui, Icon::ChevronRight.kit(), size::ICON, muted);
-            if i + 1 == drill.len() {
-                ui.label(segment);
-            } else if ui.add(Link::new(segment)).clicked() {
-                target = Some(i + 1);
-            }
-        }
-    });
-    target
+    let crumbs = std::iter::once("documents").chain(drill.iter().map(String::as_str));
+    crumbs
+        .fold(Breadcrumbs::new(), |path, crumb| path.crumb(crumb, None))
+        .show(ui)
+        .clicked
 }
 
 fn container_icon(value: &Bson) -> Icon {
@@ -189,10 +94,10 @@ fn container_icon(value: &Bson) -> Icon {
 fn value_cell(value: Option<&Bson>, editable: bool) -> Cell {
     match value {
         None => Cell::new("—").muted(),
-        Some(v @ (Bson::Document(_) | Bson::Array(_))) => Cell::new(values::preview(v))
+        Some(v @ (Bson::Document(_) | Bson::Array(_))) => Cell::new(preview(v))
             .icon(container_icon(v).kit())
             .value_kind(values::kind(v)),
-        Some(v) => Cell::new(values::preview(v))
+        Some(v) => Cell::new(preview(v))
             .value_kind(values::kind(v))
             .editable(editable),
     }
@@ -281,24 +186,12 @@ fn clicked_column(ui: &Ui, body: Rect, columns: &[Column], rows: usize) -> Optio
     None
 }
 
-/// `{ name: 1 }` for the query's sort box.
-pub fn sort_text(field: &str, descending: bool) -> String {
-    let key = if !field.is_empty()
-        && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !field.starts_with(|c: char| c.is_ascii_digit())
-    {
-        field.to_owned()
-    } else {
-        format!("\"{}\"", field.replace('"', "\\\""))
-    };
-    format!("{{ {key}: {} }}", if descending { -1 } else { 1 })
-}
-
 pub fn table(
     ui: &mut Ui,
     tab: &mut CollectionTab,
     docs: &[Document],
     first_index: u64,
+    editable: bool,
 ) -> Option<TableEvent> {
     let rows = table_rows(docs, &tab.drill);
     if rows.is_empty() {
@@ -343,17 +236,11 @@ pub fn table(
                 .and_then(|d| rows.iter().position(|(i, _)| *i == d))
         });
     let drill = tab.drill.clone();
-    let value_of = |row: usize, name: &str| -> Option<&Bson> {
-        match &rows[row].1 {
-            Bson::Document(d) => d.get(name),
-            other if name == "value" => Some(other),
-            _ => None,
-        }
-    };
+    let value_of = |row: usize, name: &str| -> Option<&Bson> { cell_value(&rows[row].1, name) };
     // The field path of an editable cell, `None` for cells that are read-only.
     let path_of = |row: usize, name: &str| -> Option<String> {
         let (doc_index, value) = &rows[row];
-        if !matches!(value, Bson::Document(_)) || name == "_id" || !settable(name) {
+        if !editable || !matches!(value, Bson::Document(_)) || name == "_id" || !settable(name) {
             return None;
         }
         let prefix = editable_prefix(docs.get(*doc_index)?, &drill)?;
@@ -435,98 +322,6 @@ pub fn table(
     state.row = selected;
     ui.data_mut(|d| d.insert_temp(id, state));
     event
-}
-
-/// One visible row of the tree view.
-pub struct TreeRow {
-    pub key: String,
-    pub depth: usize,
-    pub label: String,
-    pub value: Bson,
-    pub expandable: bool,
-    pub doc_index: usize,
-    /// Field names from the document down to this row (array positions included).
-    pub path: Vec<String>,
-}
-
-/// Flatten the open part of the tree.
-pub fn tree_rows(
-    docs: &[Document],
-    open: &std::collections::HashSet<String>,
-    first_index: u64,
-) -> Vec<TreeRow> {
-    struct Walk<'a> {
-        out: Vec<TreeRow>,
-        open: &'a std::collections::HashSet<String>,
-    }
-    impl Walk<'_> {
-        fn visit(
-            &mut self,
-            key: String,
-            label: String,
-            value: &Bson,
-            doc_index: usize,
-            path: Vec<String>,
-        ) {
-            let expandable = matches!(value, Bson::Document(d) if !d.is_empty())
-                || matches!(value, Bson::Array(a) if !a.is_empty());
-            let is_open = expandable && self.open.contains(&key);
-            self.out.push(TreeRow {
-                key: key.clone(),
-                depth: path.len(),
-                label,
-                value: value.clone(),
-                expandable,
-                doc_index,
-                path: path.clone(),
-            });
-            if !is_open {
-                return;
-            }
-            let mut child = |name: String, label: String, v: &Bson| {
-                let mut path = path.clone();
-                path.push(name.clone());
-                self.visit(format!("{key}/{name}"), label, v, doc_index, path);
-            };
-            match value {
-                Bson::Document(d) => {
-                    for (k, v) in d {
-                        child(k.clone(), k.clone(), v);
-                    }
-                }
-                Bson::Array(items) => {
-                    for (i, v) in items.iter().enumerate() {
-                        child(i.to_string(), format!("[{i}]"), v);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    let mut walk = Walk {
-        out: Vec::new(),
-        open,
-    };
-    for (i, doc) in docs.iter().enumerate() {
-        // Label by `_id`, or by the first field when the projection dropped it.
-        let id = match doc.get("_id") {
-            Some(id) => values::preview(id),
-            None => doc
-                .iter()
-                .next()
-                .map(|(k, v)| format!("{k}: {}", values::preview(v)))
-                .unwrap_or_default(),
-        };
-        let label = format!("({}) {}", first_index + i as u64, id);
-        walk.visit(
-            i.to_string(),
-            label,
-            &Bson::Document(doc.clone()),
-            i,
-            Vec::new(),
-        );
-    }
-    walk.out
 }
 
 pub enum TreeEvent {
@@ -619,8 +414,7 @@ pub fn tree_view(
                 1 => {
                     let leaf_editable =
                         !r.expandable && inline_text(&r.value).is_some() && path_of(r).is_some();
-                    let cell =
-                        Cell::new(values::preview(&r.value)).value_kind(values::kind(&r.value));
+                    let cell = Cell::new(preview(&r.value)).value_kind(values::kind(&r.value));
                     if r.expandable || matches!(r.value, Bson::Document(_) | Bson::Array(_)) {
                         cell
                     } else {
@@ -660,17 +454,6 @@ pub fn tree_view(
     event
 }
 
-/// The documents as shell text, one `/* n */` marker per document.
-fn json_text(docs: &[Document], first_index: u64) -> String {
-    let mut text = String::new();
-    for (i, doc) in docs.iter().enumerate() {
-        text.push_str(&format!("/* {} */\n", first_index + i as u64));
-        text.push_str(&shell::document_to_shell(doc, shell::ShellStyle::Pretty(2)));
-        text.push_str("\n\n");
-    }
-    text
-}
-
 /// Fold arrows in the JSON view. Off until the kit's fold buttons stop overlapping the
 /// document's accessible bounds (the audit reports it; see "Kit gaps" in the PR).
 const FOLDING: bool = false;
@@ -700,49 +483,10 @@ pub fn json_cached(ui: &mut Ui, id: Id, docs: &[Document], first_index: u64, ver
     CodeView::new(text.as_str())
         .id(id.with("view"))
         .label("Documents as JSON")
-        .highlighter(&JavaScript)
+        .highlighter(&ExtendedJson)
         .line_numbers(true)
         .folding(FOLDING)
         .revision(version.unwrap_or(0))
         .height(ui.available_height())
         .show(ui);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mongo_raabit_core::bson::doc;
-
-    #[test]
-    fn drill_down_expands_arrays_and_documents() {
-        let docs = vec![
-            doc! {"_id": 1, "address": {"city": "Oslo"}, "items": [{"sku": "a"}, {"sku": "b", "qty": 2}], "tags": ["x"]},
-            doc! {"_id": 2, "items": [{"sku": "c"}]},
-        ];
-        let rows = table_rows(&docs, &[]);
-        assert_eq!(table_columns(&rows), ["_id", "address", "items", "tags"]);
-        let items = table_rows(&docs, &["items".into()]);
-        assert_eq!(items.len(), 3);
-        assert_eq!(items[2].0, 1);
-        assert_eq!(table_columns(&items), ["sku", "qty"]);
-        let tags = table_rows(&docs, &["tags".into()]);
-        assert_eq!(table_columns(&tags), ["value"]);
-        assert_eq!(table_rows(&docs, &["address".into()]).len(), 1);
-    }
-
-    #[test]
-    fn tree_rows_follow_open_set() {
-        let docs = vec![doc! {"_id": 1, "a": {"b": [1, 2]}}];
-        let mut open = std::collections::HashSet::new();
-        assert_eq!(tree_rows(&docs, &open, 1).len(), 1);
-        open.insert("0".to_string());
-        open.insert("0/a".to_string());
-        let rows = tree_rows(&docs, &open, 1);
-        assert_eq!(
-            rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
-            ["(1) 1", "_id", "a", "b"]
-        );
-        open.insert("0/a/b".to_string());
-        assert_eq!(tree_rows(&docs, &open, 1).len(), 6);
-    }
 }

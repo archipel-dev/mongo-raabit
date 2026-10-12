@@ -1,8 +1,86 @@
 mod common;
 
-use mongo_raabit_core::bson::{Bson, doc};
+use mongo_raabit_core::bson::{Bson, Document, doc};
 use mongo_raabit_core::connection::{CollectionKind, NewIndex, RoleRef};
-use mongo_raabit_core::query::QueryText;
+use mongo_raabit_core::query::{Query, QueryText};
+use mongo_raabit_core::{Connection, Write, WriteOutcome};
+
+fn drop_db(db: &str) -> Write {
+    Write::DropDatabase { db: db.to_owned() }
+}
+
+fn insert(db: &str, collection: &str, documents: Vec<Document>) -> Write {
+    Write::InsertDocuments {
+        db: db.to_owned(),
+        collection: collection.to_owned(),
+        documents,
+    }
+}
+
+fn create_collection(db: &str, name: &str, options: Document) -> Write {
+    Write::CreateCollection {
+        db: db.to_owned(),
+        name: name.to_owned(),
+        options,
+    }
+}
+
+fn create_index(db: &str, collection: &str, index: NewIndex) -> Write {
+    Write::CreateIndex {
+        db: db.to_owned(),
+        collection: collection.to_owned(),
+        index,
+    }
+}
+
+fn drop_index(db: &str, collection: &str, name: &str) -> Write {
+    Write::DropIndex {
+        db: db.to_owned(),
+        collection: collection.to_owned(),
+        name: name.to_owned(),
+    }
+}
+
+/// An inline edit of `path` from its loaded value `original` (`None`: missing).
+fn set_field(
+    db: &str,
+    id: &Bson,
+    path: &str,
+    original: Option<Bson>,
+    value: Option<Bson>,
+) -> Write {
+    Write::SetField {
+        db: db.to_owned(),
+        collection: "items".into(),
+        id: id.clone(),
+        path: path.into(),
+        value,
+        original,
+    }
+}
+
+/// The editor's Save of `original` (the document as loaded) as `replacement`.
+fn replace(db: &str, original: &Document, replacement: Document) -> Write {
+    Write::ReplaceDocument {
+        db: db.to_owned(),
+        collection: "items".into(),
+        id: original.get("_id").cloned().unwrap_or(Bson::Null),
+        original: original.clone(),
+        replacement,
+    }
+}
+
+/// The documents of `collection` matching `filter` (reads only).
+async fn find(conn: &Connection, db: &str, collection: &str, filter: Document) -> Vec<Document> {
+    let query = Query {
+        filter,
+        ..Query::default()
+    };
+    conn.find_page(db, collection, &query, 0, 1000)
+        .await
+        .unwrap()
+        .documents
+}
 
 #[tokio::test]
 async fn metadata_and_server_info() {
@@ -12,23 +90,33 @@ async fn metadata_and_server_info() {
     assert!(!conn.server().version.is_empty());
     assert!(!conn.server().topology.is_empty());
 
-    conn.create_database(&db, "people").await.unwrap();
-    conn.collection(&db, "people")
-        .insert_many((0..50).map(|i| doc! {"n": i, "name": format!("p{i}")}))
-        .await
-        .unwrap();
-    conn.create_view(
-        &db,
-        "adults",
-        "people",
-        vec![doc! {"$match": {"n": {"$gte": 18}}}],
-    )
+    conn.execute(Write::CreateDatabase {
+        db: db.clone(),
+        first_collection: "people".into(),
+    })
     .await
     .unwrap();
-    conn.create_collection(&db, "fs.files", doc! {})
+    conn.execute(insert(
+        &db,
+        "people",
+        (0..50)
+            .map(|i| doc! {"n": i, "name": format!("p{i}")})
+            .collect(),
+    ))
+    .await
+    .unwrap();
+    conn.execute(Write::CreateView {
+        db: db.clone(),
+        name: "adults".into(),
+        view_on: "people".into(),
+        pipeline: vec![doc! {"$match": {"n": {"$gte": 18}}}],
+    })
+    .await
+    .unwrap();
+    conn.execute(create_collection(&db, "fs.files", doc! {}))
         .await
         .unwrap();
-    conn.create_collection(&db, "fs.chunks", doc! {})
+    conn.execute(create_collection(&db, "fs.chunks", doc! {}))
         .await
         .unwrap();
 
@@ -48,9 +136,15 @@ async fn metadata_and_server_info() {
     assert_eq!(stats.count, 50);
     assert!(stats.size > 0);
 
-    conn.rename_collection(&db, "people", &db, "humans", false)
-        .await
-        .unwrap();
+    conn.execute(Write::RenameCollection {
+        db: db.clone(),
+        from: "people".into(),
+        to_db: db.clone(),
+        to: "humans".into(),
+        drop_target: false,
+    })
+    .await
+    .unwrap();
     assert!(
         conn.collections(&db)
             .await
@@ -59,7 +153,7 @@ async fn metadata_and_server_info() {
             .any(|c| c.name == "humans")
     );
     assert!(
-        conn.create_collection(&db, "system.bad", doc! {})
+        conn.execute(create_collection(&db, "system.bad", doc! {}))
             .await
             .is_err()
     );
@@ -69,7 +163,7 @@ async fn metadata_and_server_info() {
     let ops = conn.current_ops(false).await.unwrap();
     assert!(ops.iter().all(|op| !op.op.is_empty()));
 
-    conn.drop_database(&db).await.unwrap();
+    conn.execute(drop_db(&db)).await.unwrap();
 }
 
 #[tokio::test]
@@ -77,12 +171,17 @@ async fn index_manager() {
     let Some((conn, db)) = common::connect("indexes").await else {
         return;
     };
-    conn.collection(&db, "orders")
-        .insert_many((0..20).map(|i| doc! {"total": i, "sku": format!("s{i}")}))
-        .await
-        .unwrap();
+    conn.execute(insert(
+        &db,
+        "orders",
+        (0..20)
+            .map(|i| doc! {"total": i, "sku": format!("s{i}")})
+            .collect(),
+    ))
+    .await
+    .unwrap();
     let name = conn
-        .create_index(
+        .execute(create_index(
             &db,
             "orders",
             NewIndex {
@@ -90,11 +189,11 @@ async fn index_manager() {
                 unique: true,
                 ..NewIndex::default()
             },
-        )
+        ))
         .await
         .unwrap();
-    assert_eq!(name, "sku_1");
-    conn.create_index(
+    assert_eq!(name, WriteOutcome::IndexCreated("sku_1".into()));
+    conn.execute(create_index(
         &db,
         "orders",
         NewIndex {
@@ -103,12 +202,17 @@ async fn index_manager() {
             partial_filter: Some(doc! {"total": {"$gt": 5}}),
             ..NewIndex::default()
         },
-    )
+    ))
     .await
     .unwrap();
-    conn.set_index_hidden(&db, "orders", "by_total", true)
-        .await
-        .unwrap();
+    conn.execute(Write::SetIndexHidden {
+        db: db.clone(),
+        collection: "orders".into(),
+        name: "by_total".into(),
+        hidden: true,
+    })
+    .await
+    .unwrap();
     let indexes = conn.indexes(&db, "orders").await.unwrap();
     let sku = indexes.iter().find(|i| i.name == "sku_1").unwrap();
     assert!(sku.unique);
@@ -116,10 +220,16 @@ async fn index_manager() {
     let by_total = indexes.iter().find(|i| i.name == "by_total").unwrap();
     assert!(by_total.hidden);
     assert!(by_total.partial_filter.is_some());
-    assert!(conn.drop_index(&db, "orders", "_id_").await.is_err());
-    conn.drop_index(&db, "orders", "by_total").await.unwrap();
+    assert!(
+        conn.execute(drop_index(&db, "orders", "_id_"))
+            .await
+            .is_err()
+    );
+    conn.execute(drop_index(&db, "orders", "by_total"))
+        .await
+        .unwrap();
     assert_eq!(conn.indexes(&db, "orders").await.unwrap().len(), 2);
-    conn.drop_database(&db).await.unwrap();
+    conn.execute(drop_db(&db)).await.unwrap();
 }
 
 #[tokio::test]
@@ -127,16 +237,19 @@ async fn query_paging_crud_and_explain() {
     let Some((conn, db)) = common::connect("query").await else {
         return;
     };
-    let ids = conn
-        .insert_documents(
+    let WriteOutcome::Inserted(ids) = conn
+        .execute(insert(
             &db,
             "items",
             (0..95)
                 .map(|i| doc! {"i": i, "even": i % 2 == 0, "nested": {"v": i * 10}})
                 .collect(),
-        )
+        ))
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("an insert reports the inserted ids");
+    };
     assert_eq!(ids.len(), 95);
 
     let query = QueryText {
@@ -179,14 +292,14 @@ async fn query_paging_crud_and_explain() {
     let explain = conn.explain(&db, "items", &by_i).await.unwrap();
     assert!(explain.root.has_collection_scan());
     assert_eq!(explain.n_returned, 5);
-    conn.create_index(
+    conn.execute(create_index(
         &db,
         "items",
         NewIndex {
             keys: doc! {"i": 1},
             ..NewIndex::default()
         },
-    )
+    ))
     .await
     .unwrap();
     let explain = conn.explain(&db, "items", &by_i).await.unwrap();
@@ -195,61 +308,73 @@ async fn query_paging_crud_and_explain() {
 
     // CRUD by _id.
     let id = ids[0].clone();
-    conn.set_field(
+    conn.execute(set_field(
         &db,
-        "items",
         &id,
         "nested.v",
+        Some(Bson::Int32(0)),
         Some(Bson::String("edited".into())),
-    )
+    ))
     .await
     .unwrap();
-    conn.set_field(&db, "items", &id, "even", None)
+    conn.execute(set_field(&db, &id, "even", Some(Bson::Boolean(true)), None))
         .await
         .unwrap();
     assert!(
-        conn.set_field(&db, "items", &id, "_id", None)
+        conn.execute(set_field(&db, &id, "_id", None, None))
             .await
             .is_err()
     );
-    let edited = conn
-        .collection(&db, "items")
-        .find_one(doc! {"_id": id.clone()})
+    let edited = find(&conn, &db, "items", doc! {"_id": id.clone()})
         .await
-        .unwrap()
-        .unwrap();
+        .remove(0);
     assert_eq!(
         edited.get_document("nested").unwrap().get_str("v").unwrap(),
         "edited"
     );
     assert!(!edited.contains_key("even"));
 
-    let clone_id = conn.clone_document(&db, "items", &edited).await.unwrap();
+    let WriteOutcome::Inserted(cloned) = conn
+        .execute(Write::CloneDocument {
+            db: db.clone(),
+            collection: "items".into(),
+            document: edited.clone(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("a clone reports the new id");
+    };
+    let clone_id = cloned[0].clone();
     assert_ne!(clone_id, id);
     let mut replacement = edited.clone();
     replacement.insert("i", -1);
-    conn.replace_document(&db, "items", &id, replacement)
+    conn.execute(replace(&db, &edited, replacement.clone()))
         .await
         .unwrap();
     let mut wrong = edited.clone();
     wrong.insert("_id", 12345);
     assert!(
-        conn.replace_document(&db, "items", &id, wrong)
+        conn.execute(replace(&db, &replacement, wrong))
             .await
             .is_err()
     );
     assert_eq!(
-        conn.delete_documents(&db, "items", &[id.clone(), clone_id])
-            .await
-            .unwrap(),
-        2
+        conn.execute(Write::DeleteDocuments {
+            db: db.clone(),
+            collection: "items".into(),
+            ids: vec![id.clone(), clone_id],
+        })
+        .await
+        .unwrap(),
+        WriteOutcome::Deleted(2)
     );
     assert!(
-        conn.replace_document(&db, "items", &id, doc! {"x": 1})
+        conn.execute(replace(&db, &replacement, doc! {"x": 1}))
             .await
             .is_err()
     );
-    conn.drop_database(&db).await.unwrap();
+    conn.execute(drop_db(&db)).await.unwrap();
 }
 
 #[tokio::test]
@@ -257,15 +382,15 @@ async fn users_and_roles() {
     let Some((conn, db)) = common::connect("users").await else {
         return;
     };
-    conn.create_user(
-        &db,
-        "reporter",
-        "s3cret-pass",
-        &[RoleRef {
+    conn.execute(Write::CreateUser {
+        db: db.clone(),
+        user: "reporter".into(),
+        password: "s3cret-pass".into(),
+        roles: vec![RoleRef {
             role: "read".into(),
             db: db.clone(),
         }],
-    )
+    })
     .await
     .unwrap();
     let users = conn.users(&db).await.unwrap();
@@ -274,14 +399,18 @@ async fn users_and_roles() {
     assert!(!reporter.mechanisms.is_empty());
     let roles = conn.roles(&db, true).await.unwrap();
     assert!(roles.iter().any(|r| r.role == "readWrite" && r.is_builtin));
-    conn.drop_user(&db, "reporter").await.unwrap();
+    conn.execute(Write::DropUser {
+        db: db.clone(),
+        user: "reporter".into(),
+    })
+    .await
+    .unwrap();
     assert!(conn.users(&db).await.unwrap().is_empty());
-    conn.drop_database(&db).await.unwrap();
+    conn.execute(drop_db(&db)).await.unwrap();
 }
 
 #[tokio::test]
 async fn connection_errors_are_actionable() {
-    use mongo_raabit_core::Connection;
     use mongo_raabit_core::profile::ConnectionProfile;
     use mongo_raabit_core::secrets::MemorySecretStore;
     let (mut profile, _) = ConnectionProfile::from_uri("mongodb://127.0.0.1:1/").unwrap();
@@ -358,5 +487,5 @@ async fn builtin_shell_and_mongosh() {
     } else {
         eprintln!("mongosh not on PATH; skipping the mongosh half of builtin_shell_and_mongosh");
     }
-    conn.drop_database(&db).await.unwrap();
+    conn.execute(drop_db(&db)).await.unwrap();
 }

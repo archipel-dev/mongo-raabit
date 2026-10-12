@@ -1,13 +1,15 @@
 //! Archipel plugin entry point: the whole mongo-raabit view as an editor tab
 //! (Tools › MongoDB), the Databases tool window, or the standalone `raabit` app.
 
+use crate::writes::HostRequest;
 use crate::{MongoRaabit, tree};
 use archipel_sdk::api::{
     CommandContribution, CommandError, CommandResult, Contributions, EditorTabRequest,
-    MenuLocation, Plugin, PluginHost, PluginManifest, ToolWindowAnchor, ToolWindowContribution,
-    Value, ViewContext, ViewFrame,
+    MenuLocation, Notification, Plugin, PluginHost, PluginManifest, SettingField, SettingKind,
+    SettingsPage, ToolWindowAnchor, ToolWindowContribution, Value, ViewContext, ViewFrame,
 };
 use archipel_sdk::ui;
+use mongo_raabit_core::settings::{self, Settings};
 
 pub const VIEW: &str = "mongo.main";
 pub const DATABASES_VIEW: &str = "mongo.databases";
@@ -15,11 +17,94 @@ pub const DATABASES_WINDOW: &str = "mongo-databases";
 pub const OPEN: &str = "mongo.open";
 pub const SHOW_DATABASES: &str = "mongo.showDatabases";
 const PROFILES_FILE: &str = "connections.json";
+/// The host's "Open Settings" command (the standalone app's; Ctrl+, there).
+pub const OPEN_SETTINGS: &str = archipel_sdk::app::CMD_SETTINGS;
+
+/// The Settings page of Mongo Raabit: every field of [`Settings`].
+pub fn settings_page() -> SettingsPage {
+    let defaults = Settings::default();
+    let number = |default: u32, (min, max): (u32, u32)| SettingKind::Number {
+        default: f64::from(default),
+        min: Some(f64::from(min)),
+        max: Some(f64::from(max)),
+    };
+    SettingsPage::new("mongo-raabit", "Mongo Raabit")
+        .field(
+            SettingField::new(
+                settings::CONFIRM_WRITES,
+                "Confirm changes",
+                SettingKind::Bool {
+                    default: defaults.confirm_writes,
+                },
+            )
+            .description(
+                "Before any change runs, show the exact query (mongosh syntax) and how many documents it affects",
+            ),
+        )
+        .field(
+            SettingField::new(
+                settings::NEW_CONNECTIONS_READ_ONLY,
+                "Open connections read-only",
+                SettingKind::Bool {
+                    default: defaults.new_connections_read_only,
+                },
+            )
+            .description(
+                "Every connection opened from now on blocks all changes, whatever its own Read-only setting",
+            ),
+        )
+        .field(
+            SettingField::new(
+                settings::PAGE_SIZE,
+                "Documents per page",
+                number(defaults.page_size, settings::PAGE_SIZE_RANGE),
+            )
+            .description("Page size of a new Query tab"),
+        )
+        .field(
+            SettingField::new(
+                settings::SCHEMA_SAMPLE_SIZE,
+                "Schema sample size",
+                number(defaults.schema_sample_size, settings::SCHEMA_SAMPLE_RANGE),
+            )
+            .description("Documents the Schema Explorer samples when it opens"),
+        )
+        .field(
+            SettingField::new(
+                settings::QUERY_TIMEOUT_SECS,
+                "Query timeout (seconds)",
+                number(defaults.query_timeout_secs, settings::QUERY_TIMEOUT_RANGE),
+            )
+            .description("Queries, aggregations and shell scripts that take longer are stopped"),
+        )
+}
+
+/// Read the settings from the host before a frame.
+fn read_settings(app: &mut MongoRaabit, host: &dyn PluginHost) {
+    app.settings = Settings::from_values(|key| host.setting(key));
+    app.sync_query_timeout();
+}
+
+/// Apply what the views asked of the host during a frame.
+fn apply_requests(app: &mut MongoRaabit, host: &mut dyn PluginHost) {
+    for request in std::mem::take(&mut app.host_requests) {
+        match request {
+            HostRequest::SetSetting(key, value) => {
+                if let Err(err) = host.set_setting(key, value) {
+                    host.notify(Notification::error("Settings", err.to_string()));
+                }
+            }
+            HostRequest::OpenSettings => host.dispatch(OPEN_SETTINGS, Value::Null),
+        }
+    }
+}
 
 pub struct MongoRaabitPlugin {
     manifest: PluginManifest,
     /// Created on first render, once the host's data directory is known.
     app: Option<MongoRaabit>,
+    /// The status line last sent to the host: the host repaints on every update.
+    status: String,
 }
 
 impl Default for MongoRaabitPlugin {
@@ -34,6 +119,7 @@ impl MongoRaabitPlugin {
             manifest: PluginManifest::parse(include_str!("../archipel-plugin.toml"))
                 .expect("bundled manifest is valid"),
             app: None,
+            status: String::new(),
         }
     }
 
@@ -59,6 +145,7 @@ impl Plugin for MongoRaabitPlugin {
                 "Show MongoDB Databases",
             ))
             .menu(MenuLocation::Tools, OPEN)
+            .settings_page(settings_page())
             .tool_window(
                 ToolWindowContribution::new(DATABASES_WINDOW, "Databases", DATABASES_VIEW)
                     .anchor(ToolWindowAnchor::Left)
@@ -95,12 +182,23 @@ impl Plugin for MongoRaabitPlugin {
             return;
         };
         if view.view == VIEW {
-            self.app(host).ui(ui);
+            let app = self.app(host);
+            read_settings(app, host);
+            app.ui(ui);
+            apply_requests(app, host);
+            // One status bar: the host's. It repaints on every update, so send changes only.
+            let line = app.status_line();
+            if line != self.status {
+                host.show_status(&line);
+                self.status = line;
+            }
         } else if view.view == DATABASES_VIEW {
             let app = self.app(host);
+            read_settings(app, host);
             app.jobs.set_context(ui.ctx());
             app.poll();
             tree::show(app, ui);
+            apply_requests(app, host);
         } else {
             ui.label(format!("Unknown view {}", view.view));
         }
@@ -108,7 +206,9 @@ impl Plugin for MongoRaabitPlugin {
 
     fn poll(&mut self, host: &mut dyn PluginHost) {
         if let Some(app) = &mut self.app {
+            read_settings(app, host);
             app.poll();
+            apply_requests(app, host);
             if app.jobs.busy() {
                 host.request_repaint();
             }

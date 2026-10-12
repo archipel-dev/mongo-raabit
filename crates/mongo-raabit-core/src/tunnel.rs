@@ -232,6 +232,7 @@ mod tests {
             auth: SshAuth::PrivateKey {
                 path: "/keys/id_ed25519".into(),
             },
+            ..SshSettings::default()
         };
         let args = tunnel_args(&settings, &HostPort::new("10.0.0.5", 27017), 40001);
         let joined = args.join(" ");

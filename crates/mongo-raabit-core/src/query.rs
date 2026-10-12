@@ -31,6 +31,33 @@ pub struct Query {
 }
 
 impl QueryText {
+    /// The query in shell syntax (`find({...}, {...}).sort(...)`), as the builder previews it.
+    pub fn preview(&self) -> String {
+        let or_empty = |s: &str| {
+            if s.is_empty() {
+                "{}".to_owned()
+            } else {
+                s.to_owned()
+            }
+        };
+        let mut out = format!("find({}", or_empty(&self.filter));
+        if !self.projection.is_empty() {
+            out.push_str(", ");
+            out.push_str(&self.projection);
+        }
+        out.push(')');
+        if !self.sort.is_empty() {
+            out.push_str(&format!(".sort({})", self.sort));
+        }
+        if !self.skip.is_empty() {
+            out.push_str(&format!(".skip({})", self.skip));
+        }
+        if !self.limit.is_empty() {
+            out.push_str(&format!(".limit({})", self.limit));
+        }
+        out
+    }
+
     pub fn parse(&self) -> Result<Query> {
         let optional = |text: &str, what: &'static str| -> Result<Option<Document>> {
             let doc = shell::parse_document(text).map_err(|e| RaabitError::parse(what, e))?;
@@ -278,6 +305,7 @@ impl Connection {
         let handle = self.collection(db, collection);
         let mut find = handle
             .find(query.filter.clone())
+            .max_time(self.query_timeout())
             .skip(skip)
             .limit(i64::try_from(fetch).unwrap_or(i64::MAX));
         if let Some(projection) = &query.projection {
@@ -302,7 +330,9 @@ impl Connection {
     /// Number of documents the query matches (respecting its skip and limit).
     pub async fn count(&self, db: &str, collection: &str, query: &Query) -> Result<u64> {
         let handle = self.collection(db, collection);
-        let mut count = handle.count_documents(query.filter.clone());
+        let mut count = handle
+            .count_documents(query.filter.clone())
+            .max_time(self.query_timeout());
         if query.skip > 0 {
             count = count.skip(query.skip);
         }
@@ -314,7 +344,12 @@ impl Connection {
 
     /// Explain the query with `executionStats` verbosity.
     pub async fn explain(&self, db: &str, collection: &str, query: &Query) -> Result<Explain> {
-        let mut find = doc! {"find": collection, "filter": query.filter.clone()};
+        let max_time = i64::try_from(self.query_timeout().as_millis()).unwrap_or(i64::MAX);
+        let mut find = doc! {
+            "find": collection,
+            "filter": query.filter.clone(),
+            "maxTimeMS": max_time,
+        };
         if let Some(projection) = &query.projection {
             find.insert("projection", projection.clone());
         }
@@ -328,13 +363,13 @@ impl Connection {
             find.insert("limit", i64::try_from(query.limit).unwrap_or(i64::MAX));
         }
         let raw = self
-            .run_command(db, doc! {"explain": find, "verbosity": "executionStats"})
+            .command(db, doc! {"explain": find, "verbosity": "executionStats"})
             .await?;
         Ok(Explain::from_reply(raw))
     }
 
     /// Insert documents, adding `_id`s where missing. Returns the ids in order.
-    pub async fn insert_documents(
+    pub(crate) async fn insert_documents(
         &self,
         db: &str,
         collection: &str,
@@ -361,73 +396,31 @@ impl Connection {
         Ok(ids)
     }
 
-    /// Replace a whole document (the document editor's Save). The `_id` must not change.
-    pub async fn replace_document(
-        &self,
-        db: &str,
-        collection: &str,
-        original_id: &Bson,
-        replacement: Document,
-    ) -> Result<()> {
-        if let Some(new_id) = replacement.get("_id")
-            && new_id != original_id
-        {
-            return Err(RaabitError::Invalid(
-                "_id cannot be changed; clone the document instead".into(),
-            ));
-        }
-        let result = self
-            .collection(db, collection)
-            .replace_one(doc! {"_id": original_id.clone()}, replacement)
-            .await?;
-        if result.matched_count == 0 {
-            return Err(RaabitError::Invalid(
-                "the document no longer exists (deleted by someone else?)".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Set (or with `None`, unset) one field path of a document — inline table edits.
-    pub async fn set_field(
-        &self,
-        db: &str,
-        collection: &str,
-        id: &Bson,
-        path: &str,
-        value: Option<Bson>,
-    ) -> Result<()> {
-        if path.is_empty() || path == "_id" || path.starts_with("_id.") {
-            return Err(RaabitError::Invalid("_id cannot be edited in place".into()));
-        }
-        let update = match value {
-            Some(value) => doc! {"$set": {path: value}},
-            None => doc! {"$unset": {path: ""}},
-        };
-        let result = self
-            .collection(db, collection)
-            .update_one(doc! {"_id": id.clone()}, update)
-            .await?;
-        if result.matched_count == 0 {
-            return Err(RaabitError::Invalid("the document no longer exists".into()));
-        }
-        Ok(())
-    }
-
     /// Delete documents by `_id`. Returns how many were removed.
-    pub async fn delete_documents(&self, db: &str, collection: &str, ids: &[Bson]) -> Result<u64> {
+    pub(crate) async fn delete_documents(
+        &self,
+        db: &str,
+        collection: &str,
+        ids: &[Bson],
+    ) -> Result<u64> {
         if ids.is_empty() {
             return Ok(0);
         }
-        let result = self
-            .collection(db, collection)
-            .delete_many(doc! {"_id": {"$in": ids.to_vec()}})
-            .await?;
+        let handle = self.collection(db, collection);
+        // One document: `deleteOne`, as the confirmation shows it.
+        let result = match ids {
+            [id] => handle.delete_one(doc! {"_id": id.clone()}).await?,
+            _ => {
+                handle
+                    .delete_many(doc! {"_id": {"$in": ids.to_vec()}})
+                    .await?
+            }
+        };
         Ok(result.deleted_count)
     }
 
     /// Insert a copy of the document under a fresh `ObjectId`; returns the new id.
-    pub async fn clone_document(
+    pub(crate) async fn clone_document(
         &self,
         db: &str,
         collection: &str,
@@ -443,6 +436,22 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn previews_the_query_in_shell_syntax() {
+        assert_eq!(QueryText::default().preview(), "find({})");
+        let text = QueryText {
+            filter: "{ a: 1 }".into(),
+            projection: "{ a: 1 }".into(),
+            sort: "{ a: -1 }".into(),
+            skip: "5".into(),
+            limit: "10".into(),
+        };
+        assert_eq!(
+            text.preview(),
+            "find({ a: 1 }, { a: 1 }).sort({ a: -1 }).skip(5).limit(10)"
+        );
+    }
     use super::*;
 
     #[test]

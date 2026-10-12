@@ -19,17 +19,30 @@ Competitors are named only in this table. Clean-room: no competitor code, icons 
 - **Core** = `crates/mongo-raabit-core`. Live tests (`tests/live_*.rs`) need a server at
   `MONGO_RAABIT_TEST_URI` (default `mongodb://127.0.0.1:27017`) and skip with a message when none is
   reachable. An earlier run used MongoDB Community 8.0.32.
-- **UI** = `crates/mongo-raabit` (egui views). It is excluded from the workspace until the
-  archipel-sdk/kit port lands (v0.1.0), so its tests (`crates/mongo-raabit/tests/app_flow.rs`,
-  `stage_forms.rs`) do not run today. **UI features therefore stay "implemented, unverified"** even
-  when a test exists. They become "done" once the ported test passes and a screenshot is in
-  the PR.
-- **No screenshots exist in this repo yet.** The earlier Jetthing-era captures were not carried over.
-  Mouse-only Xvfb verification is a v0.1.0 gate (see [roadmap](roadmap.md)).
+- **UI** = `crates/mongo-raabit` (views on archipel-sdk and archipel-kit), hosted by the standalone
+  app `crates/raabit` and by the IDE plugin. Its tests run in `cargo test --workspace`; the flows
+  that talk to a server (`tests/app_flow.rs`, `stage_forms.rs`) skip without one, like the core
+  live tests. Some UI rows below still say "implemented, unverified" until each gets its
+  conformance or audit test and a screenshot.
+- **Screenshots** are in `docs/screenshots/`.
 - Per CLAUDE.md, every interactive element needs a `kit::testing::conformance` test and every screen a
-  `testing::audit` test. None exist yet, so no UI row can be "done" before the port.
+  `testing::audit` test.
 
 Abbreviations: C = Compass, S3T = Studio 3T. Y = has it, N = does not, P = partly.
+
+## Write safety
+
+Rules and limits: [safety.md](safety.md).
+
+| Feature | Compass | S3T | Mongo Raabit | Evidence |
+|---|---|---|---|---|
+| Read-only connections | Y | Y | done | `crates/mongo-raabit-core/tests/live_write_paths.rs::a_read_only_connection_refuses_every_write`, `crates/mongo-raabit/tests/confirm.rs::a_read_only_connection_disables_write_actions` |
+| Confirm every write with its statement and affected count (on by default) | P | P | done | `confirm.rs::an_inline_edit_asks_first_with_its_set_query`, `::a_delete_is_confirmed_as_destructive`, `::a_shell_script_that_writes_is_confirmed`, `::what_is_confirmed_is_what_runs` |
+| Edits never overwrite data changed since it was loaded | P | N | done | `live_write_paths.rs::an_edit_does_not_overwrite_a_value_changed_since_it_was_loaded`, `::a_save_does_not_overwrite_a_document_changed_since_it_was_loaded`, `confirm.rs::a_conflicting_edit_says_so_and_writes_nothing` |
+| Outcome checked against the preview | N | N | done | `live_write_paths.rs::outcomes_that_differ_from_the_preview_are_reported`, `confirm.rs::an_outcome_that_differs_from_the_preview_is_reported` |
+| Every write leaves exactly the state it shows | n/a | n/a | done | `live_write_paths.rs::every_write_leaves_exactly_the_state_it_shows`, `crates/mongo-raabit-core/tests/write_contract.rs` (property tests) |
+| Reads bounded by the query timeout | Y | Y | done | `live_write_paths.rs::reads_stop_at_the_query_timeout` |
+| Saved connections survive app updates (versioned, atomic, backed up) | Y | Y | done | `crates/mongo-raabit-core/tests/persisted_data.rs`, `crates/mongo-raabit/tests/persisted.rs` |
 
 ## Connections
 
@@ -55,14 +68,14 @@ Abbreviations: C = Compass, S3T = Studio 3T. Y = has it, N = does not, P = partl
 
 | Feature | Compass | S3T | Mongo Raabit | Evidence |
 |---|---|---|---|---|
-| Browse databases (sizes) and collections (counts) | Y | Y | done (engine); tree UI implemented, unverified | `live_server.rs::metadata_and_server_info`; tree test `crates/mongo-raabit/tests/app_flow.rs::connect_browse_query_and_page` (not run today) |
+| Browse databases (sizes) and collections (counts) | Y | Y | done (engine); tree UI implemented, unverified | `live_server.rs::metadata_and_server_info`; tree test `crates/mongo-raabit/tests/app_flow.rs::connect_browse_query_and_page` (live) |
 | Views, time series, GridFS shown as such | Y | Y | partial | metadata live test above; no GridFS file browser |
 | Create / drop database, collection | Y | Y | implemented, unverified | `connection.rs` `create_database`, `drop_database`, `create_collection`; no live test; no UI yet |
 | Create view | Y | Y | implemented, unverified | `connection.rs::create_view`; no test, no UI |
 | Rename collection | Y | Y | implemented, unverified | `connection.rs::rename_collection`; no test, no UI |
 | Capped, clustered, time series, collation options on create | Y | Y | missing | none |
 | Collection stats (size, count, avg doc) | Y | Y | partial | `connection.rs::collection_stats`; tooltip only |
-| Tree filter and refresh | Y | Y | implemented, unverified | `app_flow.rs::connect_browse_query_and_page` (not run today) |
+| Tree filter and refresh | Y | Y | implemented, unverified | `app_flow.rs::connect_browse_query_and_page` (live) |
 
 ## Documents: CRUD and views
 
@@ -89,7 +102,7 @@ Abbreviations: C = Compass, S3T = Studio 3T. Y = has it, N = does not, P = partl
 |---|---|---|---|---|
 | Filter, project, sort, skip, limit | Y | Y | done (engine); bar implemented, unverified | `query.rs::parses_query_bar`, `live_server.rs::query_paging_crud_and_explain` |
 | Inline parse errors with offsets | Y | Y | done | `shell.rs::reports_errors_with_offsets` |
-| Visual query builder (conditions, groups, sort, projection) | P | Y | done (model); UI implemented, unverified | `crates/mongo-raabit-core/src/builder.rs::every_operator_round_trips`, `::all_and_any_nesting`, `::takes_over_supported_queries`, `::invalid_conditions_are_reported_and_skipped`; `crates/mongo-raabit/src/query_builder.rs` tests; `app_flow.rs::visual_query_builder_runs_its_query` (not run today) |
+| Visual query builder (conditions, groups, sort, projection) | P | Y | done (model); UI implemented, unverified | `crates/mongo-raabit-core/src/builder.rs::every_operator_round_trips`, `::all_and_any_nesting`, `::takes_over_supported_queries`, `::invalid_conditions_are_reported_and_skipped`; `crates/mongo-raabit/src/query_builder.rs` tests; `app_flow.rs::visual_query_builder_runs_its_query` (live) |
 | Field-name autocomplete in the bar | Y | Y | missing | none |
 | Query history and favorites | Y | Y | missing | none |
 | Collation, maxTimeMS, hint options | Y | Y | missing | none |
@@ -102,7 +115,7 @@ Abbreviations: C = Compass, S3T = Studio 3T. Y = has it, N = does not, P = partl
 | Stage list: add, reorder, enable/disable, remove | Y | Y | implemented, unverified (model done) | `crates/mongo-raabit-core/src/aggregate.rs::parses_and_renders_pipelines`, `::stage_errors_name_the_stage` |
 | Per-stage input/output preview | Y | Y | done (engine) | `crates/mongo-raabit-core/tests/live_analysis.rs::aggregation_stage_preview`; writing stages (`$out`, `$merge`) never run in previews |
 | Operator templates and completion | Y | Y | partial: templates done, in-editor operator autocomplete missing | `aggregate.rs::templates_parse_and_completion_works` |
-| Visual stage forms ($match, $group, $sort, $project, $unwind, $lookup, $addFields) | P | Y | done (model); UI implemented, unverified | `crates/mongo-raabit-core/src/stage_form.rs::match_forms_round_trip`, `::group_forms_round_trip`, `::unwind_lookup_and_add_fields_round_trip`; `crates/mongo-raabit/tests/stage_forms.rs::form_built_pipelines_run_on_a_live_server` (not run today) |
+| Visual stage forms ($match, $group, $sort, $project, $unwind, $lookup, $addFields) | P | Y | done (model); UI implemented, unverified | `crates/mongo-raabit-core/src/stage_form.rs::match_forms_round_trip`, `::group_forms_round_trip`, `::unwind_lookup_and_add_fields_round_trip`; `crates/mongo-raabit/tests/stage_forms.rs::form_built_pipelines_run_on_a_live_server` (live) |
 | Full run, results in table/tree/JSON | Y | Y | implemented, unverified | `app_flow.rs::aggregation_sql_schema_and_index_tabs` |
 | `$out` / `$merge` run | Y | Y | partial | `live_analysis.rs::aggregation_stage_preview` covers guard; no explicit run test |
 | Save / load pipelines, pipeline library | Y | Y | missing | none (see "Beyond: pipelines as files") |
@@ -162,7 +175,7 @@ Abbreviations: C = Compass, S3T = Studio 3T. Y = has it, N = does not, P = partl
 | Embedded shell (mongosh) | Y | Y | partial | `live_server.rs::builtin_shell_and_mongosh`: runs the installed mongosh, one process per run, no session state, no interactive `it` |
 | Built-in evaluator (no mongosh installed) | N | N | partial | `live_server.rs::builtin_shell_and_mongosh`, `shell_eval.rs::splits_statements`, `::parses_call_chains`; `show`, `use`, `db.<coll>.*`, `runCommand`; no arbitrary JavaScript |
 | Completion (collections, methods, cursor methods) | Y | Y | done (engine) | `shell_eval.rs::completes_names_and_methods` |
-| Shell UI (editor, console, result tree) | Y | Y | implemented, unverified | `app_flow.rs::shell_tab_runs_scripts` (not run today) |
+| Shell UI (editor, console, result tree) | Y | Y | implemented, unverified | `app_flow.rs::shell_tab_runs_scripts` (live) |
 | Credentials kept off the command line | Y | n/a | done | `mongosh.rs` passes the URI in the environment; `mongosh.rs::rewrites_database` |
 | Persistent history, multiple tabs | Y | Y | missing | none |
 
@@ -206,9 +219,9 @@ Abbreviations: C = Compass, S3T = Studio 3T. Y = has it, N = does not, P = partl
 | Feature | Compass | S3T | Mongo Raabit | Evidence |
 |---|---|---|---|---|
 | SQL → MQL (SELECT, JOIN → `$lookup`, GROUP BY, HAVING) | N (Atlas SQL separate) | Y | done (engine); tab implemented, unverified | `crates/mongo-raabit-core/src/sql.rs::simple_select_becomes_find`, `::joins_become_lookup`, `::group_by_with_having_and_order`, `::rejects_unsupported_sql`, `tests/live_analysis.rs::sql_translations_run_on_the_server` |
-| Light / dark theme following the host | Y | Y | implemented, unverified | `crates/mongo-raabit/src/style.rs` |
-| Standalone desktop app | Y | Y | missing | `raabit` crate not created yet (v0.1.0) |
-| Runs as IDE plugin | N | N | implemented, unverified (Jetthing API) | `crates/mongo-raabit/src/plugin.rs`; being ported to archipel-sdk |
+| Light / dark theme following the host | Y | Y | done | kit `Theme` from the host; `tests/documents_screens.rs` (both themes), `docs/screenshots/*-light.png` |
+| Standalone desktop app | Y | Y | done | `crates/raabit` (eframe), `docs/screenshots/01-welcome-dark.png`, `23-light-main-window.png` |
+| Runs as IDE plugin | N | N | done (archipel-sdk) | `tests/plugin.rs::manifest_is_valid_and_declares_its_permissions`, `::main_screen_passes_the_kit_audit_in_both_themes` |
 | Keyboard navigation, accessibility audit | P | P | missing | `testing::audit` tests required by CLAUDE.md, none yet |
 | Auto-update, telemetry opt-out | Y | Y | missing | release tooling in `reference/ide/` pending port |
 | Data Modeling / ER diagrams | N | Y (reverse engineering) | missing | none |

@@ -1,14 +1,24 @@
 //! Index Manager: list with sizes, usage and properties; create, hide/unhide and drop.
+//!
+//! The form's validation and how indexes are described live in
+//! `mongo_raabit_core::indexes`; this module lays them out.
 
 use crate::app::{Load, MongoRaabit, TabId};
-use crate::egui::{RichText, Sense, Ui, vec2};
-use crate::icons::{self, Icon};
-use crate::style::{self, Palette};
+use crate::egui::{Id, Ui};
+use crate::icons::Icon;
+use crate::tools::IndexTab;
 use crate::widgets;
+use crate::writes::READ_ONLY_TIP;
 use archipel_sdk::kit::Tone;
-use archipel_sdk::kit::components::{Button, IconButton, Separator, Tag};
-use egui_extras::{Column, TableBuilder};
-use mongo_raabit_core::shell::{self, ShellStyle};
+use archipel_sdk::kit::components::{
+    Banner, Button, Cell, Checkbox, Column, Form, IconButton, Severity, Spinner, Table, Tag,
+    TextField, TooltipExt,
+};
+use archipel_sdk::kit::parts::Surface;
+use archipel_sdk::kit::tokens::size;
+use mongo_raabit_core::connection::IndexInfo;
+use mongo_raabit_core::format;
+use mongo_raabit_core::indexes::{self, PRIMARY_INDEX};
 
 enum Action {
     Create,
@@ -17,242 +27,95 @@ enum Action {
     Refresh,
 }
 
+const KEYS_WIDTH: f32 = 360.0;
+const TTL_WIDTH: f32 = 120.0;
+const KEYS_TIP: &str = "1 / -1 for ascending / descending, \"text\", \"2dsphere\", \"hashed\"";
+const HIDE_TIP: &str = "Hidden indexes are kept up to date but not used by the planner";
+
 pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
-    let p = Palette::of(ui);
     let server = app
         .index_tab_mut(tab_id)
         .map(|t| t.session)
         .and_then(|s| app.session(s))
         .map(|s| s.profile.name.clone())
         .unwrap_or_default();
+    let read_only = app
+        .index_tab_mut(tab_id)
+        .map(|t| t.session)
+        .is_some_and(|s| app.session_read_only(s));
     let Some(tab) = app.index_tab_mut(tab_id) else {
         return;
     };
+    let IndexTab {
+        db,
+        collection,
+        indexes,
+        form,
+        form_open,
+        error,
+        busy,
+        confirm_drop,
+        ..
+    } = tab;
     let mut actions = Vec::new();
-    crate::egui::Frame::new()
-        .inner_margin(crate::egui::Margin {
-            left: 14,
-            right: 14,
-            top: 10,
-            bottom: 8,
-        })
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                icons::icon(ui, Icon::Index, p.date);
-                ui.label(RichText::new(&server).color(p.text_info));
-                icons::icon(ui, Icon::ChevronRight, p.text_info);
-                ui.label(RichText::new(&tab.db).color(p.text_secondary));
-                icons::icon(ui, Icon::ChevronRight, p.text_info);
-                ui.label(
-                    RichText::new(&tab.collection)
-                        .size(15.0)
-                        .strong()
-                        .color(p.text_strong),
-                );
-                ui.add(Tag::new("Indexes").tone(Tone::Warning));
-                if tab.busy {
-                    ui.spinner();
-                }
-                ui.with_layout(
-                    crate::egui::Layout::right_to_left(crate::egui::Align::Center),
-                    |ui| {
-                        if ui
-                            .add(Button::primary("New Index").icon(Icon::Plus))
-                            .clicked()
-                        {
-                            tab.form_open = !tab.form_open;
-                        }
-                        if ui.add(IconButton::new(Icon::Refresh, "Refresh")).clicked() {
-                            actions.push(Action::Refresh);
-                        }
-                    },
-                );
-            });
-            if tab.form_open {
-                ui.add_space(10.0);
-                archipel_sdk::kit::parts::Surface::Island
-                    .frame(ui.ctx())
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.label(RichText::new("New index").strong());
-                        ui.add_space(6.0);
-                        widgets::form_row(ui, "Keys", 110.0, |ui| {
-                            ui.add(
-                            crate::egui::TextEdit::singleline(&mut tab.form.keys)
-                                .font(crate::egui::FontId::monospace(12.5))
-                                .desired_width(360.0),
-                        )
-                        .on_hover_text(
-                            "1 / -1 for ascending / descending, \"text\", \"2dsphere\", \"hashed\"",
-                        );
-                        });
-                        widgets::form_row(ui, "Name", 110.0, |ui| {
-                            ui.add(
-                                crate::egui::TextEdit::singleline(&mut tab.form.name)
-                                    .hint_text(widgets::hint(ui, "generated from keys"))
-                                    .desired_width(360.0),
-                            );
-                        });
-                        widgets::form_row(ui, "Options", 110.0, |ui| {
-                            ui.checkbox(&mut tab.form.unique, "Unique");
-                            ui.checkbox(&mut tab.form.sparse, "Sparse");
-                            ui.checkbox(&mut tab.form.hidden, "Hidden");
-                        });
-                        widgets::form_row(ui, "TTL (seconds)", 110.0, |ui| {
-                            ui.add(
-                                crate::egui::TextEdit::singleline(&mut tab.form.ttl)
-                                    .hint_text(widgets::hint(ui, "none"))
-                                    .desired_width(120.0),
-                            );
-                        });
-                        widgets::form_row(ui, "Partial filter", 110.0, |ui| {
-                            ui.add(
-                                crate::egui::TextEdit::singleline(&mut tab.form.partial)
-                                    .hint_text(widgets::hint(ui, "{ active: true }"))
-                                    .font(crate::egui::FontId::monospace(12.5))
-                                    .desired_width(360.0),
-                            );
-                        });
-                        ui.add_space(6.0);
-                        widgets::form_row(ui, "", 110.0, |ui| {
-                            if ui
-                                .add(Button::primary("Create Index").icon(Icon::Check))
-                                .clicked()
-                            {
-                                actions.push(Action::Create);
-                            }
-                            if ui.add(Button::secondary("Cancel")).clicked() {
-                                tab.form_open = false;
-                            }
-                        });
-                    });
+    widgets::tool_header(
+        ui,
+        Icon::Index,
+        Tone::Warning,
+        &[server.as_str(), db.as_str()],
+        collection,
+        Tag::new("Indexes").tone(Tone::Warning),
+        |ui| {
+            if read_only {
+                ui.add(Tag::new("Read-only").tone(Tone::Warning));
             }
-            if let Some(err) = &tab.error {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    icons::icon(ui, Icon::Warning, p.error);
-                    ui.label(RichText::new(err).color(p.error));
-                });
+            if *busy {
+                ui.add(Spinner::new().label("Working"));
+            }
+        },
+        |ui| {
+            let new = ui.add(
+                Button::primary("New Index")
+                    .icon(Icon::Plus)
+                    .enabled(!read_only),
+            );
+            let new = if read_only {
+                new.tooltip(READ_ONLY_TIP)
+            } else {
+                new
+            };
+            if new.clicked() {
+                *form_open = !*form_open;
+            }
+            if ui.add(IconButton::new(Icon::Refresh, "Refresh")).clicked() {
+                actions.push(Action::Refresh);
+            }
+        },
+    );
+    if read_only {
+        *form_open = false;
+    }
+    if *form_open || error.is_some() {
+        widgets::padded(ui, |ui| {
+            if *form_open {
+                new_index_form(ui, form, form_open, &mut actions);
+            }
+            if let Some(err) = &*error {
+                Banner::new(Severity::Error, err).show(ui);
             }
         });
-    ui.add(Separator);
-    match &tab.indexes {
-        Load::Loading | Load::Idle => {
-            ui.add_space(30.0);
-            ui.vertical_centered(|ui| ui.spinner());
-        }
+    }
+    match &*indexes {
+        Load::Loading | Load::Idle => widgets::busy(ui, "Loading indexes…"),
         Load::Failed(err) => {
-            ui.add_space(20.0);
-            ui.vertical_centered(|ui| ui.label(RichText::new(err).color(p.error)));
+            widgets::padded(ui, |ui| {
+                Banner::new(Severity::Error, err).show(ui);
+            });
         }
-        Load::Ready(indexes) => {
-            let total: u64 = indexes.iter().filter_map(|i| i.size).sum();
-            crate::egui::Frame::new()
-                .inner_margin(crate::egui::Margin::symmetric(14, 6))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} indexes · {}",
-                            indexes.len(),
-                            style::bytes(total)
-                        ))
-                        .color(p.text_secondary),
-                    );
-                });
-            let max_ops = indexes
-                .iter()
-                .filter_map(|i| i.ops)
-                .max()
-                .unwrap_or(0)
-                .max(1);
-            let header_bg = p.raised;
-            let confirm = tab.confirm_drop.clone();
-            let mut new_confirm = confirm.clone();
-            TableBuilder::new(ui)
-                .id_salt(("raabit-indexes", tab_id))
-                .striped(true)
-                .cell_layout(crate::egui::Layout::left_to_right(crate::egui::Align::Center))
-                .column(Column::initial(200.0).at_least(120.0).clip(true))
-                .column(Column::initial(260.0).at_least(140.0).clip(true))
-                .column(Column::initial(220.0).at_least(120.0))
-                .column(Column::initial(90.0))
-                .column(Column::initial(150.0))
-                .column(Column::remainder().at_least(150.0))
-                .header(26.0, |mut header| {
-                    for title in ["Name", "Keys", "Properties", "Size", "Usage", ""] {
-                        header.col(|ui| {
-                            ui.painter().rect_filled(ui.max_rect().expand2(vec2(4.0, 0.0)), 0.0, header_bg);
-                            ui.label(RichText::new(title).strong());
-                        });
-                    }
-                })
-                .body(|body| {
-                    body.rows(30.0, indexes.len(), |mut row| {
-                        let index = &indexes[row.index()];
-                        row.col(|ui| {
-                            icons::icon(ui, Icon::Index, if index.hidden { p.text_info } else { p.date });
-                            ui.label(RichText::new(&index.name).font(crate::egui::FontId::monospace(12.5)).color(if index.hidden { p.text_info } else { p.text_strong }));
-                        });
-                        row.col(|ui| {
-                            ui.label(RichText::new(shell::document_to_shell(&index.keys, ShellStyle::Compact)).font(crate::egui::FontId::monospace(12.0)).color(p.text_secondary));
-                        });
-                        row.col(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            if index.unique {
-                                ui.add(Tag::new("unique").tone(Tone::Accent));
-                            }
-                            if index.sparse {
-                                ui.add(Tag::new("sparse").tone(Tone::Accent));
-                            }
-                            if let Some(ttl) = index.ttl_seconds {
-                                ui.add(Tag::new(format!("TTL {}", ttl_label(ttl))).tone(Tone::Warning));
-                            }
-                            if let Some(filter) = &index.partial_filter {
-                                ui.add(Tag::new("partial").tone(Tone::Success)).on_hover_text(shell::document_to_shell(filter, ShellStyle::Compact));
-                            }
-                            if index.hidden {
-                                ui.add(Tag::new("hidden").tone(Tone::Muted));
-                            }
-                            if index.name == "_id_" {
-                                ui.add(Tag::new("primary").tone(Tone::Accent));
-                            }
-                        });
-                        row.col(|ui| {
-                            ui.label(RichText::new(index.size.map(style::bytes).unwrap_or_default()).color(p.text_secondary));
-                        });
-                        row.col(|ui| {
-                            // Usage: thin bar relative to the most used index, with the count as text.
-                            let ops = index.ops.unwrap_or(0);
-                            let (rect, _) = ui.allocate_exact_size(vec2(70.0, 6.0), Sense::hover());
-                            ui.painter().rect_filled(rect, crate::egui::CornerRadius::same(3), p.selection_inactive);
-                            let filled = crate::egui::Rect::from_min_size(rect.min, vec2(rect.width() * ops as f32 / max_ops as f32, rect.height()));
-                            ui.painter().rect_filled(filled, crate::egui::CornerRadius::same(3), p.chart(0));
-                            ui.label(RichText::new(match index.ops {
-                                Some(n) => format!("{n} ops"),
-                                None => "—".into(),
-                            }).color(p.text_secondary));
-                        });
-                        row.col(|ui| {
-                            if index.name == "_id_" {
-                                return;
-                            }
-                            let label = if index.hidden { "Unhide" } else { "Hide" };
-                            if ui.small_button(label).on_hover_text("Hidden indexes are kept up to date but not used by the planner").clicked() {
-                                actions.push(Action::Hide(index.name.clone(), !index.hidden));
-                            }
-                            if confirm.as_deref() == Some(index.name.as_str()) {
-                                let drop = crate::egui::Button::new(RichText::new("Confirm drop").color(crate::egui::Color32::WHITE)).fill(p.error).small();
-                                if ui.add(drop).clicked() {
-                                    actions.push(Action::Drop(index.name.clone()));
-                                    new_confirm = None;
-                                }
-                            } else if ui.small_button("Drop…").clicked() {
-                                new_confirm = Some(index.name.clone());
-                            }
-                        });
-                    });
-                });
-            tab.confirm_drop = new_confirm;
+        Load::Ready(list) => {
+            widgets::padded(ui, |ui| {
+                index_table(ui, tab_id, list, confirm_drop, read_only, &mut actions);
+            });
         }
     }
     for action in actions {
@@ -265,10 +128,188 @@ pub fn show(app: &mut MongoRaabit, tab_id: TabId, ui: &mut Ui) {
     }
 }
 
-fn ttl_label(seconds: i64) -> String {
-    match seconds {
-        s if s % 86_400 == 0 && s >= 86_400 => format!("{}d", s / 86_400),
-        s if s % 3600 == 0 && s >= 3600 => format!("{}h", s / 3600),
-        s => format!("{s}s"),
+/// The "New index" form on an island.
+fn new_index_form(
+    ui: &mut Ui,
+    form: &mut mongo_raabit_core::indexes::IndexForm,
+    open: &mut bool,
+    actions: &mut Vec<Action>,
+) {
+    Surface::Island.frame(ui.ctx()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        Form::new().show(ui, |rows| {
+            rows.row("Keys:", |ui| {
+                widgets::value_field(ui, "Keys", &mut form.keys, "{ email: 1 }", KEYS_WIDTH, true)
+                    .response
+                    .tooltip(KEYS_TIP);
+            });
+            rows.row("Name:", |ui| {
+                ui.add(
+                    TextField::new(&mut form.name)
+                        .name("Name")
+                        .placeholder("generated from keys")
+                        .width(KEYS_WIDTH),
+                );
+            });
+            rows.row("Options:", |ui| {
+                ui.add(Checkbox::new(&mut form.unique, "Unique"));
+                ui.add(Checkbox::new(&mut form.sparse, "Sparse"));
+                ui.add(Checkbox::new(&mut form.hidden, "Hidden"));
+            });
+            rows.row("TTL (seconds):", |ui| {
+                ui.add(
+                    TextField::new(&mut form.ttl)
+                        .name("TTL (seconds)")
+                        .placeholder("none")
+                        .monospace(true)
+                        .width(TTL_WIDTH),
+                );
+            });
+            rows.row("Partial filter:", |ui| {
+                widgets::value_field(
+                    ui,
+                    "Partial filter",
+                    &mut form.partial,
+                    "{ active: true }",
+                    KEYS_WIDTH,
+                    true,
+                );
+            });
+            rows.fields(|ui| {
+                if ui
+                    .add(Button::primary("Create Index").icon(Icon::Check))
+                    .clicked()
+                {
+                    actions.push(Action::Create);
+                }
+                if ui.add(Button::secondary("Cancel")).clicked() {
+                    *open = false;
+                }
+            });
+        });
+    });
+}
+
+/// Column widths and the selected index of one table, kept between frames.
+#[derive(Clone, Default)]
+struct TableMemory {
+    columns: Vec<Column>,
+    selected: Option<String>,
+}
+
+/// The totals line, the actions on the selected index and the table of indexes.
+fn index_table(
+    ui: &mut Ui,
+    tab_id: TabId,
+    list: &[IndexInfo],
+    confirm: &mut Option<String>,
+    read_only: bool,
+    actions: &mut Vec<Action>,
+) {
+    let mem_id = Id::new(("raabit-indexes", tab_id, "memory"));
+    let mut mem: TableMemory = ui.data(|d| d.get_temp(mem_id)).unwrap_or_default();
+    if mem.columns.is_empty() {
+        let width = (ui.available_width() - size::CONTENT_INSET * 2.0).max(480.0);
+        mem.columns = vec![
+            Column::new("Name", (width * 0.20).round()).mono(),
+            Column::new("Keys", (width * 0.26).round()).mono(),
+            Column::new("Properties", (width * 0.28).round()),
+            Column::new("Size", (width * 0.10).round()).right(),
+            Column::new("Usage", (width * 0.16).round()).right(),
+        ];
     }
+    let mut position = mem
+        .selected
+        .as_ref()
+        .and_then(|name| list.iter().position(|i| &i.name == name));
+    let selected = position.map(|p| &list[p]);
+
+    ui.horizontal(|ui| {
+        let (count, bytes) = indexes::totals(list);
+        widgets::label(
+            ui,
+            Tone::Secondary,
+            format!("{count} indexes · {}", format::bytes(bytes)),
+        );
+        ui.with_layout(
+            crate::egui::Layout::right_to_left(crate::egui::Align::Center),
+            |ui| {
+                let target = selected.filter(|i| i.name != PRIMARY_INDEX && !read_only);
+                let confirming =
+                    target.is_some_and(|i| confirm.as_deref() == Some(i.name.as_str()));
+                if confirming {
+                    let drop = Button::danger("Confirm drop").small(true);
+                    if ui.add(drop).clicked()
+                        && let Some(index) = target
+                    {
+                        actions.push(Action::Drop(index.name.clone()));
+                        *confirm = None;
+                    }
+                } else if ui
+                    .add(
+                        Button::secondary("Drop…")
+                            .small(true)
+                            .enabled(target.is_some()),
+                    )
+                    .tooltip(if read_only {
+                        READ_ONLY_TIP
+                    } else {
+                        "Drop the selected index"
+                    })
+                    .clicked()
+                {
+                    *confirm = target.map(|i| i.name.clone());
+                }
+                let hidden = target.is_some_and(|i| i.hidden);
+                let label = if hidden { "Unhide" } else { "Hide" };
+                if ui
+                    .add(
+                        Button::secondary(label)
+                            .small(true)
+                            .enabled(target.is_some()),
+                    )
+                    .tooltip(if read_only { READ_ONLY_TIP } else { HIDE_TIP })
+                    .clicked()
+                    && let Some(index) = target
+                {
+                    actions.push(Action::Hide(index.name.clone(), !index.hidden));
+                }
+            },
+        );
+    });
+
+    let before = position;
+    let height = (ui.available_height() - size::ROW_HEIGHT).max(size::ROW_HEIGHT * 4.0);
+    Table::new(
+        ("raabit-indexes", tab_id),
+        &mut mem.columns,
+        list.len(),
+        &mut position,
+    )
+    .name("Indexes")
+    .height(height)
+    .show(ui, |row, column| {
+        let index = &list[row];
+        let cell = match column {
+            0 => Cell::new(&index.name).icon(Icon::Index),
+            1 => Cell::new(indexes::keys_label(index)),
+            2 => Cell::new(indexes::properties_label(index)),
+            3 => Cell::new(index.size.map(format::bytes).unwrap_or_default()),
+            _ => Cell::new(indexes::usage_label(index.ops)),
+        };
+        if index.hidden {
+            cell.tone(Tone::Muted)
+        } else if column == 0 {
+            cell.tone(Tone::Strong)
+        } else {
+            cell.muted()
+        }
+    });
+    if position != before {
+        mem.selected = position.map(|p| list[p].name.clone());
+        if confirm.as_deref() != mem.selected.as_deref() {
+            *confirm = None;
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(mem_id, mem));
 }

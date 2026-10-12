@@ -1,23 +1,28 @@
 //! Connection Manager: saved connections in folders, an editor for server, auth, TLS,
 //! SSH and advanced settings, URI import and Test Connection.
+//!
+//! The form itself (fields, validation, profile mapping) is
+//! [`mongo_raabit_core::connection_form`]; this module renders it and wires the dialog.
 
 use crate::app::{Load, MongoRaabit};
-use crate::egui::Ui;
+use crate::egui::{Align, Layout, Ui};
 use crate::icons::Icon;
-use crate::style;
 use crate::widgets;
 use archipel_sdk::kit::components::{
-    Banner, Button, Checkbox, Dialog, DialogAction, Dropdown, IconButton, ListRow, Severity,
-    Spinner, Tab, TabBar, TextField,
+    Banner, Checkbox, Dialog, DialogAction, FieldLabel, Form, FormUi, IconButton, NumberField,
+    Severity, Spinner, Tab, TabBar, TextField, Tree, TreeRow,
 };
 use archipel_sdk::kit::tokens::size;
 use archipel_sdk::kit::{Glyph, Tone};
 use mongo_raabit_core::Connection;
 use mongo_raabit_core::connection::ServerInfo;
-use mongo_raabit_core::profile::{
-    AuthMechanism, ConnectionProfile, HostPort, ProfileStore, ReadPreference, SshAuth, SshSettings,
-    Target,
+use mongo_raabit_core::connection_form::{
+    ConnectionForm, ListEntry, SshAuthKind, TargetKind, first_profile, list_entries,
 };
+use mongo_raabit_core::profile::{AuthMechanism, ConnectionProfile, ReadPreference, SshAuth};
+use mongo_raabit_core::secrets::SecretStore;
+use mongo_raabit_core::status;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -38,223 +43,64 @@ impl Page {
     ];
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TargetKind {
-    Standalone,
-    ReplicaSet,
-    Sharded,
-    Srv,
-}
-
-impl TargetKind {
-    const ALL: [Self; 4] = [Self::Standalone, Self::ReplicaSet, Self::Sharded, Self::Srv];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Standalone => "Standalone",
-            Self::ReplicaSet => "Replica set",
-            Self::Sharded => "Sharded cluster",
-            Self::Srv => "DNS seed list (SRV)",
-        }
-    }
-}
-
 pub struct ConnectionManager {
     pub selected: Option<String>,
-    pub draft: ConnectionProfile,
+    /// The profile being edited, as the form shows it.
+    pub form: ConnectionForm,
     pub page: Page,
-    target_kind: TargetKind,
-    host: String,
-    port: String,
-    hosts_text: String,
-    set_name: String,
-    password: String,
-    ssh_enabled: bool,
-    ssh: SshSettings,
-    ssh_key: String,
-    ssh_password: String,
-    ca_file: String,
-    cert_file: String,
-    timeout: String,
+    /// The connection string being typed in the import panel, while it is open.
     pub uri_import: Option<String>,
+    /// Focus the import field on the next frame (the panel was just opened).
+    focus_import: bool,
     pub test: Load<ServerInfo>,
     pub error: Option<String>,
     filter: String,
+    /// Folders of the list that are closed.
+    collapsed: HashSet<String>,
     close: bool,
 }
 
 impl ConnectionManager {
-    pub fn new(store: &ProfileStore) -> Self {
-        let first = store
-            .profiles_in("")
-            .into_iter()
-            .chain(
-                store
-                    .folder_paths()
-                    .iter()
-                    .flat_map(|f| store.profiles_in(f)),
-            )
-            .next()
-            .cloned();
-        let mut manager = Self::from_profile(first.clone().unwrap_or_default());
+    pub fn new(store: &mongo_raabit_core::profile::ProfileStore) -> Self {
+        let first = first_profile(store);
+        let mut manager = Self::from_form(ConnectionForm::from_profile(
+            first.clone().unwrap_or_default(),
+        ));
         manager.selected = first.map(|p| p.id);
         manager
     }
 
-    fn from_profile(profile: ConnectionProfile) -> Self {
-        let mut m = Self {
+    fn from_form(form: ConnectionForm) -> Self {
+        Self {
             selected: None,
+            form,
             page: Page::Server,
-            target_kind: TargetKind::Standalone,
-            host: "localhost".into(),
-            port: "27017".into(),
-            hosts_text: String::new(),
-            set_name: String::new(),
-            password: String::new(),
-            ssh_enabled: profile.ssh.is_some(),
-            ssh: profile.ssh.clone().unwrap_or_default(),
-            ssh_key: String::new(),
-            ssh_password: String::new(),
-            ca_file: profile
-                .tls
-                .ca_file
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-            cert_file: profile
-                .tls
-                .certificate_key_file
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-            timeout: profile
-                .connect_timeout_ms
-                .map(|t| t.to_string())
-                .unwrap_or_default(),
             uri_import: None,
+            focus_import: false,
             test: Load::Idle,
             error: None,
             filter: String::new(),
+            collapsed: HashSet::new(),
             close: false,
-            draft: profile,
-        };
-        if let SshAuth::PrivateKey { path } = &m.ssh.auth {
-            m.ssh_key = path.display().to_string();
         }
-        match &m.draft.target {
-            Target::Standalone { server } => {
-                m.host = server.host.clone();
-                m.port = server.port.to_string();
-            }
-            Target::ReplicaSet { members, set_name } => {
-                m.target_kind = TargetKind::ReplicaSet;
-                m.hosts_text = members
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                m.set_name = set_name.clone();
-            }
-            Target::Sharded { routers } => {
-                m.target_kind = TargetKind::Sharded;
-                m.hosts_text = routers
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-            }
-            Target::Srv { host } => {
-                m.target_kind = TargetKind::Srv;
-                m.host = host.clone();
-            }
-        }
-        m
+    }
+
+    /// Replace the editor by `next`, keeping what belongs to the list.
+    fn replace(&mut self, mut next: Self) {
+        next.filter = std::mem::take(&mut self.filter);
+        next.collapsed = std::mem::take(&mut self.collapsed);
+        *self = next;
+    }
+
+    fn select(&mut self, profile: &ConnectionProfile, secrets: &dyn SecretStore) {
+        let mut next = Self::from_form(ConnectionForm::from_stored(profile, secrets));
+        next.selected = Some(profile.id.clone());
+        self.replace(next);
     }
 
     /// Build the profile from the form fields.
     pub fn profile(&self) -> Result<ConnectionProfile, String> {
-        let mut profile = self.draft.clone();
-        let hosts = || -> Result<Vec<HostPort>, String> {
-            let list = self
-                .hosts_text
-                .split(['\n', ','])
-                .filter(|l| !l.trim().is_empty())
-                .map(HostPort::parse)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            if list.is_empty() {
-                Err("add at least one host:port".into())
-            } else {
-                Ok(list)
-            }
-        };
-        profile.target = match self.target_kind {
-            TargetKind::Standalone => {
-                let port = self
-                    .port
-                    .trim()
-                    .parse::<u16>()
-                    .map_err(|_| format!("invalid port '{}'", self.port))?;
-                Target::Standalone {
-                    server: HostPort::new(self.host.trim(), port),
-                }
-            }
-            TargetKind::ReplicaSet => Target::ReplicaSet {
-                members: hosts()?,
-                set_name: self.set_name.trim().to_owned(),
-            },
-            TargetKind::Sharded => Target::Sharded { routers: hosts()? },
-            TargetKind::Srv => Target::Srv {
-                host: self.host.trim().to_owned(),
-            },
-        };
-        profile.tls.ca_file = (!self.ca_file.trim().is_empty()).then(|| self.ca_file.trim().into());
-        profile.tls.certificate_key_file =
-            (!self.cert_file.trim().is_empty()).then(|| self.cert_file.trim().into());
-        profile.connect_timeout_ms = if self.timeout.trim().is_empty() {
-            None
-        } else {
-            Some(
-                self.timeout
-                    .trim()
-                    .parse()
-                    .map_err(|_| "timeout must be milliseconds".to_owned())?,
-            )
-        };
-        profile.ssh = if self.ssh_enabled {
-            let mut ssh = self.ssh.clone();
-            if let SshAuth::PrivateKey { .. } = ssh.auth {
-                ssh.auth = SshAuth::PrivateKey {
-                    path: self.ssh_key.trim().into(),
-                };
-            }
-            Some(ssh)
-        } else {
-            None
-        };
-        profile.validate().map_err(|e| e.to_string())?;
-        Ok(profile)
-    }
-
-    fn select(
-        &mut self,
-        profile: &ConnectionProfile,
-        app_secrets: &dyn mongo_raabit_core::secrets::SecretStore,
-    ) {
-        let mut next = Self::from_profile(profile.clone());
-        next.selected = Some(profile.id.clone());
-        next.password = app_secrets
-            .get(&profile.password_key())
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        next.ssh_password = app_secrets
-            .get(&profile.ssh_password_key())
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        next.filter = std::mem::take(&mut self.filter);
-        *self = next;
+        self.form.profile()
     }
 }
 
@@ -270,30 +116,48 @@ pub fn show(app: &mut MongoRaabit, ctx: &crate::egui::Context) {
     let width = WIDTH.min(ctx.content_rect().width() - 40.0);
     // What is left of the window once the title, the result banner and the buttons are in.
     let body_height = (ctx.content_rect().height() - 300.0).clamp(240.0, 440.0);
-    let valid = manager.profile().is_ok();
-    let action = Dialog::new("Connection Manager")
+    let importing = manager.uri_import.is_some();
+    let dialog = Dialog::new("Connection Manager")
         .icon(Glyph::Database)
-        .width(width)
-        .primary("Connect")
-        .primary_enabled(valid)
-        .secondary("Save")
+        .width(width);
+    // The import panel has its own pair of buttons; Esc leaves it before the dialog.
+    let dialog = if importing {
+        let ready = manager
+            .uri_import
+            .as_deref()
+            .is_some_and(|uri| !uri.trim().is_empty());
+        dialog
+            .primary("Import")
+            .primary_enabled(ready)
+            .secondary("Cancel")
+    } else {
+        dialog
+            .primary("Connect")
+            .primary_enabled(manager.profile().is_ok())
+            .secondary("Close")
+            .tertiary("Test Connection")
+    };
+    let action = dialog
         .content(|ui| content(app, &mut manager, ui, width, body_height))
         .show(ctx);
     let mut open = !manager.close;
     match action {
+        Some(DialogAction::Primary) if importing => import(&mut manager),
         Some(DialogAction::Primary) => {
             if save(app, &mut manager)
-                && let Some(profile) = app.store.get(&manager.draft.id).cloned()
+                && let Some(profile) = app.store.get(&manager.form.draft.id).cloned()
             {
                 app.connect(profile);
                 open = false;
             }
         }
-        Some(DialogAction::Secondary) => {
-            save(app, &mut manager);
+        Some(DialogAction::Tertiary) => test_connection(app, &mut manager),
+        Some(DialogAction::Secondary | DialogAction::Dismissed) if importing => {
+            manager.uri_import = None;
+            manager.error = None;
         }
-        Some(DialogAction::Dismissed) => open = false,
-        None => {}
+        Some(DialogAction::Secondary | DialogAction::Dismissed) => open = false,
+        Some(_) | None => {}
     }
     // The dialog may have been replaced while its content ran (e.g. by `connect`).
     if open && app.manager.is_none() {
@@ -305,11 +169,11 @@ pub fn show(app: &mut MongoRaabit, ctx: &crate::egui::Context) {
 fn save(app: &mut MongoRaabit, m: &mut ConnectionManager) -> bool {
     match m.profile() {
         Ok(profile) => {
-            store_secrets(app, m, &profile);
+            m.form.store_secrets(&profile, app.secrets.as_ref());
             app.store.upsert(profile.clone());
             app.save_store();
             m.selected = Some(profile.id.clone());
-            m.draft = profile;
+            m.form.draft = profile;
             m.error = None;
             true
         }
@@ -333,18 +197,6 @@ fn content(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui, width:
             editor(m, ui, height);
         });
     });
-    ui.add(archipel_sdk::kit::components::Separator);
-    ui.horizontal(|ui| {
-        if ui
-            .add(Button::secondary("Test Connection").icon(Icon::Pulse))
-            .clicked()
-        {
-            test_connection(app, m);
-        }
-        if ui.add(Button::ghost("Close")).clicked() {
-            m.close = true;
-        }
-    });
 }
 
 fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
@@ -354,9 +206,7 @@ fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui
             .add(IconButton::new(Icon::Plus, "New connection"))
             .clicked()
         {
-            let mut fresh = ConnectionManager::from_profile(ConnectionProfile::default());
-            fresh.filter = std::mem::take(&mut m.filter);
-            *m = fresh;
+            m.replace(ConnectionManager::from_form(ConnectionForm::default()));
         }
         if ui
             .add(IconButton::new(
@@ -366,6 +216,13 @@ fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui
             .clicked()
         {
             m.uri_import = Some(String::new());
+            m.focus_import = true;
+        }
+        if ui
+            .add(IconButton::new(Icon::Save, "Save connection"))
+            .clicked()
+        {
+            save(app, m);
         }
         let has_selection = m.selected.is_some();
         if ui
@@ -393,74 +250,70 @@ fn connection_list(app: &mut MongoRaabit, m: &mut ConnectionManager, ui: &mut Ui
                 let _ = app.secrets.delete(&profile.ssh_password_key());
             }
             app.save_store();
-            *m = ConnectionManager::new(&app.store);
+            m.replace(ConnectionManager::new(&app.store));
         }
     });
-    let filter = ui.add(TextField::search(&mut m.filter).placeholder("Filter connections"));
-    widgets::name_input(&filter, "Filter connections", true);
-    let filter = m.filter.to_lowercase();
-    let mut clicked: Option<ConnectionProfile> = None;
-    let mut connect: Option<ConnectionProfile> = None;
-    archipel_sdk::kit::parts::scroll_vertical()
-        .id_salt("raabit-manager-list")
-        .max_height(height - 70.0)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let mut folders = vec![String::new()];
-            folders.extend(app.store.folder_paths());
-            for folder in folders {
-                let profiles: Vec<&ConnectionProfile> = app
-                    .store
-                    .profiles_in(&folder)
-                    .into_iter()
-                    .filter(|pr| {
-                        filter.is_empty()
-                            || pr.name.to_lowercase().contains(&filter)
-                            || pr.summary().to_lowercase().contains(&filter)
-                    })
-                    .collect();
-                if profiles.is_empty() && !folder.is_empty() && !filter.is_empty() {
-                    continue;
-                }
-                let depth = if folder.is_empty() {
-                    0
-                } else {
-                    folder.matches('/').count() + 1
-                };
-                if !folder.is_empty() {
-                    ListRow::new(folder.rsplit('/').next().unwrap_or(&folder))
-                        .icon(Icon::Folder)
-                        .depth(depth - 1)
-                        .enabled(false)
-                        .show(ui);
-                }
-                for profile in profiles {
-                    let row = ListRow::new(profile.name.as_str())
-                        .icon(Icon::Database)
-                        .secondary(crate::values::truncate(&profile.summary(), 10))
-                        .depth(depth)
-                        .selected(m.selected.as_deref() == Some(profile.id.as_str()))
-                        .show(ui);
-                    if row.response.double_clicked() {
-                        connect = Some(profile.clone());
-                    } else if row.response.clicked() {
-                        clicked = Some(profile.clone());
-                    }
-                }
-            }
-            if app.store.profiles.is_empty() {
-                widgets::caption(ui, "No saved connections");
-                widgets::caption(ui, "Create one with + or import a URI");
-            }
-        });
-    if let Some(profile) = clicked {
+    ui.add(
+        TextField::search(&mut m.filter)
+            .name("Filter connections")
+            .placeholder("Filter connections"),
+    );
+    if app.store.profiles.is_empty() {
+        widgets::caption(ui, "No saved connections");
+        widgets::caption(ui, "Create one with + or import a URI");
+        return;
+    }
+    let folders = app.store.folder_paths();
+    let entries = list_entries(&app.store, &folders, &m.filter, &m.collapsed);
+    let rows: Vec<TreeRow> = entries
+        .iter()
+        .map(|entry| match entry {
+            ListEntry::Folder { path, name, depth } => TreeRow::new(*name, *depth)
+                .icon(Icon::Folder)
+                .parent(!m.collapsed.contains(*path)),
+            ListEntry::Profile { profile, depth } => TreeRow::new(profile.name.as_str(), *depth)
+                .icon(Icon::Database)
+                .secondary(profile.summary()),
+        })
+        .collect();
+    let mut selected = entries.iter().position(|entry| {
+        matches!(entry, ListEntry::Profile { profile, .. } if m.selected.as_deref() == Some(profile.id.as_str()))
+    });
+    let out = Tree::new("raabit-manager-list", &rows, &mut selected)
+        .name("Saved connections")
+        .height(height - 70.0)
+        .show(ui);
+    let profile_at = |i: usize| match &entries[i] {
+        ListEntry::Profile { profile, .. } => Some((*profile).clone()),
+        ListEntry::Folder { .. } => None,
+    };
+    if let Some(i) = out.toggled
+        && let ListEntry::Folder { path, .. } = &entries[i]
+        && !m.collapsed.remove(*path)
+    {
+        m.collapsed.insert((*path).to_owned());
+    }
+    if out.selection_changed
+        && let Some(profile) = selected.and_then(profile_at)
+        && m.selected.as_deref() != Some(profile.id.as_str())
+    {
         m.select(&profile, app.secrets.as_ref());
     }
-    if let Some(profile) = connect {
-        m.select(&profile, app.secrets.as_ref());
-        app.connect(profile);
-        m.close = true;
+    if let Some(i) = out.activated {
+        match profile_at(i) {
+            Some(profile) => {
+                m.select(&profile, app.secrets.as_ref());
+                app.connect(profile);
+                m.close = true;
+            }
+            None => {
+                if let ListEntry::Folder { path, .. } = &entries[i]
+                    && !m.collapsed.remove(*path)
+                {
+                    m.collapsed.insert((*path).to_owned());
+                }
+            }
+        }
     }
 }
 
@@ -478,34 +331,47 @@ fn tab_strip(ui: &mut Ui, m: &mut ConnectionManager) {
     }
 }
 
-fn text(ui: &mut Ui, label: &str, value: &mut String, placeholder: &str) {
-    ui.add(TextField::new(value).label(label).placeholder(placeholder));
+/// A form row `Label:` with one text field named `Label`.
+fn text(form: &mut FormUi, label: &str, value: &mut String, placeholder: &str) {
+    form.row(&format!("{label}:"), |ui| {
+        ui.add(TextField::new(value).name(label).placeholder(placeholder));
+    });
 }
 
-/// A dropdown over `all` with a visible label; `name` gives each option its text.
-fn pick<T: Copy + PartialEq>(
-    ui: &mut Ui,
+/// A form row with a dropdown over `(value, label)` options.
+fn pick<T: PartialEq + Clone>(
+    form: &mut FormUi,
     id: &str,
     label: &str,
     value: &mut T,
-    all: &[T],
-    name: impl Fn(T) -> String,
+    options: impl IntoIterator<Item = (T, &'static str)>,
 ) {
-    widgets::caption(ui, label);
-    let mut selected = name(*value);
-    let options: Vec<String> = all.iter().map(|v| name(*v)).collect();
-    if ui
-        .add(
-            Dropdown::new(id, &mut selected, options)
-                .label(label)
-                .width(240.0),
-        )
-        .changed()
-        && let Some(v) = all.iter().find(|v| name(**v) == selected)
-    {
-        *value = *v;
-    }
+    form.row(&format!("{label}:"), |ui| {
+        widgets::choice(ui, id, label, value, options, 240.0);
+    });
 }
+
+/// A form row with a field and, at the right, a port.
+fn with_port(
+    form: &mut FormUi,
+    label: &str,
+    value: &mut String,
+    placeholder: &str,
+    port: &mut u16,
+) {
+    form.row(&format!("{label}:"), |ui| {
+        // Right to left: the port keeps its width and the field takes what is left.
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add(NumberField::new(port).name("Port"));
+            ui.add(FieldLabel::new("Port:"));
+            ui.add_space(size::FORM_CONTROL_SPACE);
+            ui.add(TextField::new(value).name(label).placeholder(placeholder));
+        });
+    });
+}
+
+/// What the Read-only checkbox of a connection blocks.
+const READ_ONLY_COMMENT: &str = "Blocks every change to the database: edits, inserts, deletes, index and collection changes, writing shell commands";
 
 fn editor(m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
     if m.uri_import.is_some() {
@@ -518,55 +384,41 @@ fn editor(m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
         .min_scrolled_height(height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = size::SECTION_SPACING;
-            text(ui, "Name", &mut m.draft.name, "");
-            text(ui, "Folder", &mut m.draft.folder, "e.g. Production/EU");
-            tab_strip(ui, m);
-            match m.page {
-                Page::Server => server_page(m, ui),
-                Page::Authentication => auth_page(m, ui),
-                Page::Tls => {
-                    ui.add(Checkbox::new(&mut m.draft.tls.enabled, "Use TLS/SSL"));
-                    if m.draft.tls.enabled {
-                        text(ui, "CA file", &mut m.ca_file, "/path/to/ca.pem (optional)");
-                        text(
-                            ui,
-                            "Client certificate",
-                            &mut m.cert_file,
-                            "PEM with key, for X.509",
-                        );
-                        ui.add(Checkbox::new(
-                            &mut m.draft.tls.allow_invalid_certificates,
-                            "Allow invalid certificates",
-                        ));
-                        ui.add(Checkbox::new(
-                            &mut m.draft.tls.allow_invalid_hostnames,
-                            "Allow invalid host names",
-                        ));
-                    }
+            Form::new().show(ui, |form| {
+                text(form, "Name", &mut m.form.draft.name, "");
+                text(
+                    form,
+                    "Folder",
+                    &mut m.form.draft.folder,
+                    "e.g. Production/EU",
+                );
+                form.add(
+                    Checkbox::new(&mut m.form.draft.read_only, "Read-only")
+                        .comment(READ_ONLY_COMMENT),
+                );
+                tab_strip(form.ui(), m);
+                match m.page {
+                    Page::Server => server_page(form, &mut m.form),
+                    Page::Authentication => auth_page(form, &mut m.form),
+                    Page::Tls => tls_page(form, &mut m.form),
+                    Page::Ssh => ssh_page(form, &mut m.form),
+                    Page::Advanced => advanced_page(form, &mut m.form),
                 }
-                Page::Ssh => ssh_page(m, ui),
-                Page::Advanced => {
-                    text(ui, "Default database", &mut m.draft.default_database, "");
-                    text(
-                        ui,
-                        "Application name",
-                        &mut m.draft.app_name,
-                        "mongo-raabit",
+                form.space();
+                let (mut uri, error) = match m.form.uri_preview() {
+                    Ok(uri) => (uri, None),
+                    Err(err) => (String::new(), Some(err)),
+                };
+                form.row("Connection string:", |ui| {
+                    ui.add(
+                        TextField::new(&mut uri)
+                            .name("Connection string")
+                            .monospace(true)
+                            .error(error.as_deref())
+                            .enabled(false),
                     );
-                    text(ui, "Timeout (ms)", &mut m.timeout, "10000");
-                }
-            }
-            let mut uri = match m.profile() {
-                Ok(profile) => profile.display_uri(),
-                Err(err) => format!("⚠ {err}"),
-            };
-            ui.add(
-                TextField::new(&mut uri)
-                    .label("Connection string")
-                    .monospace(true)
-                    .enabled(false),
-            );
+                });
+            });
         });
     if let Some(err) = &m.error {
         Banner::new(Severity::Error, err).show(ui);
@@ -577,16 +429,7 @@ fn editor(m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
             ui.add(Spinner::new().label("Testing connection…"));
         }
         Load::Ready(info) => {
-            Banner::new(
-                Severity::Success,
-                format!(
-                    "Connected: MongoDB {} · {} · {}",
-                    info.version,
-                    info.topology,
-                    style::duration(info.round_trip)
-                ),
-            )
-            .show(ui);
+            Banner::new(Severity::Success, status::test_result(info)).show(ui);
         }
         Load::Failed(err) => {
             Banner::new(Severity::Error, err).show(ui);
@@ -594,217 +437,225 @@ fn editor(m: &mut ConnectionManager, ui: &mut Ui, height: f32) {
     }
 }
 
+/// The import panel: the dialog's Import and Cancel buttons act on it.
 fn import_form(m: &mut ConnectionManager, ui: &mut Ui) {
-    let mut import = false;
-    let mut cancel = false;
+    let id = crate::egui::Id::new("raabit-manager-import");
     if let Some(uri) = &mut m.uri_import {
-        ui.spacing_mut().item_spacing.y = size::SECTION_SPACING;
-        ui.add(
-            TextField::new(uri)
-                .label("Import from connection string")
-                .placeholder("mongodb+srv://user:password@cluster0.example.net/")
-                .monospace(true),
-        );
-        ui.horizontal(|ui| {
-            import = ui
-                .add(Button::primary("Import").icon(Icon::Import))
-                .clicked();
-            cancel = ui.add(Button::secondary("Cancel")).clicked();
+        if m.focus_import {
+            // Ask until the field has it: the click that opened the panel may still hold it.
+            if ui.memory(|memory| memory.has_focus(id)) {
+                m.focus_import = false;
+            } else {
+                ui.memory_mut(|memory| memory.request_focus(id));
+                ui.ctx().request_repaint();
+            }
+        }
+        Form::new().show(ui, |form| {
+            form.row("Connection string:", |ui| {
+                ui.add(
+                    TextField::new(uri)
+                        .id(id)
+                        .name("Connection string to import")
+                        .placeholder("mongodb+srv://user:password@cluster0.example.net/")
+                        .monospace(true),
+                );
+            });
         });
     }
     if let Some(err) = &m.error {
         Banner::new(Severity::Error, err).show(ui);
     }
-    if import {
-        let parsed = m.uri_import.as_deref().map(ConnectionProfile::from_uri);
-        match parsed {
-            Some(Ok((profile, password))) => {
-                let mut next = ConnectionManager::from_profile(profile);
-                next.password = password.unwrap_or_default();
-                next.filter = std::mem::take(&mut m.filter);
-                *m = next;
-            }
-            Some(Err(err)) => m.error = Some(err.to_string()),
-            None => {}
-        }
-    } else if cancel {
-        m.uri_import = None;
-        m.error = None;
+}
+
+fn import(m: &mut ConnectionManager) {
+    let Some(uri) = m.uri_import.as_deref() else {
+        return;
+    };
+    match ConnectionForm::from_uri(uri) {
+        Ok(form) => m.replace(ConnectionManager::from_form(form)),
+        Err(err) => m.error = Some(err),
     }
 }
 
-fn server_page(m: &mut ConnectionManager, ui: &mut Ui) {
+fn server_page(form: &mut FormUi, f: &mut ConnectionForm) {
     pick(
-        ui,
+        form,
         "raabit-target",
         "Connection type",
-        &mut m.target_kind,
-        &TargetKind::ALL,
-        |k| k.label().to_owned(),
+        &mut f.target_kind,
+        TargetKind::ALL.map(|k| (k, k.label())),
     );
-    match m.target_kind {
-        TargetKind::Standalone => {
-            ui.horizontal_top(|ui| {
-                ui.add(TextField::new(&mut m.host).label("Host").width(240.0));
-                let error = m
-                    .port
-                    .trim()
-                    .parse::<u16>()
-                    .is_err()
-                    .then_some("Enter a port from 0 to 65535");
-                ui.add(
-                    TextField::new(&mut m.port)
-                        .label("Port")
-                        .error(error)
-                        .width(100.0),
-                );
-            });
-        }
-        TargetKind::Srv => text(ui, "Cluster host", &mut m.host, "cluster0.example.net"),
+    match f.target_kind {
+        TargetKind::Standalone => with_port(form, "Host", &mut f.host, "", &mut f.port),
+        TargetKind::Srv => text(form, "Cluster host", &mut f.host, "cluster0.example.net"),
         TargetKind::ReplicaSet | TargetKind::Sharded => {
-            let label = if m.target_kind == TargetKind::ReplicaSet {
+            let label = if f.target_kind == TargetKind::ReplicaSet {
                 "Members"
             } else {
                 "mongos routers"
             };
-            widgets::caption(ui, label);
-            // The kit has no multi-line text field yet (see "Kit gaps").
-            ui.add(
-                crate::egui::TextEdit::multiline(&mut m.hosts_text)
-                    .hint_text(widgets::hint(ui, "host1:27017\nhost2:27017"))
-                    .font(crate::egui::TextStyle::Monospace)
-                    .desired_rows(4)
-                    .desired_width(300.0),
+            form.ui().label(format!("{label}:"));
+            form.ui().add(
+                TextField::new(&mut f.hosts_text)
+                    .name(label)
+                    .multiline(4)
+                    .monospace(true)
+                    .placeholder("host1:27017\nhost2:27017"),
             );
-            if m.target_kind == TargetKind::ReplicaSet {
-                text(ui, "Replica set name", &mut m.set_name, "rs0");
+            if f.target_kind == TargetKind::ReplicaSet {
+                text(form, "Replica set name", &mut f.set_name, "rs0");
             }
         }
     }
     pick(
-        ui,
+        form,
         "raabit-readpref",
         "Read preference",
-        &mut m.draft.read_preference,
-        &ReadPreference::ALL,
-        |p| p.as_str().to_owned(),
+        &mut f.draft.read_preference,
+        ReadPreference::ALL.map(|p| (p, p.as_str())),
     );
 }
 
-fn auth_page(m: &mut ConnectionManager, ui: &mut Ui) {
+fn auth_page(form: &mut FormUi, f: &mut ConnectionForm) {
     pick(
-        ui,
+        form,
         "raabit-auth",
         "Mechanism",
-        &mut m.draft.auth.mechanism,
-        &AuthMechanism::ALL,
-        |a| a.label().to_owned(),
+        &mut f.draft.auth.mechanism,
+        AuthMechanism::ALL.map(|a| (a, a.label())),
     );
-    if m.draft.auth.mechanism != AuthMechanism::None {
-        text(ui, "User name", &mut m.draft.auth.username, "");
-        if m.draft.auth.mechanism.needs_password() {
-            ui.add(
-                TextField::new(&mut m.password)
-                    .label("Password")
-                    .password(true),
-            );
-        }
-        text(
-            ui,
-            "Auth database",
-            &mut m.draft.auth.auth_database,
-            "admin",
-        );
-        widgets::caption(
-            ui,
-            "Passwords are kept in the secret store, never in the connections file.",
-        );
-    }
-}
-
-fn ssh_page(m: &mut ConnectionManager, ui: &mut Ui) {
-    ui.add(Checkbox::new(
-        &mut m.ssh_enabled,
-        "Connect through an SSH tunnel",
-    ));
-    if !m.ssh_enabled {
+    if f.draft.auth.mechanism == AuthMechanism::None {
         return;
     }
-    ui.horizontal_top(|ui| {
-        ui.add(
-            TextField::new(&mut m.ssh.host)
-                .label("SSH server")
-                .placeholder("bastion.example.com")
-                .width(240.0),
-        );
-        let mut port = m.ssh.port.to_string();
-        if ui
-            .add(TextField::new(&mut port).label("Port").width(100.0))
-            .changed()
-        {
-            m.ssh.port = port.trim().parse().unwrap_or(m.ssh.port);
-        }
-    });
-    text(ui, "SSH user", &mut m.ssh.username, "");
-    #[derive(Clone, Copy, PartialEq)]
-    enum AuthKind {
-        Agent,
-        Key,
-        Password,
-    }
-    let mut kind = match m.ssh.auth {
-        SshAuth::Agent => AuthKind::Agent,
-        SshAuth::PrivateKey { .. } => AuthKind::Key,
-        SshAuth::Password => AuthKind::Password,
-    };
-    pick(
-        ui,
-        "raabit-ssh-auth",
-        "Authentication",
-        &mut kind,
-        &[AuthKind::Agent, AuthKind::Key, AuthKind::Password],
-        |k| {
-            match k {
-                AuthKind::Agent => "SSH agent / default keys",
-                AuthKind::Key => "Private key",
-                AuthKind::Password => "Password",
-            }
-            .to_owned()
-        },
-    );
-    m.ssh.auth = match kind {
-        AuthKind::Agent => SshAuth::Agent,
-        AuthKind::Key => SshAuth::PrivateKey {
-            path: m.ssh_key.clone().into(),
-        },
-        AuthKind::Password => SshAuth::Password,
-    };
-    match m.ssh.auth {
-        SshAuth::PrivateKey { .. } => text(ui, "Private key", &mut m.ssh_key, "~/.ssh/id_ed25519"),
-        SshAuth::Password => {
+    text(form, "User name", &mut f.draft.auth.username, "");
+    if f.draft.auth.mechanism.needs_password() {
+        form.row("Password:", |ui| {
             ui.add(
-                TextField::new(&mut m.ssh_password)
-                    .label("SSH password")
+                TextField::new(&mut f.password)
+                    .name("Password")
                     .password(true),
             );
-        }
-        SshAuth::Agent => {}
+        });
     }
-    widgets::caption(
-        ui,
-        &match mongo_raabit_core::tunnel::find_ssh() {
-            Some(path) => format!("Uses the OpenSSH client at {}", path.display()),
-            None => {
-                "No `ssh` executable on PATH — install the OpenSSH client to use tunnels.".into()
-            }
-        },
+    text(
+        form,
+        "Auth database",
+        &mut f.draft.auth.auth_database,
+        "admin",
     );
+    widgets::note(
+        form.ui(),
+        Tone::Muted,
+        "Passwords are kept in the secret store, never in the connections file.",
+    );
+}
+
+fn tls_page(form: &mut FormUi, f: &mut ConnectionForm) {
+    form.add(Checkbox::new(&mut f.draft.tls.enabled, "Use TLS/SSL"));
+    if !f.draft.tls.enabled {
+        return;
+    }
+    form.indent(|form| {
+        text(
+            form,
+            "CA file",
+            &mut f.ca_file,
+            "/path/to/ca.pem (optional)",
+        );
+        text(
+            form,
+            "Client certificate",
+            &mut f.cert_file,
+            "PEM with key, for X.509",
+        );
+        form.add(Checkbox::new(
+            &mut f.draft.tls.allow_invalid_certificates,
+            "Allow invalid certificates",
+        ));
+        form.add(Checkbox::new(
+            &mut f.draft.tls.allow_invalid_hostnames,
+            "Allow invalid host names",
+        ));
+    });
+}
+
+fn advanced_page(form: &mut FormUi, f: &mut ConnectionForm) {
+    text(form, "Default database", &mut f.draft.default_database, "");
+    text(
+        form,
+        "Application name",
+        &mut f.draft.app_name,
+        "mongo-raabit",
+    );
+    // Empty means the driver default, which an integer field cannot say (see "Kit gaps").
+    let error = f.timeout_error();
+    form.row("Timeout (ms):", |ui| {
+        ui.add(
+            TextField::new(&mut f.timeout)
+                .name("Timeout (ms)")
+                .placeholder("10000")
+                .error(error),
+        );
+    });
+}
+
+fn ssh_page(form: &mut FormUi, f: &mut ConnectionForm) {
+    form.add(Checkbox::new(
+        &mut f.ssh_enabled,
+        "Connect through an SSH tunnel",
+    ));
+    if !f.ssh_enabled {
+        return;
+    }
+    form.indent(|form| {
+        with_port(
+            form,
+            "SSH server",
+            &mut f.ssh.host,
+            "bastion.example.com",
+            &mut f.ssh.port,
+        );
+        text(form, "SSH user", &mut f.ssh.username, "");
+        let mut kind = f.ssh_auth_kind();
+        pick(
+            form,
+            "raabit-ssh-auth",
+            "Authentication",
+            &mut kind,
+            SshAuthKind::ALL.map(|k| (k, k.label())),
+        );
+        f.set_ssh_auth_kind(kind);
+        match f.ssh.auth {
+            SshAuth::PrivateKey { .. } => {
+                text(form, "Private key", &mut f.ssh_key, "~/.ssh/id_ed25519");
+            }
+            SshAuth::Password => {
+                form.row("SSH password:", |ui| {
+                    ui.add(
+                        TextField::new(&mut f.ssh_password)
+                            .name("SSH password")
+                            .password(true),
+                    );
+                });
+            }
+            SshAuth::Agent => {}
+        }
+        widgets::note(
+            form.ui(),
+            Tone::Muted,
+            match mongo_raabit_core::tunnel::find_ssh() {
+                Some(path) => format!("Uses the OpenSSH client at {}", path.display()),
+                None => "No `ssh` executable on PATH — install the OpenSSH client to use tunnels."
+                    .into(),
+            },
+        );
+    });
 }
 
 fn test_connection(app: &mut MongoRaabit, m: &mut ConnectionManager) {
     match m.profile() {
         Ok(profile) => {
-            store_secrets(app, m, &profile);
+            m.form.store_secrets(&profile, app.secrets.as_ref());
             m.test = Load::Loading;
             m.error = None;
             let secrets = app.secrets.clone();
@@ -813,7 +664,7 @@ fn test_connection(app: &mut MongoRaabit, m: &mut ConnectionManager) {
                 async move { Connection::test(&profile, secrets.as_ref()).await },
                 move |app: &mut MongoRaabit, result| {
                     if let Some(manager) = &mut app.manager
-                        && manager.draft.id == id
+                        && manager.form.draft.id == id
                     {
                         manager.test = match result {
                             Ok(info) => Load::Ready(info),
@@ -824,43 +675,5 @@ fn test_connection(app: &mut MongoRaabit, m: &mut ConnectionManager) {
             );
         }
         Err(err) => m.error = Some(err),
-    }
-}
-
-fn store_secrets(app: &MongoRaabit, m: &ConnectionManager, profile: &ConnectionProfile) {
-    let set = |key: String, value: &str| {
-        let _ = if value.is_empty() {
-            app.secrets.delete(&key)
-        } else {
-            app.secrets.set(&key, value)
-        };
-    };
-    set(profile.password_key(), &m.password);
-    set(profile.ssh_password_key(), &m.ssh_password);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn form_round_trips_profiles() {
-        let (profile, _) = ConnectionProfile::from_uri(
-            "mongodb://u@a:1,b:2/?replicaSet=rs0&tls=true&readPreference=nearest",
-        )
-        .unwrap();
-        let m = ConnectionManager::from_profile(profile.clone());
-        assert_eq!(m.target_kind, TargetKind::ReplicaSet);
-        assert_eq!(m.hosts_text, "a:1\nb:2");
-        let rebuilt = m.profile().unwrap();
-        assert_eq!(rebuilt.target, profile.target);
-        assert_eq!(rebuilt.read_preference, ReadPreference::Nearest);
-
-        let mut bad = ConnectionManager::from_profile(ConnectionProfile::default());
-        bad.port = "x".into();
-        assert!(bad.profile().unwrap_err().contains("invalid port"));
-        bad.port = "27017".into();
-        bad.ssh_enabled = true;
-        assert!(bad.profile().is_err());
     }
 }

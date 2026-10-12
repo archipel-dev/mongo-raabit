@@ -1,15 +1,25 @@
 mod common;
 
+use mongo_raabit_core::Write;
 use mongo_raabit_core::aggregate::{Pipeline, RunOptions, Stage};
 use mongo_raabit_core::bson::{Bson, Document, doc};
+use mongo_raabit_core::query::Query;
 use mongo_raabit_core::schema::SampleMethod;
 use mongo_raabit_core::sql::{SqlTranslation, translate};
+
+fn insert(db: &str, collection: &str, documents: Vec<Document>) -> Write {
+    Write::InsertDocuments {
+        db: db.to_owned(),
+        collection: collection.to_owned(),
+        documents,
+    }
+}
 
 async fn seed(conn: &mongo_raabit_core::Connection, db: &str) {
     let customers: Vec<Document> = (0..10)
         .map(|i| doc! {"_id": i, "name": format!("c{i}"), "tier": if i % 2 == 0 { "pro" } else { "free" }})
         .collect();
-    conn.insert_documents(db, "customers", customers)
+    conn.execute(insert(db, "customers", customers))
         .await
         .unwrap();
     let orders: Vec<Document> = (0..40)
@@ -22,7 +32,7 @@ async fn seed(conn: &mongo_raabit_core::Connection, db: &str) {
             }
         })
         .collect();
-    conn.insert_documents(db, "orders", orders).await.unwrap();
+    conn.execute(insert(db, "orders", orders)).await.unwrap();
 }
 
 #[tokio::test]
@@ -80,10 +90,7 @@ async fn aggregation_stage_preview() {
         .await
         .unwrap();
     assert_eq!(
-        conn.collection(&db, "report")
-            .count_documents(doc! {})
-            .await
-            .unwrap(),
+        conn.count(&db, "report", &Query::default()).await.unwrap(),
         10
     );
     let sampled = Pipeline {
@@ -107,7 +114,9 @@ async fn aggregation_stage_preview() {
         .await
         .unwrap();
     assert_eq!(rows, vec![doc! {"n": 7}]);
-    conn.drop_database(&db).await.unwrap();
+    conn.execute(Write::DropDatabase { db: db.clone() })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -142,7 +151,9 @@ async fn schema_sampling() {
         .await
         .unwrap();
     assert_eq!(filtered.sampled, 20);
-    conn.drop_database(&db).await.unwrap();
+    conn.execute(Write::DropDatabase { db: db.clone() })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -193,5 +204,7 @@ async fn sql_translations_run_on_the_server() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get_str("customer").unwrap(), "c9");
     assert!(matches!(rows[0].get("spent"), Some(Bson::Double(v)) if *v > 0.0));
-    conn.drop_database(&db).await.unwrap();
+    conn.execute(Write::DropDatabase { db: db.clone() })
+        .await
+        .unwrap();
 }

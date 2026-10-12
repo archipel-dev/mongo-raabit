@@ -45,8 +45,11 @@ pub enum Icon {
     Plug,
     Unplug,
     Check,
+    Save,
     Warning,
     Filter,
+    Settings,
+    Lock,
 }
 
 impl Icon {
@@ -96,8 +99,11 @@ impl Icon {
             Icon::Export => Glyph::Upload,
             Icon::Plug | Icon::Unplug => Glyph::Plug,
             Icon::Check => Glyph::Check,
+            Icon::Save => Glyph::Save,
             Icon::Warning => Glyph::Warning,
             Icon::Filter => Glyph::Filter,
+            Icon::Settings => Glyph::Settings,
+            Icon::Lock => Glyph::Lock,
         }
     }
 }

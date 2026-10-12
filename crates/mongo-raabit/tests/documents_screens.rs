@@ -28,10 +28,12 @@ fn screen<'a>(theme: Theme, app: MongoRaabit) -> Harness<'a, MongoRaabit> {
 
 fn dialog_screen<'a>(theme: Theme, app: MongoRaabit) -> Harness<'a, MongoRaabit> {
     // The dialog on its own: behind a modal the window is not reachable anyway.
-    let mut harness = testing::harness_state(theme, app, |ui, app: &mut MongoRaabit| {
-        mongo_raabit::dialogs::show(app, ui.ctx())
-    });
-    harness.set_size(vec2(1280.0, 800.0));
+    let mut harness = testing::harness_state_sized(
+        theme,
+        vec2(1280.0, 800.0),
+        app,
+        |ui, app: &mut MongoRaabit| mongo_raabit::dialogs::show(app, ui.ctx()),
+    );
     harness.run_ok();
     harness
 }

@@ -852,6 +852,18 @@ fn regex_condition(field: &str, regex: &Regex) -> Result<Condition, String> {
 }
 
 impl Builder {
+    /// A new group combines with the opposite mode of the root, which is what groups are for.
+    pub fn new_group(&self) -> Item {
+        let mode = match self.filter.mode {
+            MatchMode::All => MatchMode::Any,
+            MatchMode::Any => MatchMode::All,
+        };
+        Item::Group(Group {
+            mode,
+            items: vec![Item::Condition(Condition::default())],
+        })
+    }
+
     /// The query as shell text for the query bar. Empty parts stay empty, so a blank
     /// builder equals `QueryText::default()`.
     pub fn to_query_text(&self) -> QueryText {
@@ -958,6 +970,21 @@ impl Builder {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn new_groups_use_the_opposite_mode() {
+        let mut builder = Builder::default();
+        let Item::Group(group) = builder.new_group() else {
+            panic!("a group")
+        };
+        assert_eq!(group.mode, MatchMode::Any);
+        assert_eq!(group.items.len(), 1);
+        builder.filter.mode = MatchMode::Any;
+        let Item::Group(group) = builder.new_group() else {
+            panic!("a group")
+        };
+        assert_eq!(group.mode, MatchMode::All);
+    }
     use super::*;
     use mongodb::bson::{DateTime, doc};
 

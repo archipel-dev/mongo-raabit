@@ -1,0 +1,116 @@
+{
+  "profiles": [
+    {
+      "id": "65f000000000000000000001",
+      "name": "Sales (prod)",
+      "folder": "Production/EU",
+      "target": {
+        "kind": "replica_set",
+        "members": [
+          {
+            "host": "db1",
+            "port": 27018
+          },
+          {
+            "host": "db2",
+            "port": 27017
+          }
+        ],
+        "set_name": "rs0"
+      },
+      "auth": {
+        "mechanism": "default",
+        "username": "al@ice",
+        "auth_database": "admin"
+      },
+      "tls": {
+        "enabled": true,
+        "ca_file": null,
+        "certificate_key_file": null,
+        "allow_invalid_certificates": false,
+        "allow_invalid_hostnames": false
+      },
+      "ssh": null,
+      "read_preference": "secondaryPreferred",
+      "default_database": "sales",
+      "app_name": "raabit",
+      "connect_timeout_ms": 5000,
+      "read_only": true,
+      "extra_options": [
+        [
+          "retryWrites",
+          "false"
+        ]
+      ]
+    },
+    {
+      "id": "65f000000000000000000002",
+      "name": "Local",
+      "folder": "",
+      "target": {
+        "kind": "standalone",
+        "server": {
+          "host": "localhost",
+          "port": 27017
+        }
+      },
+      "auth": {
+        "mechanism": "none",
+        "username": "",
+        "auth_database": ""
+      },
+      "tls": {
+        "enabled": false,
+        "ca_file": null,
+        "certificate_key_file": null,
+        "allow_invalid_certificates": false,
+        "allow_invalid_hostnames": false
+      },
+      "ssh": {
+        "host": "bastion.example.net",
+        "port": 22,
+        "username": "ops",
+        "auth": {
+          "kind": "agent"
+        }
+      },
+      "read_preference": "primary",
+      "default_database": "",
+      "app_name": "",
+      "connect_timeout_ms": null,
+      "read_only": false,
+      "extra_options": []
+    },
+    {
+      "id": "65f000000000000000000003",
+      "name": "Atlas \"cluster0\"",
+      "folder": "",
+      "target": {
+        "kind": "srv",
+        "host": "cluster0.example.net"
+      },
+      "auth": {
+        "mechanism": "default",
+        "username": "u",
+        "auth_database": ""
+      },
+      "tls": {
+        "enabled": true,
+        "ca_file": null,
+        "certificate_key_file": null,
+        "allow_invalid_certificates": false,
+        "allow_invalid_hostnames": false
+      },
+      "ssh": null,
+      "read_preference": "primary",
+      "default_database": "",
+      "app_name": "",
+      "connect_timeout_ms": null,
+      "read_only": false,
+      "extra_options": []
+    }
+  ],
+  "folders": [
+    "Staging"
+  ]
+}

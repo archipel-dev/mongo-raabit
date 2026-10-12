@@ -7,6 +7,7 @@
 //! become `find`; anything with joins, grouping or computed columns becomes a pipeline.
 //! Parsing uses the `sqlparser` crate.
 
+use crate::aggregate::Pipeline;
 use crate::error::{RaabitError, Result};
 use crate::query::Query;
 use crate::shell::{self, ShellStyle};
@@ -64,6 +65,16 @@ impl SqlTranslation {
                 stages
             }
         }
+    }
+
+    /// The pipeline as the aggregation editor takes it, or `None` when it cannot be
+    /// read back (it always can for what [`translate`] produces).
+    pub fn to_pipeline(&self) -> Option<Pipeline> {
+        let text = shell::to_shell_string(
+            &Bson::Array(self.pipeline().into_iter().map(Bson::Document).collect()),
+            ShellStyle::Compact,
+        );
+        Pipeline::from_text(&text).ok()
     }
 
     /// The generated MongoDB query in shell syntax.
@@ -1174,6 +1185,24 @@ mod tests {
             SqlTranslation::Aggregate { pipeline, .. } => pipeline,
             other => panic!("expected aggregate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn translations_open_in_the_aggregation_editor() {
+        let find =
+            translate("SELECT name FROM customers WHERE age >= 18 ORDER BY name LIMIT 5").unwrap();
+        let pipeline = find.to_pipeline().unwrap();
+        let operators: Vec<&str> = pipeline
+            .stages
+            .iter()
+            .map(|s| s.operator.as_str())
+            .collect();
+        assert_eq!(operators, ["$match", "$sort", "$limit", "$project"]);
+        let group = translate("SELECT region, COUNT(*) AS n FROM sales GROUP BY region").unwrap();
+        assert_eq!(
+            group.to_pipeline().unwrap().stages.len(),
+            group.pipeline().len()
+        );
     }
 
     #[test]
